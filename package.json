@@ -1,6 +1,6 @@
 {
   "name": "framelab",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "Framelab — Multi-tool precision platform for Adobe Premiere Pro (UXP)",
   "scripts": {

@@ -27,6 +27,7 @@
  * `workspace.ts`; a razão de existirem dois está lá.
  */
 import { EnvelopeBuilder, PCM_SAMPLE_RATE, type Envelope } from "./waveform";
+import { ensureSilentLauncher } from "../download/runner";
 import {
   describe,
   fsModule,
@@ -39,6 +40,9 @@ import {
   remove,
   shellModule,
   uxpModule,
+  shellQuote,
+  batValue,
+  wait,
   workspace,
   workspaceAttempts,
   write,
@@ -67,6 +71,8 @@ export interface ExtractionResult {
 
 const RESULT_FILE = "result.json";
 const PROGRESS_FILE = "progress.txt";
+/** Escrito na primeira linha útil do script: prova que ele rodou. */
+const STARTED_FILE = "sil-started.txt";
 const CONFIG_FILE = "silence-config.json";
 const SCRIPT_FILE = "extract.command";
 const SCRIPT_FILE_WIN = "extract.bat";
@@ -169,34 +175,65 @@ export async function extractAudio(
   const space = await step("pasta de trabalho", () => workspace());
   const scriptPath = nativePath(space, scriptName());
 
-  // Resto de uma execução anterior faria o polling terminar antes de
-  // o ffmpeg começar, com dados velhos.
-  await remove(space, RESULT_FILE);
-  await remove(space, PROGRESS_FILE);
+  /*
+   * Cada execução ganha os seus arquivos de resultado e progresso,
+   * renomeados no texto do script num ponto só. Cancelar deixa um
+   * script órfão terminando; com nomes por execução, ele escreve nos
+   * nomes velhos e a varredura nova não engole o resultado dele. (Os
+   * PCMs já vêm carimbados por execução de quem monta os jobs.)
+   */
+  const tag = Date.now().toString(36);
+  const runResult = `sil-${tag}-result.json`;
+  const runProgress = `sil-${tag}-progress.txt`;
+  const runStarted = `sil-${tag}-started.txt`;
+
+  await remove(space, runResult);
+  await remove(space, runProgress);
+  await remove(space, runStarted);
   for (const job of jobs) {
     await remove(space, job.file);
   }
 
   // O script vive no mundo de fora: todo caminho DENTRO dele é nativo.
-  const script = isWindows()
+  const script = (isWindows()
     ? windowsScript(jobs, space.nativeBase, ffmpegPath)
-    : unixScript(jobs, space.nativeBase, ffmpegPath);
+    : unixScript(jobs, space.nativeBase, ffmpegPath))
+    .split(RESULT_FILE).join(runResult)
+    .split(PROGRESS_FILE).join(runProgress)
+    .split(STARTED_FILE).join(runStarted);
   await step("escrever o script", () => write(space, scriptName(), script, true));
 
-  // Uma recusa aqui não é o fim: o script está escrito e é só um
-  // duplo clique. Desistir na hora transformaria um contorno de dez
-  // segundos numa funcionalidade morta.
+  /*
+   * Primeiro sem janela: o mesmo runner silencioso do Baixar Vídeos —
+   * a janela do Terminal piscando era a reclamação número um do beta,
+   * e esta ferramenta era a que faltava. Se o lançamento falhar, ou o
+   * carimbo de início não aparecer, o Terminal volta como plano B.
+   */
   let launchError: string | null = null;
+  let awaitingStamp = false;
   try {
+    const launcher = await ensureSilentLauncher(scriptName());
     await shell.openPath(
-      scriptPath,
+      launcher.path,
       "Extrair o áudio dos clipes selecionados com o ffmpeg, para detectar os silêncios pela onda."
     );
+    awaitingStamp = true;
   } catch (cause) {
-    launchError = describe(cause);
-    console.error("[Silêncios] openPath recusou:", cause);
-    onManual?.(scriptPath, launchError);
+    console.error("[Silêncios] runner silencioso recusado:", describe(cause));
   }
+  if (!awaitingStamp) {
+    try {
+      await shell.openPath(
+        scriptPath,
+        "Extrair o áudio dos clipes selecionados com o ffmpeg, para detectar os silêncios pela onda."
+      );
+    } catch (cause) {
+      launchError = describe(cause);
+      console.error("[Silêncios] openPath recusou:", cause);
+      onManual?.(scriptPath, launchError);
+    }
+  }
+  const stampDeadline = Date.now() + 8000;
 
   const started = Date.now();
   const deadline = started + TIMEOUT_MS;
@@ -207,11 +244,24 @@ export async function extractAudio(
       return { ok: false, error: "cancelled", ffmpegPath: null, scriptPath };
     }
 
+    if (awaitingStamp && Date.now() > stampDeadline) {
+      awaitingStamp = false;
+      if (!readText(space, runStarted)) {
+        console.warn("[Silêncios] sem carimbo do runner — caindo para o Terminal.");
+        try {
+          await shell.openPath(scriptPath, "Extrair o áudio dos clipes selecionados.");
+        } catch (cause) {
+          launchError = describe(cause);
+          onManual?.(scriptPath, launchError);
+        }
+      }
+    }
+
     // Progress is a nicety; the result file is what ends the wait. Reading
     // both every cycle was two synchronous reads per step, all the way to
     // the timeout.
     if (tick % 3 === 0) {
-      const done = readProgress(space);
+      const done = readProgress(space, runProgress);
       if (done !== null && done !== lastDone) {
         lastDone = done;
         onProgress?.(done, jobs.length);
@@ -219,7 +269,7 @@ export async function extractAudio(
     }
     tick += 1;
 
-    const raw = readText(space, RESULT_FILE);
+    const raw = readText(space, runResult);
     if (raw) {
       try {
         const parsed = JSON.parse(raw) as { ok?: boolean; error?: string; ffmpeg?: string };
@@ -257,8 +307,8 @@ export async function openWorkFolder(): Promise<void> {
   await shell.openPath(space.nativeBase, "Abrir a pasta do script de extração.");
 }
 
-function readProgress(space: Workspace): number | null {
-  const text = readText(space, PROGRESS_FILE);
+function readProgress(space: Workspace, name: string): number | null {
+  const text = readText(space, name);
   if (!text) {
     return null;
   }
@@ -266,9 +316,6 @@ function readProgress(space: Workspace): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 // ── leitura do PCM ─────────────────────────────────────────────────
 
@@ -308,6 +355,10 @@ export async function readEnvelope(
     }
   } finally {
     await fs.close(fd).catch(() => undefined);
+    // O PCM já virou envelope; uma hora de áudio são ~57 MB, e sem
+    // esta linha os arquivos de varreduras antigas se acumulavam na
+    // pasta do plugin para sempre.
+    await remove(space, fileName);
   }
 
   return builder.finish();
@@ -448,16 +499,6 @@ export async function diagnose(ffmpegPath: string): Promise<DiagnosticLine[]> {
 
 // ── geração do script ──────────────────────────────────────────────
 
-/**
- * Aspas simples de shell.
- *
- * O caminho de um projeto real tem espaço, acento e apóstrofo — e um
- * apóstrofo sem escape transforma o caminho em comando. Toda string
- * que entra no script passa por aqui.
- */
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
 
 /**
  * Exportado para poder ser gerado e executado fora do Premiere: o
@@ -476,6 +517,7 @@ export function unixScript(
     `printf '\\033]0;Framelab — analisando áudio\\007'`,
     "set -u",
     `WORK=${shellQuote(folder)}`,
+    `printf 1 > "$WORK/${STARTED_FILE}"`,
     `CUSTOM=${shellQuote(ffmpegPath)}`,
     "FFMPEG=''",
     // A ordem procura primeiro o que o editor escolheu, depois os
@@ -529,18 +571,6 @@ export function unixScript(
   return lines.join("\n") + "\n";
 }
 
-/**
- * Um valor seguro dentro de `set "NOME=…"` num .bat.
- *
- * O cmd não tem escape para uma aspa dentro de um `set` entre aspas, então
- * ela é removida em vez de contrabandeada — e remover é o certo para o
- * caso comum, que é o editor colando um caminho já entre aspas. O porcento
- * é dobrado, que é como um .bat escreve um porcento literal. O caminho do
- * ffmpeg vem de um campo de texto: sem isto, ele entrava cru no script.
- */
-function batchValue(value: string): string {
-  return value.replace(/[\r\n"]/g, "").replace(/%/g, "%%");
-}
 
 /** Mesma coreografia em cmd.exe. Não testado num Windows real. */
 export function windowsScript(
@@ -548,13 +578,14 @@ export function windowsScript(
   folder: string,
   ffmpegPath: string
 ): string {
-  const quote = (value: string): string => `"${batchValue(value)}"`;
+  const quote = (value: string): string => `"${batValue(value)}"`;
   const lines: string[] = [
     "@echo off",
     "rem Gerado pelo Framelab — Corte de Silêncios. Pode apagar.",
     `title Framelab - analisando audio`,
-    `set "WORK=${batchValue(folder)}"`,
-    `set "FFMPEG=${batchValue(ffmpegPath)}"`,
+    `set "WORK=${batValue(folder)}"`,
+    `>"%WORK%\\${STARTED_FILE}" echo 1`,
+    `set "FFMPEG=${batValue(ffmpegPath)}"`,
     'if "%FFMPEG%"=="" for %%i in (ffmpeg.exe) do @set "FFMPEG=%%~$PATH:i"',
     'if "%FFMPEG%"=="" (',
     `  >"%WORK%\\${RESULT_FILE}.tmp" echo {"ok":false,"error":"ffmpeg-not-found"}`,
@@ -578,8 +609,12 @@ export function windowsScript(
   });
 
   lines.push(
+    // Barra invertida crua dentro de JSON é escape inválido: o painel
+    // não conseguia ler um sucesso e esperava os 20 minutos inteiros.
+    // O cmd troca \ por / na expansão da variável.
+    'set "FFJSON=%FFMPEG:\\=/%"',
     'if "%FAILED%"=="0" (',
-    `  >"%WORK%\\${RESULT_FILE}.tmp" echo {"ok":true,"ffmpeg":"%FFMPEG%"}`,
+    `  >"%WORK%\\${RESULT_FILE}.tmp" echo {"ok":true,"ffmpeg":"%FFJSON%"}`,
     ") else (",
     `  >"%WORK%\\${RESULT_FILE}.tmp" echo {"ok":false,"error":"ffmpeg-failed"}`,
     ")",
@@ -595,9 +630,10 @@ export function probeScript(folder: string, ffmpegPath: string): string {
   if (isWindows()) {
     return [
       "@echo off",
-      `set "FFMPEG=${batchValue(ffmpegPath)}"`,
+      `set "FFMPEG=${batValue(ffmpegPath)}"`,
       'if "%FFMPEG%"=="" for %%i in (ffmpeg.exe) do @set "FFMPEG=%%~$PATH:i"',
-      `>"${batchValue(folder)}\\probe.json" echo {"ffmpeg":"%FFMPEG%"}`,
+      'set "FFJSON=%FFMPEG:\\=/%"',
+      `>"${batValue(folder)}\\probe.json" echo {"ffmpeg":"%FFJSON%"}`,
       "exit /b 0",
     ].join("\r\n") + "\r\n";
   }

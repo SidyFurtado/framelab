@@ -32,6 +32,10 @@
  * que é o caso do YouTube inteiro. Sem ele, o filtro derrubava tudo.
  */
 import { ensureSilentLauncher } from "./runner";
+import { readConfig as readSilenceConfig } from "../silence/ffmpeg";
+
+/** Alias local: o escapador compartilhado, no nome curto dos templates. */
+const q = shellQuote;
 import {
   describe,
   isWindows,
@@ -41,6 +45,9 @@ import {
   remove,
   shellModule,
   uxpModule,
+  shellQuote,
+  batValue,
+  wait,
   workspace,
   write,
   type Workspace,
@@ -70,9 +77,6 @@ function scriptName(): string {
   return isWindows() ? SCRIPT_FILE_WIN : SCRIPT_FILE;
 }
 
-export function localBinaryName(): string {
-  return isWindows() ? LOCAL_BIN_WIN : LOCAL_BIN;
-}
 
 // ── polling ────────────────────────────────────────────────────────
 
@@ -462,6 +466,8 @@ export interface RunResult {
   failed: number;
   /** As últimas linhas do log — o que o yt-dlp reclamou. */
   log: string;
+  /** Onde ESTA execução listou o que entregou. */
+  filesFile?: string;
 }
 
 export interface RunProgress {
@@ -492,6 +498,9 @@ interface Launch {
  * porque o que muda entre elas é só o texto do script e o tempo que
  * vale a pena esperar.
  */
+/** Os arquivos da execução anterior, para a próxima limpar. */
+let previousRunFiles: string[] = [];
+
 async function run(launch: Launch): Promise<RunResult> {
   const shell = shellModule();
   if (!shell) {
@@ -501,9 +510,26 @@ async function run(launch: Launch): Promise<RunResult> {
   const space = await workspace();
   const scriptPath = nativePath(space, scriptName());
 
-  // Sobra de uma execução anterior faria o polling terminar antes de o
-  // yt-dlp começar, com o resultado do link de ontem.
+  /*
+   * Cada execução ganha os SEUS arquivos de protocolo, renomeados no
+   * texto do script num ponto só. Sem isso, cancelar deixava um
+   * script órfão rodando, e a execução seguinte podia engolir o
+   * result.json DELE — importando o lote de ontem como se fosse o de
+   * hoje. Com nomes por execução, o órfão escreve nos nomes velhos e
+   * ninguém lê.
+   */
+  const tag = Date.now().toString(36);
+  const runFiles = {
+    result: `dl-${tag}-result.json`,
+    progress: `dl-${tag}-progress.txt`,
+    log: `dl-${tag}-log.txt`,
+    files: `dl-${tag}-files.txt`,
+    started: `dl-${tag}-started.txt`,
+  };
+
   for (const name of [
+    ...Object.values(runFiles),
+    ...previousRunFiles,
     RESULT_FILE,
     PROGRESS_FILE,
     LOG_FILE,
@@ -513,8 +539,16 @@ async function run(launch: Launch): Promise<RunResult> {
   ]) {
     await remove(space, name);
   }
+  previousRunFiles = Object.values(runFiles);
 
-  await write(space, scriptName(), launch.build(space), true);
+  const script = launch
+    .build(space)
+    .split(RESULT_FILE).join(runFiles.result)
+    .split(PROGRESS_FILE).join(runFiles.progress)
+    .split(LOG_FILE).join(runFiles.log)
+    .split(FILES_FILE).join(runFiles.files)
+    .split(STARTED_FILE).join(runFiles.started);
+  await write(space, scriptName(), script, true);
 
   // Primeiro o caminho silencioso: o runner executa o script sem abrir
   // Terminal (ver runner.ts). Se o lançamento for recusado — ou se o
@@ -543,7 +577,9 @@ async function run(launch: Launch): Promise<RunResult> {
   const stampDeadline = Date.now() + 8000;
   const deadline = Date.now() + launch.timeoutMs;
   let lastSignature = "";
+  let tick = 0;
   while (Date.now() < deadline) {
+    tick += 1;
     if (launch.cancelled?.()) {
       return { ...fail("cancelled", scriptPath) };
     }
@@ -551,7 +587,7 @@ async function run(launch: Launch): Promise<RunResult> {
     // O runner lançou mas o script não deu sinal de vida? Terminal.
     if (awaitingStamp && Date.now() > stampDeadline) {
       awaitingStamp = false;
-      if (!readText(space, STARTED_FILE)) {
+      if (!readText(space, runFiles.started)) {
         console.warn("[Download] sem carimbo do runner — caindo para o Terminal.");
         try {
           await shell.openPath(scriptPath, launch.purpose);
@@ -562,9 +598,12 @@ async function run(launch: Launch): Promise<RunResult> {
       }
     }
 
-    if (launch.onProgress) {
-      const log = tail(space);
-      const done = readProgress(space);
+    // O resultado encerra a espera; o log é cortesia — ler o arquivo a
+    // cada volta era uma leitura síncrona de 250 em 250ms por até
+    // noventa minutos.
+    if (launch.onProgress && tick % 4 === 0) {
+      const log = tail(space, runFiles.log);
+      const done = readProgress(space, runFiles.progress);
       const percent = readPercent(log);
       const signature = `${done}|${percent}|${log.length}`;
       if (signature !== lastSignature) {
@@ -573,7 +612,7 @@ async function run(launch: Launch): Promise<RunResult> {
       }
     }
 
-    const raw = readText(space, RESULT_FILE);
+    const raw = readText(space, runFiles.result);
     if (raw) {
       try {
         const parsed = JSON.parse(raw) as {
@@ -588,7 +627,8 @@ async function run(launch: Launch): Promise<RunResult> {
           ytdlpPath: typeof parsed.ytdlp === "string" ? parsed.ytdlp : null,
           scriptPath,
           failed: typeof parsed.failed === "number" ? parsed.failed : 0,
-          log: tail(space),
+          log: tail(space, runFiles.log),
+          filesFile: runFiles.files,
         };
       } catch {
         // JSON pela metade: o `mv` do script torna isso raro, e uma
@@ -600,7 +640,7 @@ async function run(launch: Launch): Promise<RunResult> {
 
   return {
     ...fail(launchError ? `launch-denied: ${launchError}` : "timeout", scriptPath),
-    log: tail(space),
+    log: tail(space, runFiles.log),
   };
 }
 
@@ -608,19 +648,26 @@ function fail(error: string, scriptPath: string | null): RunResult {
   return { ok: false, error, ytdlpPath: null, scriptPath, failed: 0, log: "" };
 }
 
-function readProgress(space: Workspace): number {
-  const raw = readText(space, PROGRESS_FILE);
+function readProgress(space: Workspace, name: string): number {
+  const raw = readText(space, name);
   const parsed = Number.parseInt(raw?.split("/")[0] ?? "", 10);
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-/** As últimas linhas do log. O começo não interessa; o fim é o erro. */
-function tail(space: Workspace, lines = 12): string {
-  const raw = readText(space, LOG_FILE);
+/**
+ * As últimas linhas do log. O começo não interessa; o fim é o erro.
+ *
+ * Fatia por posição antes de quebrar em linhas: o log de um download
+ * longo chega a megabytes, e um split do arquivo inteiro a cada volta
+ * do polling era custo linear crescendo na thread do painel.
+ */
+function tail(space: Workspace, name: string, lines = 12): string {
+  const raw = readText(space, name);
   if (!raw) {
     return "";
   }
-  return raw.split(/\r?\n/).slice(-lines).join("\n");
+  const slice = raw.length > 4096 ? raw.slice(-4096) : raw;
+  return slice.split(/\r?\n/).slice(-lines).join("\n");
 }
 
 /**
@@ -638,9 +685,6 @@ function readPercent(log: string): number | null {
   return Number.isFinite(value) ? Math.min(100, value) : null;
 }
 
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 // ── as três operações ──────────────────────────────────────────────
 
@@ -719,12 +763,15 @@ export async function downloadUrls(
   onManual?: (scriptPath: string, reason: string) => void
 ): Promise<DownloadOutcome> {
   const destination = config.destination || (await defaultDestination());
+  // O ffmpeg apontado à mão nos ajustes do Corte de Silêncios vale
+  // aqui também — é o mesmo binário fazendo o mesmo trabalho.
+  const customFfmpeg = urls.length > 0 ? (await readSilenceConfig()).ffmpegPath : "";
 
   const result = await run({
     build: (space) =>
       isWindows()
-        ? downloadScriptWin(urls, quality, config, space.nativeBase, destination, direct)
-        : downloadScriptUnix(urls, quality, config, space.nativeBase, destination, direct),
+        ? downloadScriptWin(urls, quality, config, space.nativeBase, destination, direct, customFfmpeg)
+        : downloadScriptUnix(urls, quality, config, space.nativeBase, destination, direct, customFfmpeg),
     timeoutMs: DOWNLOAD_TIMEOUT_MS,
     stale: [],
     onProgress,
@@ -735,7 +782,7 @@ export async function downloadUrls(
   });
 
   const space = await workspace();
-  const listed = readText(space, FILES_FILE);
+  const listed = readText(space, result.filesFile ?? FILES_FILE);
   const files = listed
     ? listed
         .split(/\r?\n/)
@@ -782,16 +829,6 @@ export async function openWorkFolder(): Promise<void> {
 
 // ── geração do script (unix) ───────────────────────────────────────
 
-/**
- * Aspas simples de shell.
- *
- * Um link do YouTube tem `&` e `?`, um título tem acento e apóstrofo, e
- * um apóstrofo sem escape transforma o caminho em comando. Toda string
- * que entra num script passa por aqui.
- */
-function q(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
 
 /** O preâmbulo comum: acha o yt-dlp, ou desiste dizendo por quê. */
 /**
@@ -875,12 +912,16 @@ function unixYtdlpSetup(config: DownloadConfig): string[] {
  * ffmpeg que junta os dois. Sem ele o yt-dlp cai sozinho num formato
  * progressivo — pior, mas ainda um arquivo.
  */
-function unixFfmpeg(): string[] {
+function unixFfmpeg(customFfmpeg: string): string[] {
   return [
+    // O caminho que o editor configurou no Corte de Silêncios vem
+    // primeiro: era honrado lá e ignorado aqui, e o mesmo binário
+    // serve os dois.
+    `FFCUSTOM=${q(customFfmpeg)}`,
     "FFMPEG=''",
-    "for candidate in /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg " +
+    'for candidate in "$FFCUSTOM" /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg ' +
       '/opt/local/bin/ffmpeg /usr/bin/ffmpeg "$WORK/ffmpeg"; do',
-    '  if [ -x "$candidate" ]; then FFMPEG="$candidate"; break; fi',
+    '  if [ -n "$candidate" ] && [ -x "$candidate" ]; then FFMPEG="$candidate"; break; fi',
     "done",
     'if [ -z "$FFMPEG" ]; then FFMPEG="$(command -v ffmpeg 2>/dev/null || true)"; fi',
     // Na falta, baixa o build estático da arquitetura. A falha aqui é
@@ -954,14 +995,15 @@ export function downloadScriptUnix(
   config: DownloadConfig,
   folder: string,
   destination: string,
-  direct: readonly DirectJob[] = []
+  direct: readonly DirectJob[] = [],
+  customFfmpeg = ""
 ): string {
   const lines = unixBase(folder);
   // yt-dlp, deno e ffmpeg só entram quando algum link precisa deles.
   // Um lote só de TikTok fica em curl puro — é o que faz o caso mais
   // comum responder em segundos, sem provisionamento nenhum.
   if (urls.length > 0) {
-    lines.push(...unixYtdlpSetup(config), ...unixFfmpeg());
+    lines.push(...unixYtdlpSetup(config), ...unixFfmpeg(customFfmpeg));
   }
   lines.push(`DEST=${q(destination)}`, 'mkdir -p "$DEST"', "FAILED=0");
 
@@ -1078,13 +1120,15 @@ const DENO_WIN =
 export function installScriptUnix(folder: string): string {
   return (
     [
-      "#!/bin/bash",
-      "# Gerado pelo Framelab — Baixar Vídeos. Pode apagar.",
-      `printf '\\033]0;Framelab — instalando yt-dlp\\007'`,
-      "set -u",
-      `WORK=${q(folder)}`,
+      // A base comum traz o cd e o carimbo de início — sem ele, o
+      // runner silencioso parecia morto e o painel abria um SEGUNDO
+      // install no Terminal, os dois curl brigando pelo mesmo .tmp.
+      ...unixBase(folder),
       `echo "Baixando o yt-dlp oficial…"`,
-      `if curl -fL --retry 3 -o "$WORK/${LOCAL_BIN}.tmp" ${q(RELEASE_MAC)} 2>&1 | tee -a "$WORK/${LOG_FILE}"; then`,
+      // Sem tee: o `if` precisa medir o CURL, e `curl | tee` mede o
+      // tee, que nunca falha — um download pela metade seguia o
+      // caminho feliz e instalava um binário truncado.
+      `if curl -fSL --retry 3 -o "$WORK/${LOCAL_BIN}.tmp" ${q(RELEASE_MAC)} 2>> "$WORK/${LOG_FILE}"; then`,
       `  chmod +x "$WORK/${LOCAL_BIN}.tmp"`,
       `  mv "$WORK/${LOCAL_BIN}.tmp" "$WORK/${LOCAL_BIN}"`,
       // O binário do macOS vem sem assinatura reconhecida pelo
@@ -1094,6 +1138,9 @@ export function installScriptUnix(folder: string): string {
       `  if "$WORK/${LOCAL_BIN}" --version >/dev/null 2>&1; then`,
       `    printf '{"ok":true,"ytdlp":"%s"}' "$WORK/${LOCAL_BIN}" > "$WORK/${RESULT_FILE}.tmp"`,
       "  else",
+      // O que não executa não pode ficar: um yt-dlp quebrado em
+      // $WORK vence a busca de TODO script futuro.
+      `    rm -f "$WORK/${LOCAL_BIN}"`,
       `    printf '{"ok":false,"error":"install-unusable"}' > "$WORK/${RESULT_FILE}.tmp"`,
       "  fi",
       "else",
@@ -1117,17 +1164,6 @@ function escapeEcho(value: string): string {
 
 // ── geração do script (windows) ────────────────────────────────────
 
-/**
- * Um valor seguro dentro de `set "NOME=…"` num .bat.
- *
- * O cmd não tem escape para uma aspa dentro de um `set` entre aspas,
- * então ela é removida em vez de contrabandeada. O porcento é dobrado,
- * que é como um .bat escreve um porcento literal — e o template de
- * nome de arquivo do yt-dlp é feito só de porcentos.
- */
-function batValue(value: string): string {
-  return value.replace(/[\r\n"]/g, "").replace(/%/g, "%%");
-}
 
 function bq(value: string): string {
   return `"${batValue(value)}"`;
@@ -1215,7 +1251,8 @@ export function downloadScriptWin(
   config: DownloadConfig,
   folder: string,
   destination: string,
-  direct: readonly DirectJob[] = []
+  direct: readonly DirectJob[] = [],
+  customFfmpeg = ""
 ): string {
   const lines = winBase(folder);
   if (urls.length > 0) {
@@ -1247,7 +1284,9 @@ export function downloadScriptWin(
     // script baixa o build oficial do projeto yt-dlp. Falhar aqui não
     // derruba o download — só rebaixa a qualidade máxima.
     'set "FFLOC="',
-    'for %%i in (ffmpeg.exe) do @if not "%%~$PATH:i"=="" set "FFLOC=SKIP"',
+    `set "FFCUSTOM=${batValue(customFfmpeg)}"`,
+    'if exist "%FFCUSTOM%" set "FFLOC=CUSTOM"',
+    'if "%FFLOC%"=="" for %%i in (ffmpeg.exe) do @if not "%%~$PATH:i"=="" set "FFLOC=SKIP"',
     `if exist "%WORK%\\ffmpeg.exe" set "FFLOC=%WORK%"`,
     'if "%FFLOC%"=="" (',
     "  echo Preparando o ffmpeg (so na primeira vez)...",
@@ -1261,7 +1300,8 @@ export function downloadScriptWin(
     ")",
     'if "%FFLOC%"=="SKIP" set "FFLOC="',
     'set "FFARGS="',
-    'if not "%FFLOC%"=="" set FFARGS=--ffmpeg-location "%FFLOC%"'
+    'if "%FFLOC%"=="CUSTOM" (set FFARGS=--ffmpeg-location "%FFCUSTOM%") else ' +
+      'if not "%FFLOC%"=="" set FFARGS=--ffmpeg-location "%FFLOC%"'
     );
   }
 
@@ -1279,9 +1319,10 @@ export function downloadScriptWin(
       `--merge-output-format mp4`;
 
   urls.forEach((url, index) => {
+    const step = direct.length + index + 1;
     lines.push(
-      `echo [${index + 1}/${urls.length}]`,
-      `>"%WORK%\\${PROGRESS_FILE}" echo ${index + 1}/${urls.length}`,
+      `echo [${step}/${total}]`,
+      `>"%WORK%\\${PROGRESS_FILE}" echo ${step}/${total}`,
       `"%YTDLP%" ${shared} ${media} -P "%DEST%" %FFARGS% %JSARGS% ${bq(url)} >>"%WORK%\\${LOG_FILE}" 2>&1`,
       "if errorlevel 1 set /a FAILED+=1"
     );
@@ -1307,10 +1348,7 @@ export function downloadScriptWin(
 export function installScriptWin(folder: string): string {
   return (
     [
-      "@echo off",
-      "rem Gerado pelo Framelab - Baixar Videos. Pode apagar.",
-      "title Framelab - instalando yt-dlp",
-      `set "WORK=${batValue(folder)}"`,
+      ...winBase(folder),
       "echo Baixando o yt-dlp oficial...",
       `powershell -NoProfile -Command "try { Invoke-WebRequest -Uri '${RELEASE_WIN}' ` +
         `-OutFile ('%WORK%\\${LOCAL_BIN_WIN}') -UseBasicParsing } catch { exit 1 }"`,

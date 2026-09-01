@@ -1,8 +1,8 @@
 {
-  "version": "0.2.1",
+  "version": "0.2.2",
   "releaseDate": "2026-09-01",
   "minPremiereVersion": "25.0.0",
-  "changelog": "Baixar Vídeos sem janela nenhuma: o TikTok baixa dentro do próprio painel, com barra de progresso em MB de verdade. Na primeira vez o painel pode pedir para você escolher a pasta de destino — é uma vez só, e é o que garante o download silencioso dali em diante.",
+  "changelog": "Revisão geral de estabilidade. O Corte de Silêncios também deixou de abrir o Terminal. Corrigidos: transcrição com marcação de tempo relativa (que podia cortar fala), o Zoom desfazendo um zoom que deu certo, cancelar uma análise e a seguinte pegar o resultado da antiga, e o botão Aplicar morrendo depois de uma recusa do Premiere. O painel abre e lê a seleção bem mais rápido, e a pasta do plugin parou de acumular arquivos de áudio temporários.",
   "downloadUrl": "https://github.com/SidyFurtado/framelab/releases/latest/download/Framelab-macOS.zip",
   "bundleFiles": {
     "manifest.json": "https://raw.githubusercontent.com/SidyFurtado/framelab/main/dist/manifest.json",

@@ -16,7 +16,7 @@
  * já sabe.
  */
 import type { Tool, ToolContext } from "../../shell/tool";
-import { CONTROL, setDisabled } from "../../shell/controls";
+import { CONTROL, setDisabled, escapeHtml } from "../../shell/controls";
 import { getPremiere, describeError } from "../../bridge/premiere";
 import {
   availableQualities,
@@ -140,6 +140,32 @@ function mountDropdown(
       }
     },
   };
+}
+
+/**
+ * A via rápida consultada para cada posição da lista.
+ *
+ * Pareado por índice, não por indexOf: o mesmo link colado duas vezes
+ * fazia indexOf apontar sempre para a primeira ocorrência, e a segunda
+ * herdava a resposta errada. É também o ÚNICO lugar que decide quem
+ * qualifica para a via rápida — sondagem e download passavam por duas
+ * cópias da mesma decisão.
+ */
+async function fastLaneByIndex(
+  list: readonly string[]
+): Promise<Map<number, TikTokFast>> {
+  const positions = list
+    .map((url, index) => ({ url, index }))
+    .filter((entry) => isTikTokUrl(entry.url));
+  const infos = await fetchManyTikTok(positions.map((entry) => entry.url));
+  const byIndex = new Map<number, TikTokFast>();
+  positions.forEach((entry, at) => {
+    const info = infos[at];
+    if (info) {
+      byIndex.set(entry.index, info);
+    }
+  });
+  return byIndex;
 }
 
 /** O que o painel aceita como link. Uma linha em branco não é erro. */
@@ -363,22 +389,19 @@ export const downloadTool: Tool = {
         // TikTok vai pela via rápida (uma chamada de API, ~1s); o que
         // ela não resolver — e todo o resto — vai pelo yt-dlp. Ver
         // tiktok.ts para o porquê da existência das duas portas.
-        const byUrl = new Map<string, Probe>();
-        const tiktoks = list.filter((url) => isTikTokUrl(url));
-        const fastInfos = await fetchManyTikTok(tiktoks);
+        const fast = await fastLaneByIndex(list);
+        const byIndex = new Map<number, Probe>();
         const slow: string[] = [];
-        for (const url of list) {
-          if (!isTikTokUrl(url)) {
-            slow.push(url);
-            continue;
-          }
-          const info = fastInfos[tiktoks.indexOf(url)];
+        const slowAt: number[] = [];
+        list.forEach((url, index) => {
+          const info = fast.get(index);
           if (info) {
-            byUrl.set(url, fastProbe(url, info));
+            byIndex.set(index, fastProbe(url, info));
           } else {
             slow.push(url);
+            slowAt.push(index);
           }
-        }
+        });
 
         let result = { ok: true, error: null as string | null, log: "", ytdlpPath: null as string | null };
         if (slow.length > 0) {
@@ -393,10 +416,12 @@ export const downloadTool: Tool = {
             showManual
           );
           result = { ...result, ...scripted.result };
-          scripted.probes.forEach((probe, index) => byUrl.set(slow[index], probe));
+          scripted.probes.forEach((probe, at) => byIndex.set(slowAt[at], probe));
         }
 
-        probes = list.map((url) => byUrl.get(url)).filter((p): p is Probe => !!p);
+        probes = list
+          .map((_, index) => byIndex.get(index))
+          .filter((p): p is Probe => !!p);
         renderList();
         renderQualities();
 
@@ -455,17 +480,16 @@ export const downloadTool: Tool = {
         // para o yt-dlp junto com os links que nunca foram dela.
         const direct: DirectJob[] = [];
         const slow: string[] = [];
-        const tiktoks = list.filter((url) => isTikTokUrl(url));
-        const fastInfos = tiktoks.length > 0 ? await fetchManyTikTok(tiktoks) : [];
-        for (const url of list) {
-          const info = isTikTokUrl(url) ? fastInfos[tiktoks.indexOf(url)] : null;
+        const fast = await fastLaneByIndex(list);
+        list.forEach((url, index) => {
+          const info = fast.get(index) ?? null;
           const job = info ? directJobFor(url, info, quality) : null;
           if (job) {
             direct.push(job);
           } else {
             slow.push(url);
           }
-        }
+        });
 
         // Primeiro o download DENTRO do painel: sem script, sem shell,
         // sem Terminal — e com os bytes na barra, porque é o painel que
@@ -1105,13 +1129,3 @@ function markup(): string {
   );
 }
 
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"]/g, (c) => {
-    switch (c) {
-      case "&": return "&amp;";
-      case "<": return "&lt;";
-      case ">": return "&gt;";
-      default: return "&quot;";
-    }
-  });
-}

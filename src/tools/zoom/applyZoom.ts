@@ -417,7 +417,10 @@ export async function applyZoom(options: ZoomOptions): Promise<ZoomResult> {
     let unreadableCount = 0;
     for (const item of readyScaleItems) {
       try {
-        const kfTimes = item.scaleParam.getKeyframeListAsTickTimes();
+        // O typings diz síncrono; o host devolve Promise. Sem o await,
+        // Array.isArray(promessa) dava zero em TODO clipe e a
+        // verificação desfazia um zoom que tinha funcionado.
+        const kfTimes = await Promise.resolve(item.scaleParam.getKeyframeListAsTickTimes());
         const count = Array.isArray(kfTimes) ? kfTimes.length : 0;
         console.log(`[Zoom] Scale keyframe count after commit: ${count}`);
         if (count >= 2) {
@@ -578,7 +581,9 @@ async function findScaleParamWithDiag(
 ): Promise<ComponentParam | null> {
   let count = 0;
   try {
-    count = component.getParamCount();
+    // Mesmo caso do typings-vs-host: sem await, `index < promessa`
+    // nunca é verdadeiro e o laço não roda — nenhum Scale é achado.
+    count = Number(await Promise.resolve(component.getParamCount())) || 0;
   } catch {
     console.error("[Zoom] getParamCount() threw on Transform component");
     return null;
@@ -589,7 +594,7 @@ async function findScaleParamWithDiag(
 
   for (let index = 0; index < count; index++) {
     try {
-      const param = component.getParam(index);
+      const param = await Promise.resolve(component.getParam(index));
       const name = safeDisplayName(param);
       let kf: boolean | string = "?";
       try {

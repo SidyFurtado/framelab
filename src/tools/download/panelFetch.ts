@@ -95,6 +95,9 @@ function fileUrl(nativePathValue: string): string {
   return (
     "file://" +
     nativePathValue
+      // Barra invertida vira barra antes de tudo: um caminho Windows
+      // era codificado como segmento único e nunca resolvia.
+      .replace(/\\/g, "/")
       .split("/")
       .map((part) => encodeURIComponent(part))
       .join("/")
@@ -135,12 +138,13 @@ async function destinationFolder(
     } catch {
       // O último nível pode não existir ainda.
     }
-    const cut = destination.replace(/\/+$/, "").lastIndexOf("/");
+    const normalized = destination.replace(/\\/g, "/").replace(/\/+$/, "");
+    const cut = normalized.lastIndexOf("/");
     if (cut <= 0) {
       throw new Error("sem pasta-mãe");
     }
-    const parent = await api.lfs.getEntryWithUrl(fileUrl(destination.slice(0, cut)));
-    const leaf = destination.slice(cut + 1);
+    const parent = await api.lfs.getEntryWithUrl(fileUrl(normalized.slice(0, cut)));
+    const leaf = normalized.slice(cut + 1);
     try {
       const folder = await parent.createFolder(leaf);
       return { folder, binary: api.binary };

@@ -13,7 +13,7 @@
  * hands in a renderer, and the picker gives it a slot — except while a
  * curve is being drawn, when the editor takes the slot instead.
  */
-import { CONTROL } from "../shell/controls";
+import { CONTROL, escapeHtml } from "../shell/controls";
 import { mountCurveEditor, type CurveEditorHandle } from "./curveEditor";
 import {
   CURVES,
@@ -229,13 +229,3 @@ function markup(curveId: string): string {
   );
 }
 
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"]/g, (character) => {
-    switch (character) {
-      case "&": return "&amp;";
-      case "<": return "&lt;";
-      case ">": return "&gt;";
-      default: return "&quot;";
-    }
-  });
-}

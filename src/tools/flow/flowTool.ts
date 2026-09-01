@@ -1,5 +1,5 @@
 import type { Tool, ToolContext } from "../../shell/tool";
-import { CONTROL } from "../../shell/controls";
+import { CONTROL, escapeHtml } from "../../shell/controls";
 import {
   applyCurve,
   clearToLinear,
@@ -351,13 +351,3 @@ function shellMarkup(density: number): string {
   );
 }
 
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"]/g, (character) => {
-    switch (character) {
-      case "&": return "&amp;";
-      case "<": return "&lt;";
-      case ">": return "&gt;";
-      default: return "&quot;";
-    }
-  });
-}

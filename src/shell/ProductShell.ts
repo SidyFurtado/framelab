@@ -12,8 +12,7 @@ import {
   CONTROL,
   createControl,
   isDisabled,
-  setDisabled,
-} from "./controls";
+  setDisabled, escapeHtml } from "./controls";
 import {
   checkHostCapabilities,
   readSelection,
@@ -23,7 +22,7 @@ import { PluginUpdater, type VersionManifest } from "./updater";
 
 const PRODUCT_NAME = "Framelab";
 const PRODUCT_TAGLINE = "Premiere";
-const VERSION = "0.2.1";
+const VERSION = "0.2.2";
 
 /**
  * Product Shell: top bar, navigator, active Tool workspace, action bar
@@ -212,8 +211,11 @@ export class ProductShell {
     }
     const badge = document.createElement("button");
     badge.className = "update-badge";
-    badge.title = `Nova versão v${version} disponível! Clique para atualizar.`;
-    badge.innerHTML = `<span class="update-dot"></span><span>Atualizar (v${version})</span>`;
+    // A versão vem da rede; entra no DOM como o resto do painel entra —
+    // escapada. O modal já fazia isso, o selo não.
+    const safe = escapeHtml(version);
+    badge.title = `Nova versão v${safe} disponível! Clique para atualizar.`;
+    badge.innerHTML = `<span class="update-dot"></span><span>Atualizar (v${safe})</span>`;
     badge.addEventListener("click", () => this.showUpdateModal());
     this.topbarEl.append(badge);
     this.updateBadgeEl = badge;
@@ -427,6 +429,14 @@ export class ProductShell {
   private selectTool(toolId: string): void {
     const tool = findTool(toolId);
     if (!tool || this.activeToolId === toolId) {
+      return;
+    }
+    // O contrato de tool.ts: available:false aparece no navegador mas
+    // não ganha o workspace. Sem esta guarda, uma Tool marcada
+    // indisponível montava e falhava no meio do Apply — exatamente o
+    // que a marca existe para impedir.
+    if (tool.available === false) {
+      this.setStatus(`${tool.name} não está disponível nesta versão do Premiere.`, "error");
       return;
     }
 
@@ -723,13 +733,3 @@ function refreshGlyph(): string {
   );
 }
 
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"]/g, (character) => {
-    switch (character) {
-      case "&": return "&amp;";
-      case "<": return "&lt;";
-      case ">": return "&gt;";
-      default: return "&quot;";
-    }
-  });
-}

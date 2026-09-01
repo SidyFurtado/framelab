@@ -7,7 +7,7 @@
  * plano inteiro na hora sem tocar no host nem chamar o ffmpeg de novo.
  */
 import type { Tool, ToolContext } from "../../shell/tool";
-import { CONTROL } from "../../shell/controls";
+import { CONTROL, escapeHtml } from "../../shell/controls";
 import {
   applyCuts,
   recomputePlans,
@@ -306,8 +306,12 @@ export const silenceTool: Tool = {
 
       try {
         showManual(null, "");
-        scan = await scanSelection(params, {
-          mode,
+        // O modo pode mudar enquanto a extração roda por minutos; um
+        // resultado do modo antigo entrando em `scan` faria o painel
+        // mostrar controles de um modo e cortar pelo outro.
+        const modeAtStart = mode;
+        const result = await scanSelection(params, {
+          mode: modeAtStart,
           ffmpegPath,
           onStage: (text) => context.setStatus(text),
           onProgress: (done, total) =>
@@ -321,6 +325,10 @@ export const silenceTool: Tool = {
             );
           },
         });
+        if (mode !== modeAtStart) {
+          return;
+        }
+        scan = result;
         showManual(null, "");
         renderReport();
         context.setApplyEnabled(scan.readyCount > 0);
@@ -423,6 +431,11 @@ export const silenceTool: Tool = {
         if (emptyEl) {
           emptyEl.hidden = true;
         }
+      } else if (scan && scan.readyCount > 0 && !result.snapshot) {
+        // O host recusou e nada foi escrito: o plano continua válido,
+        // e um botão morto sobre um plano válido obriga a re-analisar
+        // à toa.
+        context.setApplyEnabled(true);
       }
       context.refreshSelection();
     });
@@ -765,18 +778,4 @@ function doneMarkup(message: string): string {
   );
 }
 
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"]/g, (character) => {
-    switch (character) {
-      case "&":
-        return "&amp;";
-      case "<":
-        return "&lt;";
-      case ">":
-        return "&gt;";
-      default:
-        return "&quot;";
-    }
-  });
-}
 

@@ -199,7 +199,11 @@ export async function readAnimatedParams(): Promise<ScanResult> {
           const keyTicks = times.map((time) => time.ticks);
           const key = `${clipKey}:${ci}:${pi}`;
           found.push({
-            id: `${clipIndex}:${ci}:${pi}`,
+            // A MESMA identidade do registro de bake: presa ao clipe,
+            // não à posição na varredura. O id posicional colidia
+            // entre varreduras de clipes diferentes — "0:0:1" do clipe
+            // B herdava a desseleção feita no "0:0:1" do clipe A.
+            id: key,
             clipKey,
             key,
             label: `${componentName} › ${safeDisplayName(param) || `Param ${pi}`}`,
@@ -729,7 +733,16 @@ async function planSegment(
   }
 
   const add: BakedKey[] = [];
-  const used = new Set<string>([startTicks, endTicks]);
+  // Os âncoras entram na cerca já NO GRID: todo tick assado é snapado
+  // antes de comparar, e um âncora fora do grid (efeito alheio, fps
+  // fracionário) tinha string diferente do assado que cai no mesmo
+  // frame — dois keyframes num frame, valor no cara-ou-coroa.
+  const used = new Set<string>([
+    startTicks,
+    endTicks,
+    snapTicksToFrame(startTicks, build.ticksPerFrame),
+    snapTicksToFrame(endTicks, build.ticksPerFrame),
+  ]);
 
   for (let step = 1; step <= steps; step++) {
     const t = step / (steps + 1);

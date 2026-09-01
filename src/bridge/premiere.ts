@@ -103,26 +103,43 @@ export async function readSelection(): Promise<SelectionSummary> {
       }
 
       const items = track.getTrackItems(ppro.Constants.TrackItemType.CLIP, false);
+
+      /*
+       * As três leituras de cada item são independentes entre si e
+       * entre itens — em paralelo, a faixa inteira custa uma rodada de
+       * ida-e-volta em vez de três POR item em série. Esta função roda
+       * na abertura do painel e a cada foco de janela: numa sequência
+       * longa, era ela que segurava a strip por segundos.
+       */
+      const reads = await Promise.all(
+        items.map(async (item) => {
+          // TickTime is a callable type in the typings, so it is never
+          // truthiness-checked — read the seconds and validate the number.
+          const [start, end, isSelected] = await Promise.all([
+            item.getStartTime(),
+            item.getEndTime(),
+            item.getIsSelected(),
+          ]);
+          return { startSeconds: start.seconds, endSeconds: end.seconds, isSelected };
+        })
+      );
+
       const clips: SelectionClip[] = [];
       let selected = 0;
-
-      for (const item of items) {
-        // TickTime is a callable type in the typings, so it is never
-        // truthiness-checked — read the seconds and validate the number.
-        const start = await item.getStartTime();
-        const end = await item.getEndTime();
-        const startSeconds = start.seconds;
-        const endSeconds = end.seconds;
-        if (!(endSeconds > startSeconds)) {
+      for (const read of reads) {
+        if (!(read.endSeconds > read.startSeconds)) {
           continue;
         }
-        const isSelected = await item.getIsSelected();
-        if (isSelected) {
+        if (read.isSelected) {
           selected += 1;
           totalSelected += 1;
-          totalSeconds += endSeconds - startSeconds;
+          totalSeconds += read.endSeconds - read.startSeconds;
         }
-        clips.push({ startSeconds, endSeconds, selected: isSelected });
+        clips.push({
+          startSeconds: read.startSeconds,
+          endSeconds: read.endSeconds,
+          selected: read.isSelected,
+        });
       }
 
       if (selected > bestSelected) {

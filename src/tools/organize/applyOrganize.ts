@@ -666,55 +666,59 @@ async function detectNestedSequenceIds(
   project: Project
 ): Promise<Set<string>> {
   const nestedIds = new Set<string>();
+  /*
+   * O veredito "é sequência?" depende só do project item, mas a
+   * varredura pergunta por OCORRÊNCIA na timeline: cinco sequências de
+   * trezentos clipes eram milhares de idas ao host para responder
+   * sobre poucas dezenas de itens distintos. O memo derruba para uma
+   * pergunta por item. E as faixas de vídeo e de áudio passam pelo
+   * MESMO laço — eram dois blocos idênticos convidando a divergir.
+   */
+  const verdicts = new Map<string, boolean>();
+
+  const scanTrack = async (track: {
+    getTrackItems(kind: unknown, all: boolean): unknown;
+  } | null): Promise<void> => {
+    if (!track) return;
+    const items = track.getTrackItems(
+      ppro.Constants.TrackItemType.CLIP,
+      false
+    ) as Array<{ getProjectItem(): Promise<ProjectItem | null> }>;
+    for (const ti of items) {
+      try {
+        const pi = await ti.getProjectItem();
+        if (!pi) continue;
+        const id = pi.getId();
+        let isSub = verdicts.get(id);
+        if (isSub === undefined) {
+          const clip = ppro.ClipProjectItem.cast(pi);
+          isSub = await clip.isSequence();
+          verdicts.set(id, isSub);
+        }
+        if (isSub) {
+          nestedIds.add(id);
+        }
+      } catch {
+        // not a sequence clip
+      }
+    }
+  };
 
   try {
     const sequences = await project.getSequences();
-
     for (const seq of sequences) {
-      // Check video tracks
       const videoTrackCount = await seq.getVideoTrackCount();
       for (let t = 0; t < videoTrackCount; t++) {
-        const track = await seq.getVideoTrack(t);
-        if (!track) continue;
-        const items = track.getTrackItems(ppro.Constants.TrackItemType.CLIP, false);
-        for (const ti of items) {
-          try {
-            const pi = await ti.getProjectItem();
-            if (!pi) continue;
-            const clip = ppro.ClipProjectItem.cast(pi);
-            const isSub = await clip.isSequence();
-            if (isSub) {
-              nestedIds.add(pi.getId());
-            }
-          } catch {
-            // not a sequence clip
-          }
-        }
+        await scanTrack(await seq.getVideoTrack(t));
       }
-
-      // Check audio tracks
       const audioTrackCount = await seq.getAudioTrackCount();
       for (let t = 0; t < audioTrackCount; t++) {
-        const track = await seq.getAudioTrack(t);
-        if (!track) continue;
-        const items = track.getTrackItems(ppro.Constants.TrackItemType.CLIP, false);
-        for (const ti of items) {
-          try {
-            const pi = await ti.getProjectItem();
-            if (!pi) continue;
-            const clip = ppro.ClipProjectItem.cast(pi);
-            const isSub = await clip.isSequence();
-            if (isSub) {
-              nestedIds.add(pi.getId());
-            }
-          } catch {
-            // not a sequence clip
-          }
-        }
+        await scanTrack(await seq.getAudioTrack(t));
       }
     }
   } catch {
-    // getSequences error
+    // Host não respondeu; sem lista de nested, a classificação por
+    // item assume.
   }
 
   return nestedIds;

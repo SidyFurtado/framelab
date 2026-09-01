@@ -558,7 +558,17 @@ async function describePair(
  * segundo clipe do mesmo arquivo, não chama o ffmpeg de novo — e
  * chamar o ffmpeg é a única parte cara de tudo isto.
  */
-const envelopeCache = new Map<string, Envelope>();
+const envelopeCache = new Map<string, { envelope: Envelope; at: number }>();
+
+/**
+ * Validade de uma curva.
+ *
+ * A chave é só caminho+trecho: um arquivo re-exportado NO MESMO
+ * caminho serviria a onda antiga pela sessão inteira, e os cortes
+ * cairiam onde os silêncios ESTAVAM. Dez minutos limitam o estrago ao
+ * intervalo em que ninguém re-exporta sem re-analisar.
+ */
+const ENVELOPE_TTL_MS = 10 * 60 * 1000;
 
 /**
  * Teto do cache.
@@ -572,18 +582,19 @@ const ENVELOPE_CACHE_MAX = 24;
 /** Folga antes e depois do trecho usado, para o limiar ter contexto. */
 const PREROLL_SECONDS = 0.5;
 
-export function clearEnvelopeCache(): void {
-  envelopeCache.clear();
-}
-
 /** Lookup that also refreshes recency, so the cap evicts the coldest. */
 function cachedEnvelope(key: string): Envelope | undefined {
   const found = envelopeCache.get(key);
-  if (found) {
-    envelopeCache.delete(key);
-    envelopeCache.set(key, found);
+  if (!found) {
+    return undefined;
   }
-  return found;
+  if (Date.now() - found.at > ENVELOPE_TTL_MS) {
+    envelopeCache.delete(key);
+    return undefined;
+  }
+  envelopeCache.delete(key);
+  envelopeCache.set(key, found);
+  return found.envelope;
 }
 
 function cacheEnvelope(key: string, envelope: Envelope): void {
@@ -595,7 +606,7 @@ function cacheEnvelope(key: string, envelope: Envelope): void {
     }
     envelopeCache.delete(coldest);
   }
-  envelopeCache.set(key, envelope);
+  envelopeCache.set(key, { envelope, at: Date.now() });
 }
 
 /**
@@ -638,6 +649,7 @@ async function attachEnvelopes(
 
   const jobs: AudioJob[] = [];
   const pending: MediaNeed[] = [];
+  const runTag = Date.now().toString(36);
   let index = 0;
   for (const need of needs.values()) {
     const cached = cachedEnvelope(cacheKey(need.mediaPath, need.from, need.to));
@@ -650,7 +662,10 @@ async function attachEnvelopes(
       mediaPath: need.mediaPath,
       offsetSeconds: need.from,
       durationSeconds: Math.max(0.1, need.to - need.from),
-      file: `audio-${index}.pcm`,
+      // O carimbo isola execuções: cancelar deixa um script órfão
+      // terminando de escrever, e sem nomes próprios a varredura
+      // seguinte lia o PCM DELE como se fosse o dela.
+      file: `audio-${runTag}-${index}.pcm`,
     });
     pending.push(need);
   }

@@ -398,3 +398,29 @@ export async function remove(space: Workspace, name: string): Promise<void> {
 export function describe(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
+
+// ── utilitários de script, compartilhados ──────────────────────────
+// Moram aqui porque todo gerador de script já importa deste módulo, e
+// escape de shell é código de segurança: duas cópias são dois lugares
+// para uma correção não chegar.
+
+/**
+ * Aspas simples de shell POSIX. Um apóstrofo sem escape transforma um
+ * caminho em comando; toda string que entra num script passa por aqui.
+ */
+export function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Um valor seguro dentro de `set "NOME=…"` num .bat. A aspa é removida
+ * (o cmd não tem escape para ela dentro de um set entre aspas) e o
+ * porcento é dobrado, que é como um .bat escreve um porcento literal.
+ */
+export function batValue(value: string): string {
+  return value.replace(/[\r\n"]/g, "").replace(/%/g, "%%");
+}
+
+export function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}

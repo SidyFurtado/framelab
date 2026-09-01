@@ -7,7 +7,7 @@
  * and the Reset button undoes it.
  */
 import type { Tool, ToolContext } from "../../shell/tool";
-import { CONTROL } from "../../shell/controls";
+import { CONTROL, escapeHtml } from "../../shell/controls";
 import {
   scanProject,
   organizeProject,
@@ -43,6 +43,7 @@ export const organizeTool: Tool = {
   category: "projeto",
   glyph: "folder",
   available: true,
+  usesSelection: false,
 
   mount(container: HTMLElement, context: ToolContext): void {
     let scan: ScanResult | null = null;
@@ -311,13 +312,3 @@ function organizedMarkup(count: number): string {
   );
 }
 
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"]/g, (c) => {
-    switch (c) {
-      case "&": return "&amp;";
-      case "<": return "&lt;";
-      case ">": return "&gt;";
-      default: return "&quot;";
-    }
-  });
-}

@@ -114,6 +114,24 @@ function readSegments(data: Record<string, unknown>): VoicedSpan[] | null {
       continue;
     }
 
+    /*
+     * O schema diz que o tempo da palavra é absoluto, mas parte dos
+     * exportadores escreve relativo ao segmento. A decisão é POR
+     * SEGMENTO, nunca por palavra: num segmento relativo começando em
+     * 10s, as palavras de 0–10s denunciam o formato, mas as de
+     * 10s em diante parecem absolutas — decidir palavra a palavra
+     * misturava as duas bases no mesmo segmento, os intervalos se
+     * sobrepunham e fala de verdade virava "silêncio" cortável.
+     */
+    const parsed: Array<{
+      start: number;
+      end: number;
+      filler: boolean;
+      confidence: number;
+      text: string | undefined;
+    }> = [];
+    let anyBeforeSegment = false;
+
     for (const raw of list) {
       if (!isRecord(raw)) {
         continue;
@@ -132,18 +150,26 @@ function readSegments(data: Record<string, unknown>): VoicedSpan[] | null {
       if (end === null) {
         continue;
       }
-
-      // O schema diz que o tempo da palavra é absoluto, mas parte dos
-      // exportadores escreve relativo ao segmento. Uma palavra que
-      // começa antes do próprio segmento denuncia isso.
-      const offset = start < segmentStart - 1e-3 ? segmentStart : 0;
-
-      out.push({
-        start: start + offset,
-        end: end + offset,
+      if (start < segmentStart - 1e-3) {
+        anyBeforeSegment = true;
+      }
+      parsed.push({
+        start,
+        end,
         filler: hasFillerTag(raw.tags),
         confidence: readConfidence(raw.confidence),
         text: readText(raw),
+      });
+    }
+
+    const offset = anyBeforeSegment ? segmentStart : 0;
+    for (const word of parsed) {
+      out.push({
+        start: word.start + offset,
+        end: word.end + offset,
+        filler: word.filler,
+        confidence: word.confidence,
+        text: word.text,
       });
     }
   }

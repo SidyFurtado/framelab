@@ -102,6 +102,13 @@ export function mountCurveEditor(
     svg.setAttribute("viewBox", `0 0 ${width.toFixed(1)} ${height.toFixed(1)}`);
   }
 
+  // Resolvidos uma vez, como grips e tethers: render roda a cada
+  // mousemove do arrasto, e três querySelector por evento de ponteiro
+  // eram custo puro sobre elementos que nunca mudam.
+  const floorLine = container.querySelector(".ce-floor");
+  const ceilingLine = container.querySelector(".ce-ceiling");
+  const linearLine = container.querySelector(".ce-linear");
+
   function render(): void {
     const start = project(box, 0, 0);
     const end = project(box, 1, 1);
@@ -110,10 +117,10 @@ export function mountCurveEditor(
     const floor = start.y.toFixed(1);
     const ceiling = end.y.toFixed(1);
 
-    setAttr(container.querySelector(".ce-floor"), "d", `M${left},${floor} L${right},${floor}`);
-    setAttr(container.querySelector(".ce-ceiling"), "d", `M${left},${ceiling} L${right},${ceiling}`);
+    setAttr(floorLine, "d", `M${left},${floor} L${right},${floor}`);
+    setAttr(ceilingLine, "d", `M${left},${ceiling} L${right},${ceiling}`);
     setAttr(
-      container.querySelector(".ce-linear"),
+      linearLine,
       "d",
       `M${start.x.toFixed(1)},${start.y.toFixed(1)} L${end.x.toFixed(1)},${end.y.toFixed(1)}`
     );

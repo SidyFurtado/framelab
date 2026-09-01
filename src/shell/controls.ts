@@ -54,3 +54,25 @@ export function bindKeyboard(root: HTMLElement): void {
     control.click();
   });
 }
+
+/**
+ * O escapador de HTML do painel inteiro.
+ *
+ * Vivia copiado em sete arquivos, e sete cópias de código de escape
+ * são sete lugares para uma correção não chegar. Todo texto vindo do
+ * host — nome de clipe, título de vídeo, caminho — passa por aqui
+ * antes de entrar em innerHTML. A aspa simples entra no conjunto
+ * porque atributo com aspas simples existe e a cópia que não escapava
+ * era exatamente o buraco.
+ */
+export function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (c) => {
+    switch (c) {
+      case "&": return "&amp;";
+      case "<": return "&lt;";
+      case ">": return "&gt;";
+      case '"': return "&quot;";
+      default: return "&#39;";
+    }
+  });
+}

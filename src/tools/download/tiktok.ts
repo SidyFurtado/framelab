@@ -41,7 +41,11 @@ export interface TikTokFast {
 }
 
 export function isTikTokUrl(url: string): boolean {
-  return /(^|\.)tiktok\.com\//i.test(url.replace(/^https?:\/\//i, ""));
+  // O teste olha só o HOST. Uma substring na URL inteira mandava para
+  // a via rápida qualquer link que citasse tiktok.com na query — um
+  // wrapper de compartilhamento, por exemplo.
+  const host = url.replace(/^https?:\/\//i, "").split(/[/?#]/, 1)[0];
+  return /(^|\.)tiktok\.com$/i.test(host);
 }
 
 /** Consulta um link. null = use o yt-dlp; nunca lança. */

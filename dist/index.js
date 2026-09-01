@@ -46,23 +46,32 @@
           continue;
         }
         const items = track.getTrackItems(ppro.Constants.TrackItemType.CLIP, false);
+        const reads = await Promise.all(
+          items.map(async (item) => {
+            const [start, end, isSelected] = await Promise.all([
+              item.getStartTime(),
+              item.getEndTime(),
+              item.getIsSelected()
+            ]);
+            return { startSeconds: start.seconds, endSeconds: end.seconds, isSelected };
+          })
+        );
         const clips = [];
         let selected = 0;
-        for (const item of items) {
-          const start = await item.getStartTime();
-          const end = await item.getEndTime();
-          const startSeconds = start.seconds;
-          const endSeconds = end.seconds;
-          if (!(endSeconds > startSeconds)) {
+        for (const read of reads) {
+          if (!(read.endSeconds > read.startSeconds)) {
             continue;
           }
-          const isSelected = await item.getIsSelected();
-          if (isSelected) {
+          if (read.isSelected) {
             selected += 1;
             totalSelected += 1;
-            totalSeconds += endSeconds - startSeconds;
+            totalSeconds += read.endSeconds - read.startSeconds;
           }
-          clips.push({ startSeconds, endSeconds, selected: isSelected });
+          clips.push({
+            startSeconds: read.startSeconds,
+            endSeconds: read.endSeconds,
+            selected: read.isSelected
+          });
         }
         if (selected > bestSelected) {
           best = clips;
@@ -435,7 +444,7 @@
       let unreadableCount = 0;
       for (const item of readyScaleItems) {
         try {
-          const kfTimes = item.scaleParam.getKeyframeListAsTickTimes();
+          const kfTimes = await Promise.resolve(item.scaleParam.getKeyframeListAsTickTimes());
           const count = Array.isArray(kfTimes) ? kfTimes.length : 0;
           console.log(`[Zoom] Scale keyframe count after commit: ${count}`);
           if (count >= 2) {
@@ -547,7 +556,7 @@
   async function findScaleParamWithDiag(component) {
     let count = 0;
     try {
-      count = component.getParamCount();
+      count = Number(await Promise.resolve(component.getParamCount())) || 0;
     } catch {
       console.error("[Zoom] getParamCount() threw on Transform component");
       return null;
@@ -556,7 +565,7 @@
     const rows = [];
     for (let index = 0; index < count; index++) {
       try {
-        const param = component.getParam(index);
+        const param = await Promise.resolve(component.getParam(index));
         const name = safeDisplayName$1(param);
         let kf = "?";
         try {
@@ -699,6 +708,22 @@
       }
       event.preventDefault();
       control.click();
+    });
+  }
+  function escapeHtml(value) {
+    return value.replace(/[&<>"']/g, (c) => {
+      switch (c) {
+        case "&":
+          return "&amp;";
+        case "<":
+          return "&lt;";
+        case ">":
+          return "&gt;";
+        case '"':
+          return "&quot;";
+        default:
+          return "&#39;";
+      }
     });
   }
   const cubicBezier = (p1x, p1y, p2x, p2y) => {
@@ -902,6 +927,9 @@
       box = curveBox(width, height, PAD_X, PAD_Y);
       svg.setAttribute("viewBox", `0 0 ${width.toFixed(1)} ${height.toFixed(1)}`);
     }
+    const floorLine = container.querySelector(".ce-floor");
+    const ceilingLine = container.querySelector(".ce-ceiling");
+    const linearLine = container.querySelector(".ce-linear");
     function render() {
       const start = project(box, 0, 0);
       const end = project(box, 1, 1);
@@ -909,10 +937,10 @@
       const right = (box.width - box.padX).toFixed(1);
       const floor = start.y.toFixed(1);
       const ceiling = end.y.toFixed(1);
-      setAttr(container.querySelector(".ce-floor"), "d", `M${left},${floor} L${right},${floor}`);
-      setAttr(container.querySelector(".ce-ceiling"), "d", `M${left},${ceiling} L${right},${ceiling}`);
+      setAttr(floorLine, "d", `M${left},${floor} L${right},${floor}`);
+      setAttr(ceilingLine, "d", `M${left},${ceiling} L${right},${ceiling}`);
       setAttr(
-        container.querySelector(".ce-linear"),
+        linearLine,
         "d",
         `M${start.x.toFixed(1)},${start.y.toFixed(1)} L${end.x.toFixed(1)},${end.y.toFixed(1)}`
       );
@@ -1155,7 +1183,7 @@
     slot.innerHTML = `<svg viewBox="0 0 ${PREVIEW_WIDTH$1} ${PREVIEW_HEIGHT$1}" preserveAspectRatio="none" aria-hidden="true"><path class="preview-grid" d="M0,${PREVIEW_HEIGHT$1 - 8} L${PREVIEW_WIDTH$1},${PREVIEW_HEIGHT$1 - 8}"/><path class="preview-curve" d="${curvePath(curve, PREVIEW_WIDTH$1, PREVIEW_HEIGHT$1, 8)}"/></svg>`;
   }
   function markup$4(curveId) {
-    const cell2 = (curve, perRow) => `<div class="curve-cell" ${CONTROL} data-curve="${curve.id}" style="width:${(100 / perRow).toFixed(3)}%" aria-pressed="${curve.id === curveId}" title="${escapeHtml$6(curve.name)}"><svg viewBox="0 0 60 34" preserveAspectRatio="none" aria-hidden="true"><path class="curve-track" d="M4,30 L56,30"/><path class="curve-line" d="${curvePath(curve, 60, 34, 4)}"/></svg><span class="curve-cell-name">${escapeHtml$6(curve.name)}</span></div>`;
+    const cell2 = (curve, perRow) => `<div class="curve-cell" ${CONTROL} data-curve="${curve.id}" style="width:${(100 / perRow).toFixed(3)}%" aria-pressed="${curve.id === curveId}" title="${escapeHtml(curve.name)}"><svg viewBox="0 0 60 34" preserveAspectRatio="none" aria-hidden="true"><path class="curve-track" d="M4,30 L56,30"/><path class="curve-line" d="${curvePath(curve, 60, 34, 4)}"/></svg><span class="curve-cell-name">${escapeHtml(curve.name)}</span></div>`;
     const rows = [];
     for (let index = 0; index < CURVES.length; index += 3) {
       const row = CURVES.slice(index, index + 3);
@@ -1164,20 +1192,6 @@
       );
     }
     return `<div class="field-head"><span class="t-label">Curva</span><span class="curve-tag" data-curve-name></span></div><div class="curve-grid">${rows.join("")}</div><div class="curve-draw" ${CONTROL} data-curve="${CUSTOM_CURVE}" aria-pressed="${curveId === CUSTOM_CURVE}"><span class="curve-draw-mark"></span><span class="curve-draw-name">Desenhar a minha</span></div><div class="preview"><div class="preview-canvas" data-curve-slot></div><div class="preview-meta" data-curve-meta></div></div>`;
-  }
-  function escapeHtml$6(value) {
-    return value.replace(/[&<>"]/g, (character) => {
-      switch (character) {
-        case "&":
-          return "&amp;";
-        case "<":
-          return "&lt;";
-        case ">":
-          return "&gt;";
-        default:
-          return "&quot;";
-      }
-    });
   }
   let livePicker$1 = null;
   const PREVIEW_WIDTH = 220;
@@ -1442,7 +1456,11 @@
             const keyTicks = times.map((time) => time.ticks);
             const key = `${clipKey}:${ci}:${pi}`;
             found.push({
-              id: `${clipIndex}:${ci}:${pi}`,
+              // A MESMA identidade do registro de bake: presa ao clipe,
+              // não à posição na varredura. O id posicional colidia
+              // entre varreduras de clipes diferentes — "0:0:1" do clipe
+              // B herdava a desseleção feita no "0:0:1" do clipe A.
+              id: key,
               clipKey,
               key,
               label: `${componentName} › ${safeDisplayName(param) || `Param ${pi}`}`,
@@ -1794,7 +1812,12 @@
       return null;
     }
     const add = [];
-    const used = /* @__PURE__ */ new Set([startTicks, endTicks]);
+    const used = /* @__PURE__ */ new Set([
+      startTicks,
+      endTicks,
+      snapTicksToFrame(startTicks, build.ticksPerFrame),
+      snapTicksToFrame(endTicks, build.ticksPerFrame)
+    ]);
     for (let step2 = 1; step2 <= steps; step2++) {
       const t = step2 / (steps + 1);
       const seconds = startSeconds + (endSeconds - startSeconds) * t;
@@ -2175,7 +2198,7 @@
     if (!report) {
       return "";
     }
-    const rows = report.lines.map((line) => `<li>${escapeHtml$5(line)}</li>`).join("");
+    const rows = report.lines.map((line) => `<li>${escapeHtml(line)}</li>`).join("");
     return `<div class="scan"><span class="t-label">Varredura · ${report.clips} clipe(s)</span>` + (rows ? `<ul class="scan-list">${rows}</ul>` : "") + "</div>";
   }
   function paramMarkup(param, segment) {
@@ -2189,27 +2212,13 @@
         `<span class="kf-span${on ? " is-on" : ""}" ${CONTROL} data-param="${param.id}" data-segment="${index}" title="Trecho ${index + 1}"></span>`
       );
     }
-    return `<div class="kf-row${chosen ? " is-chosen" : ""}" ${CONTROL} data-param="${param.id}"><div class="kf-head"><span class="kf-name">${escapeHtml$5(param.label)}</span><span class="kf-count">${count} kf${baked > 0 ? ` +${baked}` : ""}</span></div><div class="kf-strip">${cells.join("")}</div></div>`;
+    return `<div class="kf-row${chosen ? " is-chosen" : ""}" ${CONTROL} data-param="${param.id}"><div class="kf-head"><span class="kf-name">${escapeHtml(param.label)}</span><span class="kf-count">${count} kf${baked > 0 ? ` +${baked}` : ""}</span></div><div class="kf-strip">${cells.join("")}</div></div>`;
   }
   function shellMarkup(density) {
     const presets = DENSITY_PRESETS.map(
       (preset) => `<div class="preset-pill${preset === density ? " is-active" : ""}" ${CONTROL} data-density-preset="${preset}">${preset}</div>`
     ).join("");
     return `<div class="zones"><div class="zone"><div class="field"><div class="field-head"><span class="t-label">Parâmetros animados</span><div class="field-action" ${CONTROL} data-rescan title="Reler os keyframes do clipe selecionado">Reler</div></div><div class="kf-list" data-param-list></div></div><div class="field"><div class="field-head"><span class="t-label">Densidade da assadura</span><span class="field-val" data-out-density>${density} kf</span></div><div class="preset-rail">${presets}</div><input type="range" min="${DENSITY_MIN}" max="${DENSITY_MAX}" step="1" value="${density}" data-density aria-label="Densidade"><p class="field-note">Cada keyframe assado é um keyframe que você não retima mais. Use Linear para desfazer e reajustar o tempo.</p></div></div><div class="zone" data-curve-zone></div></div>`;
-  }
-  function escapeHtml$5(value) {
-    return value.replace(/[&<>"]/g, (character) => {
-      switch (character) {
-        case "&":
-          return "&amp;";
-        case "<":
-          return "&lt;";
-        case ">":
-          return "&gt;";
-        default:
-          return "&quot;";
-      }
-    });
   }
   const MIN_REMOVAL_SECONDS$1 = 0.06;
   function planSegments(voiced, range, params, frameSeconds) {
@@ -2427,6 +2436,8 @@
       if (!Array.isArray(list)) {
         continue;
       }
+      const parsed = [];
+      let anyBeforeSegment = false;
       for (const raw of list) {
         if (!isRecord(raw)) {
           continue;
@@ -2442,13 +2453,25 @@
         if (end === null) {
           continue;
         }
-        const offset = start < segmentStart - 1e-3 ? segmentStart : 0;
-        out.push({
-          start: start + offset,
-          end: end + offset,
+        if (start < segmentStart - 1e-3) {
+          anyBeforeSegment = true;
+        }
+        parsed.push({
+          start,
+          end,
           filler: hasFillerTag(raw.tags),
           confidence: readConfidence(raw.confidence),
           text: readText$1(raw)
+        });
+      }
+      const offset = anyBeforeSegment ? segmentStart : 0;
+      for (const word of parsed) {
+        out.push({
+          start: word.start + offset,
+          end: word.end + offset,
+          filler: word.filler,
+          confidence: word.confidence,
+          text: word.text
         });
       }
     }
@@ -2894,8 +2917,67 @@
   function describe(cause) {
     return cause instanceof Error ? cause.message : String(cause);
   }
+  function shellQuote(value) {
+    return `'${value.replace(/'/g, `'\\''`)}'`;
+  }
+  function batValue(value) {
+    return value.replace(/[\r\n"]/g, "").replace(/%/g, "%%");
+  }
+  function wait$1(ms) {
+    return new Promise((resolve2) => setTimeout(resolve2, ms));
+  }
+  const APP_DIR = "FramelabRunner.app";
+  const VBS_FILE = "run-quiet.vbs";
+  async function ensureSilentLauncher(scriptName2) {
+    const space = await workspace();
+    if (isWindows()) {
+      await write(space, VBS_FILE, vbsSource(space, scriptName2));
+      return { path: nativePath(space, VBS_FILE) };
+    }
+    await ensureDir(space, `${APP_DIR}/Contents/MacOS`);
+    await write(space, `${APP_DIR}/Contents/Info.plist`, infoPlist());
+    await write(space, `${APP_DIR}/Contents/PkgInfo`, "APPL????");
+    await write(space, `${APP_DIR}/Contents/MacOS/run`, runSource(scriptName2), true);
+    return { path: nativePath(space, APP_DIR) };
+  }
+  function runSource(scriptName2) {
+    return [
+      "#!/bin/bash",
+      "# Gerado pelo Framelab — roda o script de trabalho sem Terminal.",
+      'DIR="$(cd "$(dirname "$0")/../../.." && pwd)"',
+      `exec /bin/bash "$DIR/${scriptName2}" > /dev/null 2>&1`,
+      ""
+    ].join("\n");
+  }
+  function infoPlist() {
+    return [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+      '<plist version="1.0">',
+      "<dict>",
+      "  <key>CFBundleName</key><string>Framelab Runner</string>",
+      "  <key>CFBundleIdentifier</key><string>com.framelab.runner</string>",
+      "  <key>CFBundleExecutable</key><string>run</string>",
+      "  <key>CFBundlePackageType</key><string>APPL</string>",
+      "  <key>CFBundleShortVersionString</key><string>1.0</string>",
+      "  <key>LSUIElement</key><true/>",
+      "  <key>LSBackgroundOnly</key><true/>",
+      "</dict>",
+      "</plist>",
+      ""
+    ].join("\n");
+  }
+  function vbsSource(space, scriptName2) {
+    const script = nativePath(space, scriptName2).replace(/"/g, '""');
+    return [
+      "' Gerado pelo Framelab - roda o script de trabalho sem janela.",
+      `CreateObject("WScript.Shell").Run "cmd /c """ & "${script}" & """", 0, False`,
+      ""
+    ].join("\r\n");
+  }
   const RESULT_FILE$1 = "result.json";
   const PROGRESS_FILE$1 = "progress.txt";
+  const STARTED_FILE$1 = "sil-started.txt";
   const CONFIG_FILE$1 = "silence-config.json";
   const SCRIPT_FILE$1 = "extract.command";
   const SCRIPT_FILE_WIN$1 = "extract.bat";
@@ -2944,24 +3026,43 @@
     }
     const space = await step("pasta de trabalho", () => workspace());
     const scriptPath = nativePath(space, scriptName$1());
-    await remove(space, RESULT_FILE$1);
-    await remove(space, PROGRESS_FILE$1);
+    const tag = Date.now().toString(36);
+    const runResult = `sil-${tag}-result.json`;
+    const runProgress = `sil-${tag}-progress.txt`;
+    const runStarted = `sil-${tag}-started.txt`;
+    await remove(space, runResult);
+    await remove(space, runProgress);
+    await remove(space, runStarted);
     for (const job of jobs) {
       await remove(space, job.file);
     }
-    const script = isWindows() ? windowsScript(jobs, space.nativeBase, ffmpegPath) : unixScript(jobs, space.nativeBase, ffmpegPath);
+    const script = (isWindows() ? windowsScript(jobs, space.nativeBase, ffmpegPath) : unixScript(jobs, space.nativeBase, ffmpegPath)).split(RESULT_FILE$1).join(runResult).split(PROGRESS_FILE$1).join(runProgress).split(STARTED_FILE$1).join(runStarted);
     await step("escrever o script", () => write(space, scriptName$1(), script, true));
     let launchError = null;
+    let awaitingStamp = false;
     try {
+      const launcher = await ensureSilentLauncher(scriptName$1());
       await shell.openPath(
-        scriptPath,
+        launcher.path,
         "Extrair o áudio dos clipes selecionados com o ffmpeg, para detectar os silêncios pela onda."
       );
+      awaitingStamp = true;
     } catch (cause) {
-      launchError = describe(cause);
-      console.error("[Silêncios] openPath recusou:", cause);
-      onManual?.(scriptPath, launchError);
+      console.error("[Silêncios] runner silencioso recusado:", describe(cause));
     }
+    if (!awaitingStamp) {
+      try {
+        await shell.openPath(
+          scriptPath,
+          "Extrair o áudio dos clipes selecionados com o ffmpeg, para detectar os silêncios pela onda."
+        );
+      } catch (cause) {
+        launchError = describe(cause);
+        console.error("[Silêncios] openPath recusou:", cause);
+        onManual?.(scriptPath, launchError);
+      }
+    }
+    const stampDeadline = Date.now() + 8e3;
     const started = Date.now();
     const deadline = started + TIMEOUT_MS$1;
     let lastDone = -1;
@@ -2970,15 +3071,27 @@
       if (cancelled?.()) {
         return { ok: false, error: "cancelled", ffmpegPath: null, scriptPath };
       }
+      if (awaitingStamp && Date.now() > stampDeadline) {
+        awaitingStamp = false;
+        if (!readText(space, runStarted)) {
+          console.warn("[Silêncios] sem carimbo do runner — caindo para o Terminal.");
+          try {
+            await shell.openPath(scriptPath, "Extrair o áudio dos clipes selecionados.");
+          } catch (cause) {
+            launchError = describe(cause);
+            onManual?.(scriptPath, launchError);
+          }
+        }
+      }
       if (tick % 3 === 0) {
-        const done = readProgress$1(space);
+        const done = readProgress$1(space, runProgress);
         if (done !== null && done !== lastDone) {
           lastDone = done;
           onProgress?.(done, jobs.length);
         }
       }
       tick += 1;
-      const raw = readText(space, RESULT_FILE$1);
+      const raw = readText(space, runResult);
       if (raw) {
         try {
           const parsed = JSON.parse(raw);
@@ -2991,7 +3104,7 @@
         } catch {
         }
       }
-      await wait$2(
+      await wait$1(
         Date.now() - started < POLL_FAST_WINDOW_MS ? POLL_MS$1 : POLL_SLOW_MS
       );
     }
@@ -3010,16 +3123,13 @@
     const space = await workspace();
     await shell.openPath(space.nativeBase, "Abrir a pasta do script de extração.");
   }
-  function readProgress$1(space) {
-    const text2 = readText(space, PROGRESS_FILE$1);
+  function readProgress$1(space, name) {
+    const text2 = readText(space, name);
     if (!text2) {
       return null;
     }
     const parsed = Number.parseInt(text2.split("/")[0] ?? "", 10);
     return Number.isFinite(parsed) ? parsed : null;
-  }
-  function wait$2(ms) {
-    return new Promise((resolve2) => setTimeout(resolve2, ms));
   }
   const READ_CHUNK = 1 << 20;
   async function readEnvelope(fileName, offsetSeconds) {
@@ -3044,6 +3154,7 @@
       }
     } finally {
       await fs.close(fd).catch(() => void 0);
+      await remove(space, fileName);
     }
     return builder.finish();
   }
@@ -3112,7 +3223,7 @@
     const deadline = Date.now() + 2e4;
     let answer = null;
     while (Date.now() < deadline && !answer) {
-      await wait$2(POLL_MS$1);
+      await wait$1(POLL_MS$1);
       answer = readText(space, "probe.json");
     }
     if (!answer) {
@@ -3137,9 +3248,6 @@
     }
     return lines;
   }
-  function shellQuote(value) {
-    return `'${value.replace(/'/g, `'\\''`)}'`;
-  }
   function unixScript(jobs, folder, ffmpegPath) {
     const lines = [
       "#!/bin/bash",
@@ -3147,6 +3255,7 @@
       `printf '\\033]0;Framelab — analisando áudio\\007'`,
       "set -u",
       `WORK=${shellQuote(folder)}`,
+      `printf 1 > "$WORK/${STARTED_FILE$1}"`,
       `CUSTOM=${shellQuote(ffmpegPath)}`,
       "FFMPEG=''",
       // A ordem procura primeiro o que o editor escolheu, depois os
@@ -3193,17 +3302,15 @@
     );
     return lines.join("\n") + "\n";
   }
-  function batchValue(value) {
-    return value.replace(/[\r\n"]/g, "").replace(/%/g, "%%");
-  }
   function windowsScript(jobs, folder, ffmpegPath) {
-    const quote = (value) => `"${batchValue(value)}"`;
+    const quote = (value) => `"${batValue(value)}"`;
     const lines = [
       "@echo off",
       "rem Gerado pelo Framelab — Corte de Silêncios. Pode apagar.",
       `title Framelab - analisando audio`,
-      `set "WORK=${batchValue(folder)}"`,
-      `set "FFMPEG=${batchValue(ffmpegPath)}"`,
+      `set "WORK=${batValue(folder)}"`,
+      `>"%WORK%\\${STARTED_FILE$1}" echo 1`,
+      `set "FFMPEG=${batValue(ffmpegPath)}"`,
       'if "%FFMPEG%"=="" for %%i in (ffmpeg.exe) do @set "FFMPEG=%%~$PATH:i"',
       'if "%FFMPEG%"=="" (',
       `  >"%WORK%\\${RESULT_FILE$1}.tmp" echo {"ok":false,"error":"ffmpeg-not-found"}`,
@@ -3222,8 +3329,12 @@
       );
     });
     lines.push(
+      // Barra invertida crua dentro de JSON é escape inválido: o painel
+      // não conseguia ler um sucesso e esperava os 20 minutos inteiros.
+      // O cmd troca \ por / na expansão da variável.
+      'set "FFJSON=%FFMPEG:\\=/%"',
       'if "%FAILED%"=="0" (',
-      `  >"%WORK%\\${RESULT_FILE$1}.tmp" echo {"ok":true,"ffmpeg":"%FFMPEG%"}`,
+      `  >"%WORK%\\${RESULT_FILE$1}.tmp" echo {"ok":true,"ffmpeg":"%FFJSON%"}`,
       ") else (",
       `  >"%WORK%\\${RESULT_FILE$1}.tmp" echo {"ok":false,"error":"ffmpeg-failed"}`,
       ")",
@@ -3236,9 +3347,10 @@
     if (isWindows()) {
       return [
         "@echo off",
-        `set "FFMPEG=${batchValue(ffmpegPath)}"`,
+        `set "FFMPEG=${batValue(ffmpegPath)}"`,
         'if "%FFMPEG%"=="" for %%i in (ffmpeg.exe) do @set "FFMPEG=%%~$PATH:i"',
-        `>"${batchValue(folder)}\\probe.json" echo {"ffmpeg":"%FFMPEG%"}`,
+        'set "FFJSON=%FFMPEG:\\=/%"',
+        `>"${batValue(folder)}\\probe.json" echo {"ffmpeg":"%FFJSON%"}`,
         "exit /b 0"
       ].join("\r\n") + "\r\n";
     }
@@ -3536,15 +3648,21 @@
     }
   }
   const envelopeCache = /* @__PURE__ */ new Map();
+  const ENVELOPE_TTL_MS = 10 * 60 * 1e3;
   const ENVELOPE_CACHE_MAX = 24;
   const PREROLL_SECONDS = 0.5;
   function cachedEnvelope(key) {
     const found = envelopeCache.get(key);
-    if (found) {
-      envelopeCache.delete(key);
-      envelopeCache.set(key, found);
+    if (!found) {
+      return void 0;
     }
-    return found;
+    if (Date.now() - found.at > ENVELOPE_TTL_MS) {
+      envelopeCache.delete(key);
+      return void 0;
+    }
+    envelopeCache.delete(key);
+    envelopeCache.set(key, found);
+    return found.envelope;
   }
   function cacheEnvelope(key, envelope) {
     while (envelopeCache.size >= ENVELOPE_CACHE_MAX) {
@@ -3554,7 +3672,7 @@
       }
       envelopeCache.delete(coldest);
     }
-    envelopeCache.set(key, envelope);
+    envelopeCache.set(key, { envelope, at: Date.now() });
   }
   async function attachEnvelopes(clips, options) {
     const needs = /* @__PURE__ */ new Map();
@@ -3578,6 +3696,7 @@
     }
     const jobs = [];
     const pending = [];
+    const runTag = Date.now().toString(36);
     let index = 0;
     for (const need of needs.values()) {
       const cached2 = cachedEnvelope(cacheKey(need.mediaPath, need.from, need.to));
@@ -3590,7 +3709,10 @@
         mediaPath: need.mediaPath,
         offsetSeconds: need.from,
         durationSeconds: Math.max(0.1, need.to - need.from),
-        file: `audio-${index}.pcm`
+        // O carimbo isola execuções: cancelar deixa um script órfão
+        // terminando de escrever, e sem nomes próprios a varredura
+        // seguinte lia o PCM DELE como se fosse o dela.
+        file: `audio-${runTag}-${index}.pcm`
       });
       pending.push(need);
     }
@@ -4681,8 +4803,9 @@
         setScanBusy(true);
         try {
           showManual(null, "");
-          scan = await scanSelection(params, {
-            mode,
+          const modeAtStart = mode;
+          const result = await scanSelection(params, {
+            mode: modeAtStart,
             ffmpegPath,
             onStage: (text2) => context.setStatus(text2),
             onProgress: (done, total) => context.setStatus(`Extraindo áudio… ${done}/${total}`),
@@ -4695,6 +4818,10 @@
               );
             }
           });
+          if (mode !== modeAtStart) {
+            return;
+          }
+          scan = result;
           showManual(null, "");
           renderReport();
           context.setApplyEnabled(scan.readyCount > 0);
@@ -4721,7 +4848,7 @@
           manualEl.innerHTML = "";
           return;
         }
-        manualEl.innerHTML = '<p class="sil-warn"><b>Execução manual necessária:</b>' + (reason ? ` <span class="sil-manual-why">${escapeHtml$4(reason)}</span>` : "") + ` Dê duplo clique em <b>extract.command</b> na pasta de trabalho.</p><p class="sil-manual-path">${escapeHtml$4(scriptPath)}</p><div class="sil-scan-row"><div class="org-scan" ${CONTROL} data-open-folder>Abrir pasta</div></div>`;
+        manualEl.innerHTML = '<p class="sil-warn"><b>Execução manual necessária:</b>' + (reason ? ` <span class="sil-manual-why">${escapeHtml(reason)}</span>` : "") + ` Dê duplo clique em <b>extract.command</b> na pasta de trabalho.</p><p class="sil-manual-path">${escapeHtml(scriptPath)}</p><div class="sil-scan-row"><div class="org-scan" ${CONTROL} data-open-folder>Abrir pasta</div></div>`;
         manualEl.querySelector("[data-open-folder]")?.addEventListener("click", () => {
           void openWorkFolder$1().catch((cause) => {
             context.setStatus(
@@ -4748,7 +4875,7 @@
         void diagnose(ffmpegPath).then((lines) => {
           diagOut.innerHTML = renderDiagnostic(lines);
         }).catch((cause) => {
-          diagOut.innerHTML = '<p class="sil-diag-wait">' + escapeHtml$4(cause instanceof Error ? cause.message : String(cause)) + "</p>";
+          diagOut.innerHTML = '<p class="sil-diag-wait">' + escapeHtml(cause instanceof Error ? cause.message : String(cause)) + "</p>";
         }).then(() => {
           diagButton.removeAttribute("aria-disabled");
         });
@@ -4775,6 +4902,8 @@
           if (emptyEl) {
             emptyEl.hidden = true;
           }
+        } else if (scan && scan.readyCount > 0 && !result.snapshot) {
+          context.setApplyEnabled(true);
         }
         context.refreshSelection();
       });
@@ -4860,7 +4989,7 @@
     const sliderFor = (spec) => `<div class="field" data-field="${spec.key}" hidden><div class="field-head"><span class="t-label">${spec.label}</span><span class="field-val" data-out="${spec.key}">${formatParam(
       spec,
       params[spec.key]
-    )}</span></div><div class="slider-row"><input type="range" min="${spec.min}" max="${spec.max}" step="${spec.step}" value="${params[spec.key]}" data-slider="${spec.key}" aria-label="${spec.label}"></div><p class="field-note">${escapeHtml$4(spec.note)}</p></div>`;
+    )}</span></div><div class="slider-row"><input type="range" min="${spec.min}" max="${spec.max}" step="${spec.step}" value="${params[spec.key]}" data-slider="${spec.key}" aria-label="${spec.label}"></div><p class="field-note">${escapeHtml(spec.note)}</p></div>`;
     const coreSliders = ["minSilence", "padIn", "padOut"].map((k) => SLIDERS.find((s) => s.key === k)).filter((s) => Boolean(s)).map(sliderFor).join("");
     const advSliders = ["minKeep", "noiseIsland", "dbMargin", "dbThreshold", "minConfidence"].map((k) => SLIDERS.find((s) => s.key === k)).filter((s) => Boolean(s)).map(sliderFor).join("");
     return `<div class="zones"><div class="zone"><div class="field"><span class="t-label">Ritmo de Corte</span><div class="preset-rail" data-preset-rail>${presets}</div><p class="field-note" data-preset-note></p></div></div><div class="zone">${coreSliders}</div><div class="zone is-wide"><div class="sil-empty" data-empty><p class="sil-empty-title">Pronto para analisar</p><p class="sil-empty-desc">Selecione os clipes na timeline e analise para visualizar o corte.</p></div><div class="sil-scan-row"><div class="org-scan" ${CONTROL} data-scan>Analisar Seleção</div></div><div class="sil-manual" data-manual hidden></div><div class="sil-report" data-report></div></div><div class="sil-advanced"><div class="sil-advanced-summary" ${CONTROL} data-adv-toggle><span class="sil-advanced-title">⚙️ Ajustes Avançados</span><span class="sil-advanced-icon" data-adv-icon>▾</span></div><div class="sil-advanced-content" data-adv-content hidden><div class="field"><span class="t-label">Método de Detecção</span><div class="seg" data-mode-seg><div class="seg-item" ${CONTROL} data-mode="waveform">Onda (ffmpeg)</div><div class="seg-item" ${CONTROL} data-mode="transcript">Transcrição</div></div></div><div class="field" data-filler-field hidden><span class="t-label">Muletas de Fala</span><div class="seg" data-filler-seg><div class="seg-item" ${CONTROL} data-filler="off">Manter</div><div class="seg-item" ${CONTROL} data-filler="on">Remover</div></div></div><div class="field" data-auto-field hidden><span class="t-label">Calibração de Ruído</span><div class="seg" data-auto-seg><div class="seg-item" ${CONTROL} data-auto="on">Automático</div><div class="seg-item" ${CONTROL} data-auto="off">Fixo</div></div></div>` + advSliders + `<div class="sil-ffmpeg-group" data-ffmpeg-field hidden><div class="field"><span class="t-label">Caminho do FFmpeg</span><input type="text" class="sil-path" data-ffmpeg-path spellcheck="false" placeholder="Padrão do sistema (automático)"></div><div class="field"><div class="field-head"><span class="t-label">Diagnóstico</span><span class="field-action" ${CONTROL} data-diag>Testar FFmpeg</span></div><div class="sil-diag" data-diag-out></div></div></div></div></div></div>`;
@@ -4905,16 +5034,16 @@
     const label = STATUS_LABEL[clip.status];
     const detail = clip.status === "ready" && clip.plan ? `<span class="sil-row-cuts">${clip.plan.drop.length} ${clip.plan.drop.length === 1 ? "corte" : "cortes"}</span><span class="sil-row-time">${formatSeconds(clip.durationSeconds)} → ${formatSeconds(
       clip.plan.keptSeconds
-    )}</span>` : `<span class="sil-row-skip">${escapeHtml$4(
+    )}</span>` : `<span class="sil-row-skip">${escapeHtml(
       clip.status === "error" && clip.detail ? clip.detail : label
     )}</span>`;
-    return `<div class="sil-row-group${clip.status === "ready" ? " is-ready" : ""}"><div class="sil-row"><span class="sil-row-name" title="${escapeHtml$4(clip.name)}">${escapeHtml$4(
+    return `<div class="sil-row-group${clip.status === "ready" ? " is-ready" : ""}"><div class="sil-row"><span class="sil-row-name" title="${escapeHtml(clip.name)}">${escapeHtml(
       clip.name
     )}</span>` + detail + "</div></div>";
   }
   function renderDiagnostic(lines) {
     return '<div class="sil-diag-list">' + lines.map(
-      (line) => `<div class="sil-diag-row${line.ok ? "" : " is-bad"}"><span class="sil-diag-mark">${line.ok ? "✓" : "✕"}</span><span class="sil-diag-label">${escapeHtml$4(line.label)}</span><span class="sil-diag-detail">${escapeHtml$4(line.detail)}</span></div>`
+      (line) => `<div class="sil-diag-row${line.ok ? "" : " is-bad"}"><span class="sil-diag-mark">${line.ok ? "✓" : "✕"}</span><span class="sil-diag-label">${escapeHtml(line.label)}</span><span class="sil-diag-detail">${escapeHtml(line.detail)}</span></div>`
     ).join("") + "</div>";
   }
   function summaryLine(scan) {
@@ -4931,21 +5060,7 @@
     return `${scan.cuts} ${scan.cuts === 1 ? "corte" : "cortes"} em ${scan.readyCount} ${scan.readyCount === 1 ? "clipe" : "clipes"}.`;
   }
   function doneMarkup(message) {
-    return `<div class="org-done"><p class="org-done-title">Silêncios cortados ✓</p><p class="org-done-desc">${escapeHtml$4(message)}</p><p class="org-done-desc" style="opacity: 0.7; font-size: 10.5px;">Dica: Selecione o espaço vazio na timeline e use <b>Shift+Delete</b> (Ripple Delete) para fechar os cortes.</p></div>`;
-  }
-  function escapeHtml$4(value) {
-    return value.replace(/[&<>"]/g, (character) => {
-      switch (character) {
-        case "&":
-          return "&amp;";
-        case "<":
-          return "&lt;";
-        case ">":
-          return "&gt;";
-        default:
-          return "&quot;";
-      }
-    });
+    return `<div class="org-done"><p class="org-done-title">Silêncios cortados ✓</p><p class="org-done-desc">${escapeHtml(message)}</p><p class="org-done-desc" style="opacity: 0.7; font-size: 10.5px;">Dica: Selecione o espaço vazio na timeline e use <b>Shift+Delete</b> (Ripple Delete) para fechar os cortes.</p></div>`;
   }
   function commitTransaction(project2, label, build) {
     let committed = false;
@@ -5358,44 +5473,41 @@
   }
   async function detectNestedSequenceIds(ppro, project2) {
     const nestedIds = /* @__PURE__ */ new Set();
+    const verdicts = /* @__PURE__ */ new Map();
+    const scanTrack = async (track) => {
+      if (!track) return;
+      const items = track.getTrackItems(
+        ppro.Constants.TrackItemType.CLIP,
+        false
+      );
+      for (const ti of items) {
+        try {
+          const pi = await ti.getProjectItem();
+          if (!pi) continue;
+          const id = pi.getId();
+          let isSub = verdicts.get(id);
+          if (isSub === void 0) {
+            const clip = ppro.ClipProjectItem.cast(pi);
+            isSub = await clip.isSequence();
+            verdicts.set(id, isSub);
+          }
+          if (isSub) {
+            nestedIds.add(id);
+          }
+        } catch {
+        }
+      }
+    };
     try {
       const sequences = await project2.getSequences();
       for (const seq of sequences) {
         const videoTrackCount = await seq.getVideoTrackCount();
         for (let t = 0; t < videoTrackCount; t++) {
-          const track = await seq.getVideoTrack(t);
-          if (!track) continue;
-          const items = track.getTrackItems(ppro.Constants.TrackItemType.CLIP, false);
-          for (const ti of items) {
-            try {
-              const pi = await ti.getProjectItem();
-              if (!pi) continue;
-              const clip = ppro.ClipProjectItem.cast(pi);
-              const isSub = await clip.isSequence();
-              if (isSub) {
-                nestedIds.add(pi.getId());
-              }
-            } catch {
-            }
-          }
+          await scanTrack(await seq.getVideoTrack(t));
         }
         const audioTrackCount = await seq.getAudioTrackCount();
         for (let t = 0; t < audioTrackCount; t++) {
-          const track = await seq.getAudioTrack(t);
-          if (!track) continue;
-          const items = track.getTrackItems(ppro.Constants.TrackItemType.CLIP, false);
-          for (const ti of items) {
-            try {
-              const pi = await ti.getProjectItem();
-              if (!pi) continue;
-              const clip = ppro.ClipProjectItem.cast(pi);
-              const isSub = await clip.isSequence();
-              if (isSub) {
-                nestedIds.add(pi.getId());
-              }
-            } catch {
-            }
-          }
+          await scanTrack(await seq.getAudioTrack(t));
         }
       }
     } catch {
@@ -5822,6 +5934,7 @@
     category: "projeto",
     glyph: "folder",
     available: true,
+    usesSelection: false,
     mount(container, context) {
       let scan = null;
       let lastSnapshot = null;
@@ -5911,7 +6024,7 @@
             html += `</div>`;
             for (const group of scan.sequenceGroups) {
               html += `<div class="org-group">`;
-              html += `<span class="org-group-name">${escapeHtml$3(group.base)}</span>`;
+              html += `<span class="org-group-name">${escapeHtml(group.base)}</span>`;
               html += `<span class="org-group-count">${group.items.length}</span>`;
               html += `</div>`;
               html += renderItemList(group.items, true);
@@ -5937,7 +6050,7 @@
             const label = TOP_CATEGORY_LABELS[cat];
             html += `<div class="org-cat">`;
             html += `<span class="org-cat-icon">${gl}</span>`;
-            html += `<span class="org-cat-name">${escapeHtml$3(label)}</span>`;
+            html += `<span class="org-cat-name">${escapeHtml(label)}</span>`;
             html += `<span class="org-cat-count">${count}</span>`;
             html += `</div>`;
             const items = scan.items.filter((i) => i.category === cat);
@@ -5946,7 +6059,7 @@
                 const group = items.filter((i) => i.audioKind === kind);
                 if (group.length === 0) continue;
                 html += `<div class="org-group">`;
-                html += `<span class="org-group-name">${escapeHtml$3(AUDIO_KIND_LABELS[kind])}</span>`;
+                html += `<span class="org-group-name">${escapeHtml(AUDIO_KIND_LABELS[kind])}</span>`;
                 html += `<span class="org-group-count">${group.length}</span>`;
                 html += `</div>`;
                 html += renderItemList(group, true);
@@ -5966,8 +6079,8 @@
         const indent = indented ? " org-items-indent" : "";
         let html = `<div class="org-items${indent}">`;
         for (const item of items) {
-          html += `<div class="org-item" title="${escapeHtml$3(item.name)}">`;
-          html += `<span class="org-item-name">${escapeHtml$3(item.name)}</span>`;
+          html += `<div class="org-item" title="${escapeHtml(item.name)}">`;
+          html += `<span class="org-item-name">${escapeHtml(item.name)}</span>`;
           html += `</div>`;
         }
         html += `</div>`;
@@ -6007,69 +6120,7 @@
   function organizedMarkup(count) {
     return `<div class="org-done"><p class="org-done-title">Projeto Organizado ✓</p><p class="org-done-desc">${count} ${count === 1 ? "item foi movido" : "itens foram movidos"} para pastas organizadas. Suas pastas pré-existentes e pastas de plugins foram preservadas. Use "Desfazer" para reverter.</p></div>`;
   }
-  function escapeHtml$3(value) {
-    return value.replace(/[&<>"]/g, (c) => {
-      switch (c) {
-        case "&":
-          return "&amp;";
-        case "<":
-          return "&lt;";
-        case ">":
-          return "&gt;";
-        default:
-          return "&quot;";
-      }
-    });
-  }
-  const APP_DIR = "FramelabRunner.app";
-  const VBS_FILE = "run-quiet.vbs";
-  async function ensureSilentLauncher(scriptName2) {
-    const space = await workspace();
-    if (isWindows()) {
-      await write(space, VBS_FILE, vbsSource(space, scriptName2));
-      return { path: nativePath(space, VBS_FILE) };
-    }
-    await ensureDir(space, `${APP_DIR}/Contents/MacOS`);
-    await write(space, `${APP_DIR}/Contents/Info.plist`, infoPlist());
-    await write(space, `${APP_DIR}/Contents/PkgInfo`, "APPL????");
-    await write(space, `${APP_DIR}/Contents/MacOS/run`, runSource(scriptName2), true);
-    return { path: nativePath(space, APP_DIR) };
-  }
-  function runSource(scriptName2) {
-    return [
-      "#!/bin/bash",
-      "# Gerado pelo Framelab — roda o script de trabalho sem Terminal.",
-      'DIR="$(cd "$(dirname "$0")/../../.." && pwd)"',
-      `exec /bin/bash "$DIR/${scriptName2}" > /dev/null 2>&1`,
-      ""
-    ].join("\n");
-  }
-  function infoPlist() {
-    return [
-      '<?xml version="1.0" encoding="UTF-8"?>',
-      '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
-      '<plist version="1.0">',
-      "<dict>",
-      "  <key>CFBundleName</key><string>Framelab Runner</string>",
-      "  <key>CFBundleIdentifier</key><string>com.framelab.runner</string>",
-      "  <key>CFBundleExecutable</key><string>run</string>",
-      "  <key>CFBundlePackageType</key><string>APPL</string>",
-      "  <key>CFBundleShortVersionString</key><string>1.0</string>",
-      "  <key>LSUIElement</key><true/>",
-      "  <key>LSBackgroundOnly</key><true/>",
-      "</dict>",
-      "</plist>",
-      ""
-    ].join("\n");
-  }
-  function vbsSource(space, scriptName2) {
-    const script = nativePath(space, scriptName2).replace(/"/g, '""');
-    return [
-      "' Gerado pelo Framelab - roda o script de trabalho sem janela.",
-      `CreateObject("WScript.Shell").Run "cmd /c """ & "${script}" & """", 0, False`,
-      ""
-    ].join("\r\n");
-  }
+  const q = shellQuote;
   const RESULT_FILE = "dl-result.json";
   const PROGRESS_FILE = "dl-progress.txt";
   const LOG_FILE = "dl-log.txt";
@@ -6279,6 +6330,7 @@
       (quality) => quality.height === null || quality.height <= tallest
     );
   }
+  let previousRunFiles = [];
   async function run(launch) {
     const shell = shellModule();
     if (!shell) {
@@ -6286,7 +6338,17 @@
     }
     const space = await workspace();
     const scriptPath = nativePath(space, scriptName());
+    const tag = Date.now().toString(36);
+    const runFiles = {
+      result: `dl-${tag}-result.json`,
+      progress: `dl-${tag}-progress.txt`,
+      log: `dl-${tag}-log.txt`,
+      files: `dl-${tag}-files.txt`,
+      started: `dl-${tag}-started.txt`
+    };
     for (const name of [
+      ...Object.values(runFiles),
+      ...previousRunFiles,
       RESULT_FILE,
       PROGRESS_FILE,
       LOG_FILE,
@@ -6296,7 +6358,9 @@
     ]) {
       await remove(space, name);
     }
-    await write(space, scriptName(), launch.build(space), true);
+    previousRunFiles = Object.values(runFiles);
+    const script = launch.build(space).split(RESULT_FILE).join(runFiles.result).split(PROGRESS_FILE).join(runFiles.progress).split(LOG_FILE).join(runFiles.log).split(FILES_FILE).join(runFiles.files).split(STARTED_FILE).join(runFiles.started);
+    await write(space, scriptName(), script, true);
     let launchError = null;
     let awaitingStamp = false;
     try {
@@ -6318,13 +6382,15 @@
     const stampDeadline = Date.now() + 8e3;
     const deadline = Date.now() + launch.timeoutMs;
     let lastSignature = "";
+    let tick = 0;
     while (Date.now() < deadline) {
+      tick += 1;
       if (launch.cancelled?.()) {
         return { ...fail("cancelled", scriptPath) };
       }
       if (awaitingStamp && Date.now() > stampDeadline) {
         awaitingStamp = false;
-        if (!readText(space, STARTED_FILE)) {
+        if (!readText(space, runFiles.started)) {
           console.warn("[Download] sem carimbo do runner — caindo para o Terminal.");
           try {
             await shell.openPath(scriptPath, launch.purpose);
@@ -6334,9 +6400,9 @@
           }
         }
       }
-      if (launch.onProgress) {
-        const log = tail(space);
-        const done = readProgress(space);
+      if (launch.onProgress && tick % 4 === 0) {
+        const log = tail(space, runFiles.log);
+        const done = readProgress(space, runFiles.progress);
         const percent = readPercent(log);
         const signature = `${done}|${percent}|${log.length}`;
         if (signature !== lastSignature) {
@@ -6344,7 +6410,7 @@
           launch.onProgress(done, launch.total, percent, log);
         }
       }
-      const raw = readText(space, RESULT_FILE);
+      const raw = readText(space, runFiles.result);
       if (raw) {
         try {
           const parsed = JSON.parse(raw);
@@ -6354,7 +6420,8 @@
             ytdlpPath: typeof parsed.ytdlp === "string" ? parsed.ytdlp : null,
             scriptPath,
             failed: typeof parsed.failed === "number" ? parsed.failed : 0,
-            log: tail(space)
+            log: tail(space, runFiles.log),
+            filesFile: runFiles.files
           };
         } catch {
         }
@@ -6363,23 +6430,24 @@
     }
     return {
       ...fail(launchError ? `launch-denied: ${launchError}` : "timeout", scriptPath),
-      log: tail(space)
+      log: tail(space, runFiles.log)
     };
   }
   function fail(error, scriptPath) {
     return { ok: false, error, ytdlpPath: null, scriptPath, failed: 0, log: "" };
   }
-  function readProgress(space) {
-    const raw = readText(space, PROGRESS_FILE);
+  function readProgress(space, name) {
+    const raw = readText(space, name);
     const parsed = Number.parseInt(raw?.split("/")[0] ?? "", 10);
     return Number.isFinite(parsed) ? parsed : 0;
   }
-  function tail(space, lines = 12) {
-    const raw = readText(space, LOG_FILE);
+  function tail(space, name, lines = 12) {
+    const raw = readText(space, name);
     if (!raw) {
       return "";
     }
-    return raw.split(/\r?\n/).slice(-lines).join("\n");
+    const slice = raw.length > 4096 ? raw.slice(-4096) : raw;
+    return slice.split(/\r?\n/).slice(-lines).join("\n");
   }
   function readPercent(log) {
     const matches = log.match(/(\d{1,3}(?:\.\d)?)%/g);
@@ -6388,9 +6456,6 @@
     }
     const value = Number.parseFloat(matches[matches.length - 1]);
     return Number.isFinite(value) ? Math.min(100, value) : null;
-  }
-  function wait$1(ms) {
-    return new Promise((resolve2) => setTimeout(resolve2, ms));
   }
   async function probeUrls(urls, config, onProgress, cancelled, onManual) {
     const stale = urls.map((_, index) => infoFile(index));
@@ -6428,8 +6493,9 @@
   }
   async function downloadUrls(urls, quality, config, direct = [], onProgress, cancelled, onManual) {
     const destination = config.destination || await defaultDestination();
+    const customFfmpeg = urls.length > 0 ? (await readConfig$1()).ffmpegPath : "";
     const result = await run({
-      build: (space2) => isWindows() ? downloadScriptWin(urls, quality, config, space2.nativeBase, destination, direct) : downloadScriptUnix(urls, quality, config, space2.nativeBase, destination, direct),
+      build: (space2) => isWindows() ? downloadScriptWin(urls, quality, config, space2.nativeBase, destination, direct, customFfmpeg) : downloadScriptUnix(urls, quality, config, space2.nativeBase, destination, direct, customFfmpeg),
       timeoutMs: DOWNLOAD_TIMEOUT_MS,
       stale: [],
       onProgress,
@@ -6439,7 +6505,7 @@
       purpose: "Baixar os vídeos dos links informados."
     });
     const space = await workspace();
-    const listed = readText(space, FILES_FILE);
+    const listed = readText(space, result.filesFile ?? FILES_FILE);
     const files = listed ? listed.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0) : [];
     return { ...result, files };
   }
@@ -6460,9 +6526,6 @@
     }
     const space = await workspace();
     await shell.openPath(space.nativeBase, "Abrir a pasta do script de download.");
-  }
-  function q(value) {
-    return `'${value.replace(/'/g, `'\\''`)}'`;
   }
   function unixBase(folder) {
     return [
@@ -6531,11 +6594,15 @@
       "fi"
     ];
   }
-  function unixFfmpeg() {
+  function unixFfmpeg(customFfmpeg) {
     return [
+      // O caminho que o editor configurou no Corte de Silêncios vem
+      // primeiro: era honrado lá e ignorado aqui, e o mesmo binário
+      // serve os dois.
+      `FFCUSTOM=${q(customFfmpeg)}`,
       "FFMPEG=''",
-      'for candidate in /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg /opt/local/bin/ffmpeg /usr/bin/ffmpeg "$WORK/ffmpeg"; do',
-      '  if [ -x "$candidate" ]; then FFMPEG="$candidate"; break; fi',
+      'for candidate in "$FFCUSTOM" /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg /opt/local/bin/ffmpeg /usr/bin/ffmpeg "$WORK/ffmpeg"; do',
+      '  if [ -n "$candidate" ] && [ -x "$candidate" ]; then FFMPEG="$candidate"; break; fi',
       "done",
       'if [ -z "$FFMPEG" ]; then FFMPEG="$(command -v ffmpeg 2>/dev/null || true)"; fi',
       // Na falta, baixa o build estático da arquitetura. A falha aqui é
@@ -6588,10 +6655,10 @@
     );
     return lines.join("\n") + "\n";
   }
-  function downloadScriptUnix(urls, quality, config, folder, destination, direct = []) {
+  function downloadScriptUnix(urls, quality, config, folder, destination, direct = [], customFfmpeg = "") {
     const lines = unixBase(folder);
     if (urls.length > 0) {
-      lines.push(...unixYtdlpSetup(config), ...unixFfmpeg());
+      lines.push(...unixYtdlpSetup(config), ...unixFfmpeg(customFfmpeg));
     }
     lines.push(`DEST=${q(destination)}`, 'mkdir -p "$DEST"', "FAILED=0");
     const total = direct.length + urls.length;
@@ -6659,13 +6726,15 @@
   const DENO_WIN = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip";
   function installScriptUnix(folder) {
     return [
-      "#!/bin/bash",
-      "# Gerado pelo Framelab — Baixar Vídeos. Pode apagar.",
-      `printf '\\033]0;Framelab — instalando yt-dlp\\007'`,
-      "set -u",
-      `WORK=${q(folder)}`,
+      // A base comum traz o cd e o carimbo de início — sem ele, o
+      // runner silencioso parecia morto e o painel abria um SEGUNDO
+      // install no Terminal, os dois curl brigando pelo mesmo .tmp.
+      ...unixBase(folder),
       `echo "Baixando o yt-dlp oficial…"`,
-      `if curl -fL --retry 3 -o "$WORK/${LOCAL_BIN}.tmp" ${q(RELEASE_MAC)} 2>&1 | tee -a "$WORK/${LOG_FILE}"; then`,
+      // Sem tee: o `if` precisa medir o CURL, e `curl | tee` mede o
+      // tee, que nunca falha — um download pela metade seguia o
+      // caminho feliz e instalava um binário truncado.
+      `if curl -fSL --retry 3 -o "$WORK/${LOCAL_BIN}.tmp" ${q(RELEASE_MAC)} 2>> "$WORK/${LOG_FILE}"; then`,
       `  chmod +x "$WORK/${LOCAL_BIN}.tmp"`,
       `  mv "$WORK/${LOCAL_BIN}.tmp" "$WORK/${LOCAL_BIN}"`,
       // O binário do macOS vem sem assinatura reconhecida pelo
@@ -6675,6 +6744,9 @@
       `  if "$WORK/${LOCAL_BIN}" --version >/dev/null 2>&1; then`,
       `    printf '{"ok":true,"ytdlp":"%s"}' "$WORK/${LOCAL_BIN}" > "$WORK/${RESULT_FILE}.tmp"`,
       "  else",
+      // O que não executa não pode ficar: um yt-dlp quebrado em
+      // $WORK vence a busca de TODO script futuro.
+      `    rm -f "$WORK/${LOCAL_BIN}"`,
       `    printf '{"ok":false,"error":"install-unusable"}' > "$WORK/${RESULT_FILE}.tmp"`,
       "  fi",
       "else",
@@ -6690,9 +6762,6 @@
   }
   function escapeEcho(value) {
     return value.replace(/["`$\\]/g, "").slice(0, 90);
-  }
-  function batValue(value) {
-    return value.replace(/[\r\n"]/g, "").replace(/%/g, "%%");
   }
   function bq(value) {
     return `"${batValue(value)}"`;
@@ -6755,7 +6824,7 @@
     );
     return lines.join("\r\n") + "\r\n";
   }
-  function downloadScriptWin(urls, quality, config, folder, destination, direct = []) {
+  function downloadScriptWin(urls, quality, config, folder, destination, direct = [], customFfmpeg = "") {
     const lines = winBase(folder);
     if (urls.length > 0) {
       lines.push(...winYtdlpSetup(config));
@@ -6784,7 +6853,9 @@
         // script baixa o build oficial do projeto yt-dlp. Falhar aqui não
         // derruba o download — só rebaixa a qualidade máxima.
         'set "FFLOC="',
-        'for %%i in (ffmpeg.exe) do @if not "%%~$PATH:i"=="" set "FFLOC=SKIP"',
+        `set "FFCUSTOM=${batValue(customFfmpeg)}"`,
+        'if exist "%FFCUSTOM%" set "FFLOC=CUSTOM"',
+        'if "%FFLOC%"=="" for %%i in (ffmpeg.exe) do @if not "%%~$PATH:i"=="" set "FFLOC=SKIP"',
         `if exist "%WORK%\\ffmpeg.exe" set "FFLOC=%WORK%"`,
         'if "%FFLOC%"=="" (',
         "  echo Preparando o ffmpeg (so na primeira vez)...",
@@ -6793,16 +6864,17 @@
         ")",
         'if "%FFLOC%"=="SKIP" set "FFLOC="',
         'set "FFARGS="',
-        'if not "%FFLOC%"=="" set FFARGS=--ffmpeg-location "%FFLOC%"'
+        'if "%FFLOC%"=="CUSTOM" (set FFARGS=--ffmpeg-location "%FFCUSTOM%") else if not "%FFLOC%"=="" set FFARGS=--ffmpeg-location "%FFLOC%"'
       );
     }
     const shared = `--newline --no-mtime --no-playlist --ignore-config --windows-filenames --trim-filenames 120 --retries 5 --fragment-retries 10 -o ${bq("%(title)s [%(id)s].%(ext)s")} --print-to-file after_move:filepath ${bq(FILES_FILE)} ` + cookiesArg(config);
     const sort = sortArg(quality);
     const media = quality.audioOnly ? `-x --audio-format mp3 --audio-quality 0 -f ${bq(formatSelector(quality))}` : `-f ${bq(formatSelector(quality))} ${sort ? `-S ${bq(sort)} ` : ""}--merge-output-format mp4`;
     urls.forEach((url, index) => {
+      const step2 = direct.length + index + 1;
       lines.push(
-        `echo [${index + 1}/${urls.length}]`,
-        `>"%WORK%\\${PROGRESS_FILE}" echo ${index + 1}/${urls.length}`,
+        `echo [${step2}/${total}]`,
+        `>"%WORK%\\${PROGRESS_FILE}" echo ${step2}/${total}`,
         `"%YTDLP%" ${shared} ${media} -P "%DEST%" %FFARGS% %JSARGS% ${bq(url)} >>"%WORK%\\${LOG_FILE}" 2>&1`,
         "if errorlevel 1 set /a FAILED+=1"
       );
@@ -6824,10 +6896,7 @@
   }
   function installScriptWin(folder) {
     return [
-      "@echo off",
-      "rem Gerado pelo Framelab - Baixar Videos. Pode apagar.",
-      "title Framelab - instalando yt-dlp",
-      `set "WORK=${batValue(folder)}"`,
+      ...winBase(folder),
       "echo Baixando o yt-dlp oficial...",
       `powershell -NoProfile -Command "try { Invoke-WebRequest -Uri '${RELEASE_WIN}' -OutFile ('%WORK%\\${LOCAL_BIN_WIN}') -UseBasicParsing } catch { exit 1 }"`,
       "if errorlevel 1 (",
@@ -6917,7 +6986,8 @@
   const BATCH_STEP_MS = 1100;
   const TIMEOUT_MS = 8e3;
   function isTikTokUrl(url) {
-    return /(^|\.)tiktok\.com\//i.test(url.replace(/^https?:\/\//i, ""));
+    const host = url.replace(/^https?:\/\//i, "").split(/[/?#]/, 1)[0];
+    return /(^|\.)tiktok\.com$/i.test(host);
   }
   async function fetchTikTokFast(url) {
     try {
@@ -7016,7 +7086,7 @@
     return { lfs, binary: storage?.formats?.binary };
   }
   function fileUrl(nativePathValue) {
-    return "file://" + nativePathValue.split("/").map((part) => encodeURIComponent(part)).join("/");
+    return "file://" + nativePathValue.replace(/\\/g, "/").split("/").map((part) => encodeURIComponent(part)).join("/");
   }
   async function destinationFolder(destination, token) {
     const api = storageApi();
@@ -7036,12 +7106,13 @@
         return { folder, binary: api.binary };
       } catch {
       }
-      const cut = destination.replace(/\/+$/, "").lastIndexOf("/");
+      const normalized = destination.replace(/\\/g, "/").replace(/\/+$/, "");
+      const cut = normalized.lastIndexOf("/");
       if (cut <= 0) {
         throw new Error("sem pasta-mãe");
       }
-      const parent = await api.lfs.getEntryWithUrl(fileUrl(destination.slice(0, cut)));
-      const leaf = destination.slice(cut + 1);
+      const parent = await api.lfs.getEntryWithUrl(fileUrl(normalized.slice(0, cut)));
+      const leaf = normalized.slice(cut + 1);
       try {
         const folder = await parent.createFolder(leaf);
         return { folder, binary: api.binary };
@@ -7154,7 +7225,7 @@
       valueEl.textContent = current?.label ?? "—";
       metaEl.textContent = current?.meta ?? "";
       menu.innerHTML = options.map(
-        (option) => `<div class="dl-menu-item" ${CONTROL} data-value="${escapeHtml$2(option.id)}" aria-pressed="${option.id === selected}"><span class="dl-menu-name">${escapeHtml$2(option.label)}</span><span class="dl-menu-meta">${escapeHtml$2(option.meta ?? "")}</span></div>`
+        (option) => `<div class="dl-menu-item" ${CONTROL} data-value="${escapeHtml(option.id)}" aria-pressed="${option.id === selected}"><span class="dl-menu-name">${escapeHtml(option.label)}</span><span class="dl-menu-meta">${escapeHtml(option.meta ?? "")}</span></div>`
       ).join("");
     }
     button.addEventListener("click", () => setOpen(menu.hidden));
@@ -7174,6 +7245,18 @@
         }
       }
     };
+  }
+  async function fastLaneByIndex(list) {
+    const positions = list.map((url, index) => ({ url, index })).filter((entry) => isTikTokUrl(entry.url));
+    const infos = await fetchManyTikTok(positions.map((entry) => entry.url));
+    const byIndex = /* @__PURE__ */ new Map();
+    positions.forEach((entry, at) => {
+      const info = infos[at];
+      if (info) {
+        byIndex.set(entry.index, info);
+      }
+    });
+    return byIndex;
   }
   function parseUrls(raw) {
     return raw.split(/[\s,]+/).map((line) => line.trim()).filter((line) => /^https?:\/\/\S+$/i.test(line));
@@ -7331,22 +7414,19 @@
         if (scanEl) scanEl.textContent = "Consultando…";
         showProgress("consulta", null, "lendo os links…");
         try {
-          const byUrl = /* @__PURE__ */ new Map();
-          const tiktoks = list.filter((url) => isTikTokUrl(url));
-          const fastInfos = await fetchManyTikTok(tiktoks);
+          const fast = await fastLaneByIndex(list);
+          const byIndex = /* @__PURE__ */ new Map();
           const slow = [];
-          for (const url of list) {
-            if (!isTikTokUrl(url)) {
-              slow.push(url);
-              continue;
-            }
-            const info = fastInfos[tiktoks.indexOf(url)];
+          const slowAt = [];
+          list.forEach((url, index) => {
+            const info = fast.get(index);
             if (info) {
-              byUrl.set(url, fastProbe(url, info));
+              byIndex.set(index, fastProbe(url, info));
             } else {
               slow.push(url);
+              slowAt.push(index);
             }
-          }
+          });
           let result = { ok: true, error: null, log: "", ytdlpPath: null };
           if (slow.length > 0) {
             const scripted = await probeUrls(
@@ -7360,9 +7440,9 @@
               showManual
             );
             result = { ...result, ...scripted.result };
-            scripted.probes.forEach((probe, index) => byUrl.set(slow[index], probe));
+            scripted.probes.forEach((probe, at) => byIndex.set(slowAt[at], probe));
           }
-          probes = list.map((url) => byUrl.get(url)).filter((p) => !!p);
+          probes = list.map((_, index) => byIndex.get(index)).filter((p) => !!p);
           renderList();
           renderQualities();
           const ok = probes.filter((probe) => probe.ok).length;
@@ -7403,17 +7483,16 @@
         try {
           const direct = [];
           const slow = [];
-          const tiktoks = list.filter((url) => isTikTokUrl(url));
-          const fastInfos = tiktoks.length > 0 ? await fetchManyTikTok(tiktoks) : [];
-          for (const url of list) {
-            const info = isTikTokUrl(url) ? fastInfos[tiktoks.indexOf(url)] : null;
+          const fast = await fastLaneByIndex(list);
+          list.forEach((url, index) => {
+            const info = fast.get(index) ?? null;
             const job = info ? directJobFor(url, info, quality) : null;
             if (job) {
               direct.push(job);
             } else {
               slow.push(url);
             }
-          }
+          });
           const total = list.length;
           const panelFiles = [];
           const scriptDirect = [];
@@ -7579,7 +7658,7 @@
       function renderFiles(files) {
         if (!listEl || files.length === 0) return;
         listEl.innerHTML = '<p class="dl-done-title">Baixado ✓</p>' + files.map(
-          (file) => `<div class="dl-file" title="${escapeHtml$2(file)}"><span class="dl-file-name">${escapeHtml$2(baseName(file))}</span></div>`
+          (file) => `<div class="dl-file" title="${escapeHtml(file)}"><span class="dl-file-name">${escapeHtml(baseName(file))}</span></div>`
         ).join("");
       }
       function renderDestination() {
@@ -7669,8 +7748,8 @@
         progressEl.hidden = false;
         const waiting = percent === null;
         const width = waiting ? 30 : Math.max(0, Math.min(100, percent));
-        const right = waiting ? detail || "…" : `${detail ? `${escapeHtml$2(detail)} · ` : ""}${width.toFixed(0)}%`;
-        progressEl.innerHTML = `<div class="dl-bar${waiting ? " is-wait" : ""}"><span class="dl-bar-fill" style="width:${width.toFixed(1)}%"></span></div><div class="dl-bar-legend"><span>${escapeHtml$2(step2)}</span><span>${waiting ? escapeHtml$2(right) : right}</span></div>`;
+        const right = waiting ? detail || "…" : `${detail ? `${escapeHtml(detail)} · ` : ""}${width.toFixed(0)}%`;
+        progressEl.innerHTML = `<div class="dl-bar${waiting ? " is-wait" : ""}"><span class="dl-bar-fill" style="width:${width.toFixed(1)}%"></span></div><div class="dl-bar-legend"><span>${escapeHtml(step2)}</span><span>${waiting ? escapeHtml(right) : right}</span></div>`;
       }
       function showLog(text2) {
         if (!logEl) return;
@@ -7681,7 +7760,7 @@
       function showManual(scriptPath, reason) {
         if (!manualEl) return;
         manualEl.hidden = false;
-        manualEl.innerHTML = `<p class="sil-manual-why">O sistema não executou o script (${escapeHtml$2(reason)}). Dê um duplo clique nele e volte — o painel continua esperando.</p><p class="sil-manual-path">${escapeHtml$2(scriptPath)}</p>`;
+        manualEl.innerHTML = `<p class="sil-manual-why">O sistema não executou o script (${escapeHtml(reason)}). Dê um duplo clique nele e volte — o painel continua esperando.</p><p class="sil-manual-path">${escapeHtml(scriptPath)}</p>`;
       }
       function hideManual() {
         if (manualEl) {
@@ -7768,16 +7847,16 @@
   }
   function probeRow(probe, qualityId) {
     if (!probe.ok) {
-      return `<div class="dl-row is-bad"><span class="dl-row-name">${escapeHtml$2(shorten(probe.url))}</span><span class="dl-row-meta">${escapeHtml$2(probe.error ?? "não foi possível ler")}</span></div>`;
+      return `<div class="dl-row is-bad"><span class="dl-row-name">${escapeHtml(shorten(probe.url))}</span><span class="dl-row-meta">${escapeHtml(probe.error ?? "não foi possível ler")}</span></div>`;
     }
     const quality = findQuality(qualityId);
     const size = formatBytes(estimateFor(probe, quality));
     const clock = formatClock(probe.durationSeconds);
     const top = probe.resolutions[0] ? `${probe.resolutions[0]}p` : "";
     const meta = [probe.site, clock, top, size].filter((part) => part.length > 0).join(" · ");
-    return `<div class="dl-row"><span class="dl-row-name" title="${escapeHtml$2(probe.title)}">${escapeHtml$2(
+    return `<div class="dl-row"><span class="dl-row-name" title="${escapeHtml(probe.title)}">${escapeHtml(
       probe.title
-    )}</span><span class="dl-row-meta">${escapeHtml$2(meta)}</span>` + (probe.hadWatermarked ? `<span class="dl-row-tag">sem marca d'água</span>` : "") + "</div>";
+    )}</span><span class="dl-row-meta">${escapeHtml(meta)}</span>` + (probe.hadWatermarked ? `<span class="dl-row-tag">sem marca d'água</span>` : "") + "</div>";
   }
   function shorten(value) {
     return value.length > 64 ? `${value.slice(0, 61)}…` : value;
@@ -7788,20 +7867,6 @@
   }
   function markup$1() {
     return `<div class="zones"><div class="zone"><div class="field"><div class="field-head"><span class="t-label">Links</span></div><textarea class="dl-urls" data-urls spellcheck="false" rows="3" placeholder="Cole os links do YouTube ou do TikTok — um por linha"></textarea><div class="sil-scan-row"><div class="org-scan" ${CONTROL} data-scan>Analisar links</div></div><div class="sil-manual" data-manual hidden></div><div class="dl-list" data-list></div><div class="dl-progress" data-progress hidden></div><pre class="dl-log" data-log hidden></pre></div></div><div class="zone"><div class="field"><span class="t-label">Qualidade</span><div data-quality-pick></div></div></div><div class="zone"><div class="field"><div class="field-head"><span class="t-label">Destino</span><span class="field-action" ${CONTROL} data-pick>Escolher…</span></div><p class="dl-dest" data-dest></p></div><div class="field"><span class="t-label">Importar para o projeto</span><div class="seg" data-import-seg><div class="seg-item" ${CONTROL} data-import="on">Sim</div><div class="seg-item" ${CONTROL} data-import="off">Não</div></div></div></div><div class="sil-advanced"><div class="sil-advanced-summary" ${CONTROL} data-adv-toggle><span class="sil-advanced-title">⚙️ Ajustes Avançados</span><span class="sil-advanced-icon" data-adv-icon>▾</span></div><div class="sil-advanced-content" data-adv-content hidden><div class="field"><span class="t-label">Cookies do navegador</span><div data-cookies-pick></div><p class="field-note">Para vídeo com restrição de idade ou quando o site pede login. Use o navegador onde você já está logado.</p></div><div class="field"><div class="field-head"><span class="t-label">Caminho do yt-dlp</span><span class="field-action" ${CONTROL} data-open-folder>Abrir pasta</span></div><div class="sil-ffmpeg-group"><input type="text" class="sil-path" data-ytdlp-path spellcheck="false" placeholder="deixe vazio para procurar sozinho"><div class="org-scan" ${CONTROL} data-install>Reinstalar yt-dlp</div></div><p class="field-note">Não precisa instalar nada: na primeira vez o painel baixa sozinho o yt-dlp e o ffmpeg oficiais para a pasta do plugin. Este botão só força uma reinstalação, se algum dia precisar atualizar.</p></div></div></div></div>`;
-  }
-  function escapeHtml$2(value) {
-    return value.replace(/[&<>"]/g, (c) => {
-      switch (c) {
-        case "&":
-          return "&amp;";
-        case "<":
-          return "&lt;";
-        case ">":
-          return "&gt;";
-        default:
-          return "&quot;";
-      }
-    });
   }
   const FILLER_DEFAULTS = {
     useTags: true,
@@ -8117,13 +8182,17 @@
           context.setStatus(`Cortando… ${done}/${total}`);
         });
         context.setStatus(result.message, result.ok ? "done" : "error");
-        if (result.ok && result.snapshot) {
+        if (result.snapshot) {
           snapshot = result.snapshot;
           context.setResetHandler(() => void runUndo());
+        }
+        if (result.ok && result.snapshot) {
           scan = null;
           plans = /* @__PURE__ */ new Map();
           renderReport();
           context.refreshSelection();
+        } else if (!result.ok && !result.snapshot && scan.readyCount > 0) {
+          context.setApplyEnabled(true);
         }
       });
       async function runUndo() {
@@ -8157,7 +8226,7 @@
         if (clip.status === "no-transcript") {
           meta = '<span class="sil-row-skip">sem transcrição</span>';
         } else if (clip.status === "error") {
-          meta = `<span class="sil-row-skip">${escapeHtml$1(clip.detail ?? "erro")}</span>`;
+          meta = `<span class="sil-row-skip">${escapeHtml(clip.detail ?? "erro")}</span>`;
         } else if (clip.status === "speed") {
           meta = '<span class="sil-row-skip">velocidade alterada</span>';
         } else if (clip.status === "no-media") {
@@ -8169,14 +8238,14 @@
         } else {
           meta = `<span class="sil-row-cuts">${hits.length} ${hits.length === 1 ? "muleta" : "muletas"}</span><span class="sil-row-time">−${formatSeconds(plan?.removedSeconds ?? 0)}</span>`;
         }
-        let html = `<div class="sil-row-group"><div class="sil-row${hits.length > 0 ? " is-ready" : ""}"><span class="sil-row-name" title="${escapeHtml$1(clip.name)}">${escapeHtml$1(
+        let html = `<div class="sil-row-group"><div class="sil-row${hits.length > 0 ? " is-ready" : ""}"><span class="sil-row-name" title="${escapeHtml(clip.name)}">${escapeHtml(
           clip.name
         )}</span>${meta}</div>`;
         if (hits.length > 0) {
           html += '<div class="fl-hits">';
           for (const hit of hits) {
             const at = formatSeconds(Math.max(0, hit.start - clip.sourceStart));
-            html += `<span class="fl-hit is-${hit.reason}" title="${REASON_LABELS[hit.reason]}"><b>${escapeHtml$1(hit.text || "(sem texto)")}</b>${at}</span>`;
+            html += `<span class="fl-hit is-${hit.reason}" title="${REASON_LABELS[hit.reason]}"><b>${escapeHtml(hit.text || "(sem texto)")}</b>${at}</span>`;
           }
           html += "</div>";
         }
@@ -8192,20 +8261,6 @@
   };
   function markup(params) {
     return `<div class="zones"><div class="zone"><div class="field"><div class="field-head"><span class="t-label">Margem ao redor</span><span class="field-val" data-out-pad>${params.padSeconds.toFixed(2)}s</span></div><div class="slider-row"><input type="range" min="0" max="0.4" step="0.01" value="${params.padSeconds}" data-pad aria-label="Margem ao redor de cada muleta"></div><p class="field-note">Quanto de ar cai junto com cada muleta. A margem avança pelo silêncio vizinho e para na palavra ao lado — nunca morde fala.</p></div><div class="field"><div class="field-head"><span class="t-label">Esticado a partir de</span><span class="field-val" data-out-stretch>${params.stretchedSeconds.toFixed(2)}s</span></div><div class="slider-row"><input type="range" min="0" max="1" step="0.05" value="${params.stretchedSeconds}" data-stretch aria-label="Duração a partir da qual é e ah contam como muleta"></div><p class="field-note">Um "é" ou "ah" mais longo que isso é hesitação, não palavra. Zero desliga — aí só sons inequívocos (ééé, hum) e a tag cortam.</p></div><div class="field"><span class="t-label">Tag da transcrição (né, tipo…)</span><div class="seg" data-tag-seg><div class="seg-item" ${CONTROL} data-tag="on">Cortar</div><div class="seg-item" ${CONTROL} data-tag="off">Manter</div></div><p class="field-note">O que o próprio Premiere marcou como muleta. Desligue se o "né" faz parte do jeito de falar do vídeo.</p></div></div><div class="zone is-wide"><div class="sil-empty" data-empty><p class="sil-empty-title">Pronto para analisar</p><p class="sil-empty-desc">Selecione os clipes falados na timeline. É preciso que estejam transcritos (janela Texto → Transcrever sequência).</p></div><div class="sil-scan-row"><div class="org-scan" ${CONTROL} data-scan>Analisar Seleção</div></div><div class="sil-report" data-report></div></div></div>`;
-  }
-  function escapeHtml$1(value) {
-    return value.replace(/[&<>"]/g, (c) => {
-      switch (c) {
-        case "&":
-          return "&amp;";
-        case "<":
-          return "&lt;";
-        case ">":
-          return "&gt;";
-        default:
-          return "&quot;";
-      }
-    });
   }
   const categories = [
     { id: "edicao", name: "Edição" },
@@ -8285,6 +8340,9 @@
           throw new Error(`Servidor respondeu com status ${response.status}`);
         }
         const data = await response.json();
+        if (typeof data.version !== "string" || !/^v?\d+(\.\d+){0,3}$/.test(data.version)) {
+          throw new Error("version.json com versão em formato inesperado.");
+        }
         this.latestManifest = data;
         const hasUpdate = isNewerVersion(data.version, this.currentVersion);
         return {
@@ -8312,16 +8370,16 @@
      */
     async applyUpdate(onProgress) {
       if (!this.latestManifest) {
-        const check = await this.checkForUpdates();
-        if (!check.hasUpdate || !check.manifest) {
-          return {
-            success: false,
-            requiresReload: false,
-            message: "Nenhuma atualização disponível no momento."
-          };
-        }
+        await this.checkForUpdates();
       }
       const manifest = this.latestManifest;
+      if (!manifest || !isNewerVersion(manifest.version, this.currentVersion)) {
+        return {
+          success: false,
+          requiresReload: false,
+          message: "Nenhuma atualização disponível no momento."
+        };
+      }
       onProgress?.("Conectando ao GitHub...", 15);
       try {
         const uxp = getUxpModule();
@@ -8336,31 +8394,47 @@
           "index.js": `https://raw.githubusercontent.com/${GITHUB_REPO}/main/dist/index.js`,
           "index.css": `https://raw.githubusercontent.com/${GITHUB_REPO}/main/dist/index.css`
         };
-        const fileEntries = Object.entries(filesToUpdate);
-        const totalFiles = fileEntries.length;
+        const allowedUrl = `https://raw.githubusercontent.com/${GITHUB_REPO}/`;
+        const fileEntries = Object.entries(filesToUpdate).filter(
+          ([filename, fileUrl2]) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(filename) && fileUrl2.startsWith(allowedUrl)
+        );
+        if (fileEntries.length === 0) {
+          throw new Error("Manifesto sem arquivos válidos para atualizar.");
+        }
+        onProgress?.("Baixando a atualização...", 25);
+        const downloads = await Promise.all(
+          fileEntries.map(async ([filename, fileUrl2]) => {
+            const fileResponse = await fetch(`${fileUrl2}?_t=${Date.now()}`, {
+              cache: "no-store"
+            });
+            if (!fileResponse.ok) {
+              throw new Error(`Falha ao baixar ${filename} (${fileResponse.status})`);
+            }
+            return { filename, data: await fileResponse.arrayBuffer() };
+          })
+        );
+        const binary = getUxpModule()?.storage?.formats?.binary;
         let completed = 0;
-        for (const [filename, fileUrl2] of fileEntries) {
-          onProgress?.(
-            `Baixando ${filename}...`,
-            20 + Math.round(completed / totalFiles * 60)
-          );
-          const fileResponse = await fetch(`${fileUrl2}?_t=${Date.now()}`, {
-            cache: "no-store"
-          });
-          if (!fileResponse.ok) {
-            throw new Error(
-              `Falha ao baixar ${filename} (${fileResponse.status})`
-            );
-          }
-          const fileData = await fileResponse.text();
+        for (const { filename, data } of downloads) {
           onProgress?.(
             `Gravando ${filename}...`,
-            20 + Math.round((completed + 0.5) / totalFiles * 60)
+            60 + Math.round(completed / downloads.length * 35)
           );
           const targetFile = await pluginFolder.createFile(filename, {
             overwrite: true
           });
-          await targetFile.write(fileData);
+          let written = false;
+          if (binary !== void 0) {
+            try {
+              await targetFile.write(data, { format: binary });
+              written = true;
+            } catch (cause) {
+              console.warn("[Updater] escrita binária recusada, usando texto:", cause);
+            }
+          }
+          if (!written) {
+            await targetFile.write(decodeUtf8(data));
+          }
           completed += 1;
         }
         onProgress?.("Atualização concluída!", 100);
@@ -8405,6 +8479,17 @@
       }
     }
   }
+  function decodeUtf8(data) {
+    if (typeof TextDecoder === "function") {
+      return new TextDecoder("utf-8").decode(data);
+    }
+    const bytes = new Uint8Array(data);
+    let out = "";
+    for (let at = 0; at < bytes.length; at += 8192) {
+      out += String.fromCharCode(...bytes.subarray(at, at + 8192));
+    }
+    return decodeURIComponent(escape(out));
+  }
   function getUxpModule() {
     try {
       if (typeof require === "function") {
@@ -8426,7 +8511,7 @@
   }
   const PRODUCT_NAME = "Framelab";
   const PRODUCT_TAGLINE = "Premiere";
-  const VERSION = "0.2.1";
+  const VERSION = "0.2.2";
   class ProductShell {
     constructor(root) {
       this.updateBadgeEl = null;
@@ -8546,8 +8631,9 @@
       }
       const badge = document.createElement("button");
       badge.className = "update-badge";
-      badge.title = `Nova versão v${version} disponível! Clique para atualizar.`;
-      badge.innerHTML = `<span class="update-dot"></span><span>Atualizar (v${version})</span>`;
+      const safe = escapeHtml(version);
+      badge.title = `Nova versão v${safe} disponível! Clique para atualizar.`;
+      badge.innerHTML = `<span class="update-dot"></span><span>Atualizar (v${safe})</span>`;
       badge.addEventListener("click", () => this.showUpdateModal());
       this.topbarEl.append(badge);
       this.updateBadgeEl = badge;
@@ -8700,6 +8786,10 @@
     selectTool(toolId) {
       const tool = findTool(toolId);
       if (!tool || this.activeToolId === toolId) {
+        return;
+      }
+      if (tool.available === false) {
+        this.setStatus(`${tool.name} não está disponível nesta versão do Premiere.`, "error");
         return;
       }
       if (this.activeToolId) {
@@ -8919,20 +9009,6 @@
   }
   function refreshGlyph() {
     return '<svg viewBox="0 0 14 14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="square"><path d="M11.6 7a4.6 4.6 0 1 1-1.5-3.4"/><path d="M11.8 1.6v3.2H8.6"/></svg>';
-  }
-  function escapeHtml(value) {
-    return value.replace(/[&<>"]/g, (character) => {
-      switch (character) {
-        case "&":
-          return "&amp;";
-        case "<":
-          return "&lt;";
-        case ">":
-          return "&gt;";
-        default:
-          return "&quot;";
-      }
-    });
   }
   function bootstrap() {
     const root = document.getElementById("root");

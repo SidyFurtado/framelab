@@ -14,7 +14,7 @@
  * havia muleta.
  */
 import type { Tool, ToolContext } from "../../shell/tool";
-import { CONTROL, setDisabled } from "../../shell/controls";
+import { CONTROL, setDisabled, escapeHtml } from "../../shell/controls";
 import {
   applyCuts,
   scanSelection,
@@ -245,9 +245,14 @@ export const fillersTool: Tool = {
       });
       context.setStatus(result.message, result.ok ? "done" : "error");
 
-      if (result.ok && result.snapshot) {
+      // O snapshot vale MESMO na falha parcial: é ele que recupera os
+      // clipes originais quando o corte parou no meio — a mensagem do
+      // executor manda usar o Desfazer, então o botão tem que existir.
+      if (result.snapshot) {
         snapshot = result.snapshot;
         context.setResetHandler(() => void runUndo());
+      }
+      if (result.ok && result.snapshot) {
         // O corte moveu tudo: o plano antigo aponta para uma timeline
         // que não existe mais. Análise nova ou desfazer — nada de
         // aplicar duas vezes o mesmo plano.
@@ -255,6 +260,10 @@ export const fillersTool: Tool = {
         plans = new Map();
         renderReport();
         context.refreshSelection();
+      } else if (!result.ok && !result.snapshot && scan.readyCount > 0) {
+        // Recusa seca, nada escrito: o plano segue válido e o botão
+        // segue vivo.
+        context.setApplyEnabled(true);
       }
     });
 
@@ -397,13 +406,3 @@ function markup(params: FillerParams): string {
   );
 }
 
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"]/g, (c) => {
-    switch (c) {
-      case "&": return "&amp;";
-      case "<": return "&lt;";
-      case ">": return "&gt;";
-      default: return "&quot;";
-    }
-  });
-}

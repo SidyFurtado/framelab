@@ -13,6 +13,7 @@ const PATHS: Record<string, string> = {
   folder: '<path d="M2 4.2h3.6l1 1.4H12v5.2H2z"/>',
   text: '<path d="M2.6 3.6h8.8M7 3.6v7.2M4.8 10.8h4.4"/>',
   download: '<path d="M7 2.4v6.4"/><path d="M4.2 6.2 7 9l2.8-2.8"/><path d="M2.6 11.4h8.8"/>',
+  speech: '<path d="M2 3h10v6H8l-2.6 2.2V9H2z"/><path d="M4.2 6h.9M6.6 6h.9M9 6h.9"/>',
 };
 
 export function glyph(name: string): string {

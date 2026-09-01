@@ -37,6 +37,13 @@ import {
   type Quality,
 } from "./ytdlp";
 import { uxpModule } from "../silence/workspace";
+import {
+  fetchManyTikTok,
+  isTikTokUrl,
+  tiktokFileName,
+  type TikTokFast,
+} from "./tiktok";
+import type { DirectJob } from "./ytdlp";
 
 /**
  * Um botão que abre uma lista de opções.
@@ -350,22 +357,50 @@ export const downloadTool: Tool = {
       if (scanEl) scanEl.textContent = "Consultando…";
 
       try {
-        const { result, probes: found } = await probeUrls(
-          list,
-          config,
-          (done, total, _percent, log) => {
-            showProgress(`${done}/${total}`, null);
-            showLog(log);
-          },
-          () => cancelled,
-          showManual
-        );
-        probes = found;
+        // TikTok vai pela via rápida (uma chamada de API, ~1s); o que
+        // ela não resolver — e todo o resto — vai pelo yt-dlp. Ver
+        // tiktok.ts para o porquê da existência das duas portas.
+        const byUrl = new Map<string, Probe>();
+        const tiktoks = list.filter((url) => isTikTokUrl(url));
+        const fastInfos = await fetchManyTikTok(tiktoks);
+        const slow: string[] = [];
+        for (const url of list) {
+          if (!isTikTokUrl(url)) {
+            slow.push(url);
+            continue;
+          }
+          const info = fastInfos[tiktoks.indexOf(url)];
+          if (info) {
+            byUrl.set(url, fastProbe(url, info));
+          } else {
+            slow.push(url);
+          }
+        }
+
+        let result = { ok: true, error: null as string | null, log: "", ytdlpPath: null as string | null };
+        if (slow.length > 0) {
+          const scripted = await probeUrls(
+            slow,
+            config,
+            (done, total, _percent, log) => {
+              showProgress(`${done}/${total}`, null);
+              showLog(log);
+            },
+            () => cancelled,
+            showManual
+          );
+          result = { ...result, ...scripted.result };
+          scripted.probes.forEach((probe, index) => byUrl.set(slow[index], probe));
+        }
+
+        probes = list.map((url) => byUrl.get(url)).filter((p): p is Probe => !!p);
         renderList();
         renderQualities();
-        showLog(result.log);
 
         const ok = probes.filter((probe) => probe.ok).length;
+        // O log é a explicação de uma falha, não um diário: com tudo
+        // certo ele sai da frente.
+        showLog(ok === probes.length && result.ok ? "" : result.log);
         if (ok === 0) {
           context.setStatus(describeRunError(result.error ?? "ytdlp-failed", result.log), "error");
         } else if (ok < probes.length) {
@@ -411,10 +446,28 @@ export const downloadTool: Tool = {
       startBusy(`Baixando em ${quality.label}…`);
 
       try {
+        // Os links do CDN expiram, então a via rápida consulta de novo
+        // AGORA — um segundo por link. O que ela não resolver desce
+        // para o yt-dlp junto com os links que nunca foram dela.
+        const direct: DirectJob[] = [];
+        const slow: string[] = [];
+        const tiktoks = list.filter((url) => isTikTokUrl(url));
+        const fastInfos = tiktoks.length > 0 ? await fetchManyTikTok(tiktoks) : [];
+        for (const url of list) {
+          const info = isTikTokUrl(url) ? fastInfos[tiktoks.indexOf(url)] : null;
+          const job = info ? directJobFor(url, info, quality) : null;
+          if (job) {
+            direct.push(job);
+          } else {
+            slow.push(url);
+          }
+        }
+
         const outcome = await downloadUrls(
-          list,
+          slow,
           quality,
           config,
+          direct,
           (done, total, percent, log) => {
             showProgress(`${done || 1}/${total}`, percent);
             showLog(log);
@@ -422,8 +475,8 @@ export const downloadTool: Tool = {
           () => cancelled,
           showManual
         );
-        showLog(outcome.log);
         showProgress(null, null);
+        showLog(outcome.ok && outcome.failed === 0 ? "" : outcome.log);
 
         if (!outcome.ok && outcome.files.length === 0) {
           context.setStatus(describeRunError(outcome.error, outcome.log), "error");
@@ -608,7 +661,7 @@ export const downloadTool: Tool = {
       } catch (cause) {
         context.setStatus(describeError(cause), "error");
       } finally {
-        if (installEl) installEl.textContent = "Instalar yt-dlp";
+        if (installEl) installEl.textContent = "Reinstalar yt-dlp";
         endBusy();
       }
     }
@@ -696,6 +749,68 @@ export const downloadTool: Tool = {
     releaseDocument = null;
   },
 };
+
+// ── a via rápida traduzida para o painel ───────────────────────────
+
+/**
+ * O que a API do TikTok respondeu, na mesma forma dos probes do
+ * yt-dlp — para a lista, a escada de qualidade e a estimativa não
+ * saberem por qual porta a resposta entrou.
+ *
+ * As resoluções são o par que a API oferece: HD (praticamente sempre
+ * 1080 de lado menor) e a padrão (~540). É aproximação declarada, não
+ * medida — o suficiente para a escada e o tamanho, que é o que essas
+ * linhas alimentam.
+ */
+function fastProbe(url: string, info: TikTokFast): Probe {
+  const resolutions: number[] = [];
+  const sizeByResolution: Record<number, number> = {};
+  if (info.hdUrl) {
+    resolutions.push(1080);
+    sizeByResolution[1080] = info.sizeHd;
+  }
+  resolutions.push(540);
+  sizeByResolution[540] = info.sizeSd;
+
+  return {
+    url,
+    ok: true,
+    error: null,
+    title: info.title,
+    id: info.id,
+    site: "TikTok",
+    uploader: null,
+    durationSeconds: info.durationSeconds,
+    resolutions,
+    sizeByResolution,
+    // A via rápida entrega a cópia limpa por construção; o selo do
+    // painel diz exatamente isso.
+    hadWatermarked: true,
+  };
+}
+
+/**
+ * O job de curl para a qualidade pedida. null quando esta qualidade
+ * precisa do yt-dlp — MP3 sem trilha na resposta, por exemplo.
+ */
+function directJobFor(url: string, info: TikTokFast, quality: Quality): DirectJob | null {
+  if (quality.audioOnly) {
+    if (!info.musicUrl) {
+      return null;
+    }
+    return {
+      mediaUrl: info.musicUrl,
+      fileName: tiktokFileName(info, "mp3"),
+      sourceUrl: url,
+    };
+  }
+  const wantsHd = quality.height === null || quality.height >= 720;
+  return {
+    mediaUrl: wantsHd && info.hdUrl ? info.hdUrl : info.playUrl,
+    fileName: tiktokFileName(info, "mp4"),
+    sourceUrl: url,
+  };
+}
 
 // ── texto derivado ─────────────────────────────────────────────────
 
@@ -822,6 +937,7 @@ function markup(): string {
           '<div class="sil-manual" data-manual hidden></div>' +
           '<div class="dl-list" data-list></div>' +
           '<div class="dl-progress" data-progress hidden></div>' +
+          '<pre class="dl-log" data-log hidden></pre>' +
         "</div>" +
       "</div>" +
 
@@ -872,13 +988,12 @@ function markup(): string {
             '<div class="sil-ffmpeg-group">' +
               '<input type="text" class="sil-path" data-ytdlp-path spellcheck="false" ' +
               'placeholder="deixe vazio para procurar sozinho">' +
-              `<div class="org-scan" ${CONTROL} data-install>Instalar yt-dlp</div>` +
+              `<div class="org-scan" ${CONTROL} data-install>Reinstalar yt-dlp</div>` +
             "</div>" +
-            '<p class="field-note">Instalar baixa o binário oficial para a pasta do ' +
-            "plugin — não precisa de Homebrew nem de Python. Para 1440p e 4K também é " +
-            "preciso ter o ffmpeg, que é quem junta vídeo e áudio.</p>" +
+            '<p class="field-note">Não precisa instalar nada: na primeira vez o painel ' +
+            "baixa sozinho o yt-dlp e o ffmpeg oficiais para a pasta do plugin. Este " +
+            "botão só força uma reinstalação, se algum dia precisar atualizar.</p>" +
           "</div>" +
-          '<pre class="dl-log" data-log hidden></pre>' +
         "</div>" +
       "</div>" +
     "</div>"

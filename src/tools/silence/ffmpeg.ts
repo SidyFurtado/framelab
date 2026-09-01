@@ -481,7 +481,9 @@ export function unixScript(
     // A ordem procura primeiro o que o editor escolheu, depois os
     // lugares onde Homebrew e MacPorts instalam, e só então o PATH —
     // que num shell não interativo pode nem ter /opt/homebrew.
-    'for candidate in "$CUSTOM" /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg /opt/local/bin/ffmpeg /usr/bin/ffmpeg; do',
+    // "$WORK/ffmpeg" é o binário que o Baixar Vídeos provisiona na
+    // primeira vez: quem usou o downloader nunca vê "instale o ffmpeg".
+    'for candidate in "$CUSTOM" /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg /opt/local/bin/ffmpeg /usr/bin/ffmpeg "$WORK/ffmpeg"; do',
     '  if [ -n "$candidate" ] && [ -x "$candidate" ]; then FFMPEG="$candidate"; break; fi',
     "done",
     'if [ -z "$FFMPEG" ]; then FFMPEG="$(command -v ffmpeg 2>/dev/null || true)"; fi',
@@ -605,7 +607,8 @@ export function probeScript(folder: string, ffmpegPath: string): string {
     "set -u",
     `CUSTOM=${shellQuote(ffmpegPath)}`,
     "FFMPEG=''",
-    'for candidate in "$CUSTOM" /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg /opt/local/bin/ffmpeg /usr/bin/ffmpeg; do',
+    'for candidate in "$CUSTOM" /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg /opt/local/bin/ffmpeg /usr/bin/ffmpeg ' +
+      shellQuote(join(folder, "ffmpeg")) + "; do",
     '  if [ -n "$candidate" ] && [ -x "$candidate" ]; then FFMPEG="$candidate"; break; fi',
     "done",
     'if [ -z "$FFMPEG" ]; then FFMPEG="$(command -v ffmpeg 2>/dev/null || true)"; fi',

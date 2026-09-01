@@ -356,6 +356,19 @@ export async function write(
   throw lastError ?? new Error(`não foi possível escrever ${name}`);
 }
 
+/**
+ * Garante um subdiretório da pasta de trabalho. Existir já é sucesso.
+ * Nasceu para o bundle do runner silencioso (Contents/MacOS), que é o
+ * primeiro morador com mais de um nível.
+ */
+export async function ensureDir(space: Workspace, relative: string): Promise<void> {
+  const fs = fsModule();
+  if (!fs) {
+    throw new Error('require("fs") não resolveu');
+  }
+  await fs.mkdir(join(space.fsBase, relative), { recursive: true });
+}
+
 export function readText(space: Workspace, name: string): string | null {
   const fs = fsModule();
   if (!fs) {

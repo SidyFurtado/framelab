@@ -20,6 +20,12 @@ export interface Span {
 export interface VoicedSpan extends Span {
   filler: boolean;
   /**
+   * A palavra como a transcrição escreveu. Ausente no modo onda, onde
+   * o intervalo vem do envelope e não tem texto nenhum. O Corte de
+   * Silêncios não a usa; o Cortar Muletas decide por ela.
+   */
+  text?: string;
+  /**
    * Confiança do reconhecimento, 0..1. Vale 1 quando a transcrição
    * não informa — ausência de dado não pode virar suspeita.
    */

@@ -31,6 +31,7 @@
  * mantém no páreo os formatos que simplesmente não têm essa etiqueta,
  * que é o caso do YouTube inteiro. Sem ele, o filtro derrubava tudo.
  */
+import { ensureSilentLauncher } from "./runner";
 import {
   describe,
   isWindows,
@@ -51,6 +52,8 @@ const RESULT_FILE = "dl-result.json";
 const PROGRESS_FILE = "dl-progress.txt";
 const LOG_FILE = "dl-log.txt";
 const FILES_FILE = "dl-files.txt";
+/** Escrito na primeira linha útil do script: prova que ele rodou. */
+const STARTED_FILE = "dl-started.txt";
 const CONFIG_FILE = "download-config.json";
 const SCRIPT_FILE = "download.command";
 const SCRIPT_FILE_WIN = "download.bat";
@@ -73,9 +76,12 @@ export function localBinaryName(): string {
 
 // ── polling ────────────────────────────────────────────────────────
 
-const POLL_MS = 400;
-/** Uma sondagem é rede e nada mais; um download pode ser meia hora. */
-const PROBE_TIMEOUT_MS = 3 * 60 * 1000;
+const POLL_MS = 250;
+/**
+ * Uma sondagem é rede e nada mais — mas a PRIMEIRA pode carregar o
+ * yt-dlp junto (35 MB), então o teto respira.
+ */
+const PROBE_TIMEOUT_MS = 8 * 60 * 1000;
 const DOWNLOAD_TIMEOUT_MS = 90 * 60 * 1000;
 const INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -488,28 +494,63 @@ async function run(launch: Launch): Promise<RunResult> {
 
   // Sobra de uma execução anterior faria o polling terminar antes de o
   // yt-dlp começar, com o resultado do link de ontem.
-  for (const name of [RESULT_FILE, PROGRESS_FILE, LOG_FILE, FILES_FILE, ...launch.stale]) {
+  for (const name of [
+    RESULT_FILE,
+    PROGRESS_FILE,
+    LOG_FILE,
+    FILES_FILE,
+    STARTED_FILE,
+    ...launch.stale,
+  ]) {
     await remove(space, name);
   }
 
   await write(space, scriptName(), launch.build(space), true);
 
-  // Uma recusa aqui não é o fim: o script está escrito e é um duplo
-  // clique. O polling segue esperando por ele.
+  // Primeiro o caminho silencioso: o runner executa o script sem abrir
+  // Terminal (ver runner.ts). Se o lançamento for recusado — ou se o
+  // carimbo de início não aparecer — o Terminal volta como plano B:
+  // feio e visível, mas nunca uma funcionalidade morta.
   let launchError: string | null = null;
+  let awaitingStamp = false;
   try {
-    await shell.openPath(scriptPath, launch.purpose);
+    const launcher = await ensureSilentLauncher(scriptName());
+    await shell.openPath(launcher.path, launch.purpose);
+    awaitingStamp = true;
   } catch (cause) {
-    launchError = describe(cause);
-    console.error("[Download] openPath recusou:", cause);
-    launch.onManual?.(scriptPath, launchError);
+    console.error("[Download] runner silencioso recusado:", describe(cause));
+  }
+  if (!awaitingStamp) {
+    try {
+      await shell.openPath(scriptPath, launch.purpose);
+    } catch (cause) {
+      launchError = describe(cause);
+      console.error("[Download] openPath recusou:", cause);
+      launch.onManual?.(scriptPath, launchError);
+    }
   }
 
+  /** Quando desistir do silêncio: tempo de sobra para o .app abrir. */
+  const stampDeadline = Date.now() + 8000;
   const deadline = Date.now() + launch.timeoutMs;
   let lastSignature = "";
   while (Date.now() < deadline) {
     if (launch.cancelled?.()) {
       return { ...fail("cancelled", scriptPath) };
+    }
+
+    // O runner lançou mas o script não deu sinal de vida? Terminal.
+    if (awaitingStamp && Date.now() > stampDeadline) {
+      awaitingStamp = false;
+      if (!readText(space, STARTED_FILE)) {
+        console.warn("[Download] sem carimbo do runner — caindo para o Terminal.");
+        try {
+          await shell.openPath(scriptPath, launch.purpose);
+        } catch (cause) {
+          launchError = describe(cause);
+          launch.onManual?.(scriptPath, launchError);
+        }
+      }
     }
 
     if (launch.onProgress) {
@@ -641,6 +682,19 @@ export async function probeUrls(
   return { result, probes };
 }
 
+/**
+ * Um download por link direto: a via rápida do TikTok resolve a URL
+ * do CDN no painel e o script só precisa de um curl. Sem yt-dlp.
+ */
+export interface DirectJob {
+  /** O link do CDN, já sem marca d'água. */
+  mediaUrl: string;
+  /** Nome final do arquivo, já saneado pelo painel. */
+  fileName: string;
+  /** O link original, para o log dizer de quem era a falha. */
+  sourceUrl: string;
+}
+
 export interface DownloadOutcome extends RunResult {
   /** Caminhos nativos do que foi de fato escrito no disco. */
   files: string[];
@@ -650,6 +704,7 @@ export async function downloadUrls(
   urls: readonly string[],
   quality: Quality,
   config: DownloadConfig,
+  direct: readonly DirectJob[] = [],
   onProgress?: RunProgress,
   cancelled?: () => boolean,
   onManual?: (scriptPath: string, reason: string) => void
@@ -659,15 +714,15 @@ export async function downloadUrls(
   const result = await run({
     build: (space) =>
       isWindows()
-        ? downloadScriptWin(urls, quality, config, space.nativeBase, destination)
-        : downloadScriptUnix(urls, quality, config, space.nativeBase, destination),
+        ? downloadScriptWin(urls, quality, config, space.nativeBase, destination, direct)
+        : downloadScriptUnix(urls, quality, config, space.nativeBase, destination, direct),
     timeoutMs: DOWNLOAD_TIMEOUT_MS,
     stale: [],
     onProgress,
-    total: urls.length,
+    total: urls.length + direct.length,
     cancelled,
     onManual,
-    purpose: "Baixar os vídeos dos links informados com o yt-dlp.",
+    purpose: "Baixar os vídeos dos links informados.",
   });
 
   const space = await workspace();
@@ -730,15 +785,29 @@ function q(value: string): string {
 }
 
 /** O preâmbulo comum: acha o yt-dlp, ou desiste dizendo por quê. */
-function unixPreamble(folder: string, config: DownloadConfig): string[] {
+/**
+ * O começo de todo script: pasta, cwd e o carimbo de vida. O yt-dlp
+ * NÃO mora aqui — um lote só de TikTok baixa por link direto e não
+ * tem por que provisionar 35 MB de extrator.
+ */
+function unixBase(folder: string): string[] {
   return [
     "#!/bin/bash",
     "# Gerado pelo Framelab — Baixar Vídeos. Pode apagar.",
     `printf '\\033]0;Framelab — baixando\\007'`,
     "set -u",
     `WORK=${q(folder)}`,
-    `CUSTOM=${q(config.ytdlpPath)}`,
+    'cd "$WORK" || exit 1',
+    `printf 1 > "$WORK/${STARTED_FILE}"`,
+    // Com set -u, o result.json cita $YTDLP mesmo quando o lote não
+    // precisou dele.
     "YTDLP=''",
+  ];
+}
+
+function unixYtdlpSetup(config: DownloadConfig): string[] {
+  return [
+    `CUSTOM=${q(config.ytdlpPath)}`,
     // A ordem procura primeiro o que o editor escolheu, depois o
     // binário que o botão "Instalar" deixa aqui, e só então os lugares
     // do Homebrew, do MacPorts e do pip — que num shell não interativo
@@ -748,13 +817,46 @@ function unixPreamble(folder: string, config: DownloadConfig): string[] {
     '  if [ -n "$candidate" ] && [ -x "$candidate" ]; then YTDLP="$candidate"; break; fi',
     "done",
     'if [ -z "$YTDLP" ]; then YTDLP="$(command -v yt-dlp 2>/dev/null || true)"; fi',
+    // Não achou? Baixa e segue na MESMA execução. O usuário final não
+    // instala ferramenta: o painel se prepara sozinho na primeira vez.
+    'if [ -z "$YTDLP" ]; then',
+    '  echo "Preparando o downloader (so na primeira vez)..."',
+    `  echo "Preparando o downloader (so na primeira vez)..." >> "$WORK/${LOG_FILE}"`,
+    `  if curl -fsSL --retry 3 -o "$WORK/yt-dlp.tmp" ${q(RELEASE_MAC)} 2>> "$WORK/${LOG_FILE}"; then`,
+    '    chmod +x "$WORK/yt-dlp.tmp"',
+    // Sem tirar a quarentena, a primeira execução morre num diálogo
+    // do Gatekeeper que o painel nunca veria.
+    '    xattr -d com.apple.quarantine "$WORK/yt-dlp.tmp" >/dev/null 2>&1 || true',
+    '    mv "$WORK/yt-dlp.tmp" "$WORK/yt-dlp"',
+    '    if "$WORK/yt-dlp" --version >/dev/null 2>&1; then YTDLP="$WORK/yt-dlp"; fi',
+    "  fi",
+    "fi",
     'if [ -z "$YTDLP" ]; then',
     `  printf '{"ok":false,"error":"ytdlp-not-found"}' > "$WORK/${RESULT_FILE}.tmp"`,
     `  mv "$WORK/${RESULT_FILE}.tmp" "$WORK/${RESULT_FILE}"`,
-    '  echo "yt-dlp nao encontrado. Use o botao Instalar no painel, ou brew install yt-dlp."',
+    '  echo "Nao foi possivel baixar o yt-dlp. Verifique a internet e tente de novo."',
     "  exit 1",
     "fi",
     'echo "yt-dlp: $YTDLP"',
+    // O runtime JS. Sem ele o YouTube ainda responde, mas pelo caminho
+    // deprecado: mais lento e com formatos faltando.
+    "DENO=''",
+    'for candidate in "$WORK/deno" /opt/homebrew/bin/deno /usr/local/bin/deno "$HOME/.deno/bin/deno"; do',
+    '  if [ -x "$candidate" ]; then DENO="$candidate"; break; fi',
+    "done",
+    'if [ -z "$DENO" ]; then DENO="$(command -v deno 2>/dev/null || true)"; fi',
+    'if [ -z "$DENO" ]; then',
+    '  echo "Preparando o motor de extracao (so na primeira vez)..."',
+    `  echo "Preparando o motor de extracao (so na primeira vez)..." >> "$WORK/${LOG_FILE}"`,
+    `  if [ "$(uname -m)" = "arm64" ]; then DURL=${q(DENO_MAC_ARM)}; else DURL=${q(DENO_MAC_INTEL)}; fi`,
+    `  if curl -fsSL --retry 3 -o "$WORK/deno.zip" "$DURL" 2>> "$WORK/${LOG_FILE}"; then`,
+    `    unzip -o -q "$WORK/deno.zip" deno -d "$WORK" >> "$WORK/${LOG_FILE}" 2>&1`,
+    '    rm -f "$WORK/deno.zip"',
+    '    chmod +x "$WORK/deno" 2>/dev/null',
+    '    xattr -d com.apple.quarantine "$WORK/deno" >/dev/null 2>&1 || true',
+    '    if "$WORK/deno" --version >/dev/null 2>&1; then DENO="$WORK/deno"; fi',
+    "  fi",
+    "fi",
   ];
 }
 
@@ -768,10 +870,28 @@ function unixFfmpeg(): string[] {
   return [
     "FFMPEG=''",
     "for candidate in /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg " +
-      "/opt/local/bin/ffmpeg /usr/bin/ffmpeg; do",
+      '/opt/local/bin/ffmpeg /usr/bin/ffmpeg "$WORK/ffmpeg"; do',
     '  if [ -x "$candidate" ]; then FFMPEG="$candidate"; break; fi',
     "done",
     'if [ -z "$FFMPEG" ]; then FFMPEG="$(command -v ffmpeg 2>/dev/null || true)"; fi',
+    // Na falta, baixa o build estático da arquitetura. A falha aqui é
+    // um rebaixamento, não um fim: sem ffmpeg o yt-dlp ainda entrega
+    // TikTok inteiro e YouTube até onde existe formato progressivo.
+    'if [ -z "$FFMPEG" ]; then',
+    '  echo "Preparando o ffmpeg (so na primeira vez)..."',
+    `  echo "Preparando o ffmpeg (so na primeira vez)..." >> "$WORK/${LOG_FILE}"`,
+    `  if [ "$(uname -m)" = "arm64" ]; then FFURL=${q(FFMPEG_MAC_ARM)}; ` +
+      `else FFURL=${q(FFMPEG_MAC_INTEL)}; fi`,
+    `  if curl -fsSL --retry 3 -o "$WORK/ffmpeg.zip" "$FFURL" 2>> "$WORK/${LOG_FILE}" || ` +
+      `curl -fsSL --retry 2 -o "$WORK/ffmpeg.zip" ${q(FFMPEG_MAC_RESERVE)} 2>> "$WORK/${LOG_FILE}"; then`,
+    `    unzip -o -q "$WORK/ffmpeg.zip" ffmpeg -d "$WORK" >> "$WORK/${LOG_FILE}" 2>&1`,
+    '    rm -f "$WORK/ffmpeg.zip"',
+    '    chmod +x "$WORK/ffmpeg" 2>/dev/null',
+    '    xattr -d com.apple.quarantine "$WORK/ffmpeg" >/dev/null 2>&1 || true',
+    '    if "$WORK/ffmpeg" -version >/dev/null 2>&1; then FFMPEG="$WORK/ffmpeg"; fi',
+    "  fi",
+    "fi",
+    'if [ -z "$FFMPEG" ]; then echo "ffmpeg indisponivel: qualidades altas podem sair menores."; fi',
     "FFDIR=''",
     'if [ -n "$FFMPEG" ]; then FFDIR="$(dirname "$FFMPEG")"; fi',
   ];
@@ -790,7 +910,7 @@ export function probeScriptUnix(
   config: DownloadConfig,
   folder: string
 ): string {
-  const lines = unixPreamble(folder, config);
+  const lines = [...unixBase(folder), ...unixYtdlpSetup(config)];
   lines.push("FAILED=0");
 
   urls.forEach((url, index) => {
@@ -799,6 +919,8 @@ export function probeScriptUnix(
       `echo "[${index + 1}/${urls.length}] consultando…"`,
       `printf '%s/%s' ${index + 1} ${urls.length} > "$WORK/${PROGRESS_FILE}"`,
       `if "$YTDLP" --no-warnings --no-playlist --ignore-config ` +
+        `--extractor-retries 5 --retry-sleep extractor:3 ` +
+        `\${DENO:+--js-runtimes "deno:$DENO"} ` +
         `${cookiesArg(config)}-J ${q(url)} > ${target}.tmp 2>> "$WORK/${LOG_FILE}"; then`,
       `  mv ${target}.tmp ${target}`,
       "else",
@@ -822,17 +944,44 @@ export function downloadScriptUnix(
   quality: Quality,
   config: DownloadConfig,
   folder: string,
-  destination: string
+  destination: string,
+  direct: readonly DirectJob[] = []
 ): string {
-  const lines = unixPreamble(folder, config);
-  lines.push(...unixFfmpeg());
+  const lines = unixBase(folder);
+  // yt-dlp, deno e ffmpeg só entram quando algum link precisa deles.
+  // Um lote só de TikTok fica em curl puro — é o que faz o caso mais
+  // comum responder em segundos, sem provisionamento nenhum.
+  if (urls.length > 0) {
+    lines.push(...unixYtdlpSetup(config), ...unixFfmpeg());
+  }
   lines.push(`DEST=${q(destination)}`, 'mkdir -p "$DEST"', "FAILED=0");
+
+  const total = direct.length + urls.length;
+  direct.forEach((job, index) => {
+    const target = `"$DEST/"${q(job.fileName)}`;
+    lines.push(
+      `echo "[${index + 1}/${total}] ${escapeEcho(job.fileName)}"`,
+      `printf '%s/%s' ${index + 1} ${total} > "$WORK/${PROGRESS_FILE}"`,
+      `if curl -fSL --retry 3 -o ${target} ${q(job.mediaUrl)} 2>> "$WORK/${LOG_FILE}"; then`,
+      `  printf '%s\\n' "$DEST/"${q(job.fileName)} >> "$WORK/${FILES_FILE}"`,
+      "else",
+      "  FAILED=$((FAILED+1))",
+      `  echo "ERROR: download direto falhou: ${escapeEcho(job.sourceUrl)}" >> "$WORK/${LOG_FILE}"`,
+      `  rm -f ${target}`,
+      "fi"
+    );
+  });
 
   const shared =
     `--newline --no-mtime --no-playlist --ignore-config --windows-filenames ` +
     `--trim-filenames 120 --retries 5 --fragment-retries 10 ` +
+    `--extractor-retries 5 --retry-sleep extractor:3 ` +
+    `\${DENO:+--js-runtimes "deno:$DENO"} ` +
     `-o ${q("%(title)s [%(id)s].%(ext)s")} ` +
-    `--print-to-file after_move:filepath "$WORK/${FILES_FILE}" ` +
+    // Relativo de propósito: o argumento do --print-to-file passa pelo
+    // sanitizador de template do yt-dlp, e um caminho absoluto longo
+    // saía truncado — o download funcionava e o painel via lista vazia.
+    `--print-to-file after_move:filepath ${q(FILES_FILE)} ` +
     cookiesArg(config);
 
   const sort = sortArg(quality);
@@ -844,9 +993,10 @@ export function downloadScriptUnix(
       `--merge-output-format mp4`;
 
   urls.forEach((url, index) => {
+    const step = direct.length + index + 1;
     lines.push(
-      `echo "[${index + 1}/${urls.length}] ${escapeEcho(url)}"`,
-      `printf '%s/%s' ${index + 1} ${urls.length} > "$WORK/${PROGRESS_FILE}"`,
+      `echo "[${step}/${total}] ${escapeEcho(url)}"`,
+      `printf '%s/%s' ${step} ${total} > "$WORK/${PROGRESS_FILE}"`,
       // `${FFDIR:+…}` some inteiro quando não há ffmpeg, em vez de
       // passar uma flag com valor vazio — que o yt-dlp recusa.
       `"$YTDLP" ${shared} ${media} -P "$DEST" ` +
@@ -859,6 +1009,14 @@ export function downloadScriptUnix(
   });
 
   lines.push(
+    // O caminho relativo do --print-to-file é à prova do sanitizador,
+    // mas o yt-dlp o resolve contra a pasta de destino (-P), não
+    // contra o cwd — medido num download real. A colheita cobre os
+    // dois comportamentos e não deixa arquivo de controle no destino.
+    `if [ -f "$DEST/${FILES_FILE}" ]; then`,
+    `  cat "$DEST/${FILES_FILE}" >> "$WORK/${FILES_FILE}"`,
+    `  rm -f "$DEST/${FILES_FILE}"`,
+    "fi",
     'if [ "$FAILED" -eq 0 ]; then',
     `  printf '{"ok":true,"ytdlp":"%s","failed":0}' "$YTDLP" > "$WORK/${RESULT_FILE}.tmp"`,
     "else",
@@ -875,6 +1033,38 @@ const RELEASE_MAC =
   "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos";
 const RELEASE_WIN =
   "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
+
+/**
+ * De onde vem o ffmpeg quando a máquina não tem um.
+ *
+ * macOS: os builds estáticos de Martin Riedl, que publicam um redirect
+ * estável por arquitetura — o zip traz o binário `ffmpeg` puro.
+ * O evermeet (x86_64) fica de reserva. Windows: o build oficial do
+ * projeto yt-dlp. Todas respondiam 200 quando isto foi escrito; se
+ * uma sumir, o script segue sem ffmpeg e avisa no log.
+ */
+const FFMPEG_MAC_ARM =
+  "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip";
+const FFMPEG_MAC_INTEL =
+  "https://ffmpeg.martin-riedl.de/redirect/latest/macos/amd64/release/ffmpeg.zip";
+const FFMPEG_MAC_RESERVE = "https://evermeet.cx/ffmpeg/getrelease/zip";
+const FFMPEG_WIN =
+  "https://github.com/yt-dlp/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip";
+
+/**
+ * O runtime JS que o yt-dlp quer para o YouTube.
+ *
+ * Desde 2026 a extração sem runtime está deprecada: fica mais lenta e
+ * perde formatos (o aviso apareceu num download real durante o
+ * desenvolvimento). O deno é o preferido deles; provisionar junto é o
+ * que mantém a promessa de "não instala nada".
+ */
+const DENO_MAC_ARM =
+  "https://github.com/denoland/deno/releases/latest/download/deno-aarch64-apple-darwin.zip";
+const DENO_MAC_INTEL =
+  "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-apple-darwin.zip";
+const DENO_WIN =
+  "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip";
 
 export function installScriptUnix(folder: string): string {
   return (
@@ -935,22 +1125,50 @@ function bq(value: string): string {
 }
 
 /** Mesma coreografia em cmd.exe. Não testado num Windows real. */
-function winPreamble(config: DownloadConfig, folder: string): string[] {
+function winBase(folder: string): string[] {
   return [
     "@echo off",
     "rem Gerado pelo Framelab - Baixar Videos. Pode apagar.",
     "title Framelab - baixando",
     `set "WORK=${batValue(folder)}"`,
+    'cd /d "%WORK%"',
+    `>"%WORK%\\${STARTED_FILE}" echo 1`,
+    'set "YTDLP="',
+    "set FAILED=0",
+  ];
+}
+
+function winYtdlpSetup(config: DownloadConfig): string[] {
+  return [
     `set "YTDLP=${batValue(config.ytdlpPath)}"`,
     `if "%YTDLP%"=="" if exist "%WORK%\\${LOCAL_BIN_WIN}" set "YTDLP=%WORK%\\${LOCAL_BIN_WIN}"`,
     `if "%YTDLP%"=="" for %%i in (yt-dlp.exe) do @set "YTDLP=%%~$PATH:i"`,
     'if "%YTDLP%"=="" (',
+    "  echo Preparando o downloader (so na primeira vez)...",
+    `  powershell -NoProfile -Command "try { Invoke-WebRequest -Uri '${RELEASE_WIN}' ` +
+      `-OutFile '%WORK%\\${LOCAL_BIN_WIN}' -UseBasicParsing } catch { exit 1 }"`,
+    `  if exist "%WORK%\\${LOCAL_BIN_WIN}" set "YTDLP=%WORK%\\${LOCAL_BIN_WIN}"`,
+    ")",
+    'if "%YTDLP%"=="" (',
     `  >"%WORK%\\${RESULT_FILE}.tmp" echo {"ok":false,"error":"ytdlp-not-found"}`,
     `  move /y "%WORK%\\${RESULT_FILE}.tmp" "%WORK%\\${RESULT_FILE}" >nul`,
-    "  echo yt-dlp nao encontrado. Use o botao Instalar no painel.",
+    "  echo Nao foi possivel baixar o yt-dlp. Verifique a internet.",
     "  exit /b 1",
     ")",
-    "set FAILED=0",
+    'set "DENO="',
+    `if exist "%WORK%\\deno.exe" set "DENO=%WORK%\\deno.exe"`,
+    'if "%DENO%"=="" for %%i in (deno.exe) do @set "DENO=%%~$PATH:i"',
+    'if "%DENO%"=="" (',
+    "  echo Preparando o motor de extracao (so na primeira vez)...",
+    `  powershell -NoProfile -Command "try { Invoke-WebRequest -Uri '${DENO_WIN}' ` +
+      `-OutFile '%WORK%\\deno.zip' -UseBasicParsing; ` +
+      `Expand-Archive -Force '%WORK%\\deno.zip' '%WORK%\\dz'; ` +
+      `Copy-Item '%WORK%\\dz\\deno.exe' '%WORK%\\deno.exe'; ` +
+      `Remove-Item -Recurse -Force '%WORK%\\dz','%WORK%\\deno.zip' } catch { exit 1 }"`,
+    `  if exist "%WORK%\\deno.exe" set "DENO=%WORK%\\deno.exe"`,
+    ")",
+    'set "JSARGS="',
+    'if not "%DENO%"=="" set JSARGS=--js-runtimes "deno:%DENO%"',
   ];
 }
 
@@ -959,7 +1177,7 @@ export function probeScriptWin(
   config: DownloadConfig,
   folder: string
 ): string {
-  const lines = winPreamble(config, folder);
+  const lines = [...winBase(folder), ...winYtdlpSetup(config)];
 
   urls.forEach((url, index) => {
     const target = `"%WORK%\\${infoFile(index)}"`;
@@ -967,6 +1185,7 @@ export function probeScriptWin(
       `echo [${index + 1}/${urls.length}] consultando...`,
       `>"%WORK%\\${PROGRESS_FILE}" echo ${index + 1}/${urls.length}`,
       `"%YTDLP%" --no-warnings --no-playlist --ignore-config ` +
+        `--extractor-retries 5 --retry-sleep extractor:3 %JSARGS% ` +
         `${cookiesArg(config)}-J ${bq(url)} > ${target} 2>>"%WORK%\\${LOG_FILE}"`,
       "if errorlevel 1 set /a FAILED+=1"
     );
@@ -986,19 +1205,62 @@ export function downloadScriptWin(
   quality: Quality,
   config: DownloadConfig,
   folder: string,
-  destination: string
+  destination: string,
+  direct: readonly DirectJob[] = []
 ): string {
-  const lines = winPreamble(config, folder);
+  const lines = winBase(folder);
+  if (urls.length > 0) {
+    lines.push(...winYtdlpSetup(config));
+  }
   lines.push(
     `set "DEST=${batValue(destination)}"`,
     'if not exist "%DEST%" mkdir "%DEST%"'
   );
+  const total = direct.length + urls.length;
+  // curl.exe existe no Windows 10+; é tudo que o link direto precisa.
+  direct.forEach((job, index) => {
+    lines.push(
+      `echo [${index + 1}/${total}] ${batValue(job.fileName)}`,
+      `>"%WORK%\\${PROGRESS_FILE}" echo ${index + 1}/${total}`,
+      `curl.exe -fSL --retry 3 -o "%DEST%\\${batValue(job.fileName)}" ` +
+        `${bq(job.mediaUrl)} >>"%WORK%\\${LOG_FILE}" 2>&1`,
+      "if errorlevel 1 (",
+      "  set /a FAILED+=1",
+      `  del /q "%DEST%\\${batValue(job.fileName)}" 2>nul`,
+      ") else (",
+      `  >>"%WORK%\\${FILES_FILE}" echo %DEST%\\${batValue(job.fileName)}`,
+      ")"
+    );
+  });
+  if (urls.length > 0) {
+    lines.push(
+    // ffmpeg: PATH vale, o provisionado vale, e na falta dos dois o
+    // script baixa o build oficial do projeto yt-dlp. Falhar aqui não
+    // derruba o download — só rebaixa a qualidade máxima.
+    'set "FFLOC="',
+    'for %%i in (ffmpeg.exe) do @if not "%%~$PATH:i"=="" set "FFLOC=SKIP"',
+    `if exist "%WORK%\\ffmpeg.exe" set "FFLOC=%WORK%"`,
+    'if "%FFLOC%"=="" (',
+    "  echo Preparando o ffmpeg (so na primeira vez)...",
+    `  powershell -NoProfile -Command "try { Invoke-WebRequest -Uri '${FFMPEG_WIN}' ` +
+      `-OutFile '%WORK%\\ff.zip' -UseBasicParsing; ` +
+      `Expand-Archive -Force '%WORK%\\ff.zip' '%WORK%\\ff'; ` +
+      `Copy-Item '%WORK%\\ff\\ffmpeg-master-latest-win64-gpl\\bin\\ffmpeg.exe' ` +
+      `'%WORK%\\ffmpeg.exe'; ` +
+      `Remove-Item -Recurse -Force '%WORK%\\ff','%WORK%\\ff.zip' } catch { exit 1 }"`,
+    `  if exist "%WORK%\\ffmpeg.exe" set "FFLOC=%WORK%"`,
+    ")",
+    'if "%FFLOC%"=="SKIP" set "FFLOC="',
+    'set "FFARGS="',
+    'if not "%FFLOC%"=="" set FFARGS=--ffmpeg-location "%FFLOC%"'
+    );
+  }
 
   const shared =
     `--newline --no-mtime --no-playlist --ignore-config --windows-filenames ` +
     `--trim-filenames 120 --retries 5 --fragment-retries 10 ` +
     `-o ${bq("%(title)s [%(id)s].%(ext)s")} ` +
-    `--print-to-file after_move:filepath "%WORK%\\${FILES_FILE}" ` +
+    `--print-to-file after_move:filepath ${bq(FILES_FILE)} ` +
     cookiesArg(config);
 
   const sort = sortArg(quality);
@@ -1011,12 +1273,16 @@ export function downloadScriptWin(
     lines.push(
       `echo [${index + 1}/${urls.length}]`,
       `>"%WORK%\\${PROGRESS_FILE}" echo ${index + 1}/${urls.length}`,
-      `"%YTDLP%" ${shared} ${media} -P "%DEST%" ${bq(url)} >>"%WORK%\\${LOG_FILE}" 2>&1`,
+      `"%YTDLP%" ${shared} ${media} -P "%DEST%" %FFARGS% %JSARGS% ${bq(url)} >>"%WORK%\\${LOG_FILE}" 2>&1`,
       "if errorlevel 1 set /a FAILED+=1"
     );
   });
 
   lines.push(
+    `if exist "%DEST%\\${FILES_FILE}" (`,
+    `  type "%DEST%\\${FILES_FILE}" >> "%WORK%\\${FILES_FILE}"`,
+    `  del /q "%DEST%\\${FILES_FILE}"`,
+    ")",
     'if "%FAILED%"=="0" (',
     `  >"%WORK%\\${RESULT_FILE}.tmp" echo {"ok":true,"ytdlp":"%YTDLP%","failed":0}`,
     ") else (",
@@ -1068,8 +1334,8 @@ export function describeRunError(code: string | null, log: string): string {
   switch (code) {
     case "ytdlp-not-found":
       return (
-        'yt-dlp não encontrado. Use o botão "Instalar yt-dlp" nos ajustes ' +
-        "avançados, ou instale com \"brew install yt-dlp\"."
+        "O downloader não conseguiu se preparar sozinho — sem acesso ao " +
+        "GitHub para baixar o yt-dlp. Confira a internet e tente de novo."
       );
     case "ytdlp-failed":
       return diagnoseLog(log);
@@ -1098,6 +1364,12 @@ export function describeRunError(code: string | null, log: string): string {
  * são poucas e cada uma tem uma saída diferente no painel.
  */
 function diagnoseLog(log: string): string {
+  if (/unable to extract universal data|rehydration/i.test(log)) {
+    return (
+      "O TikTok recusou a conversa desta vez — acontece em rajadas. " +
+      "Espere alguns segundos e tente de novo."
+    );
+  }
   if (/sign in to confirm|not a bot|cookies/i.test(log)) {
     return (
       "O site pediu login. Nos ajustes avançados, escolha o navegador onde " +
@@ -1122,7 +1394,15 @@ function diagnoseLog(log: string): string {
   if (/urlopen error|network|timed out|connection/i.test(log)) {
     return "Falha de rede durante o download.";
   }
-  return "O yt-dlp não concluiu. Veja o log abaixo.";
+  // Nenhum padrão conhecido: melhor a reclamação crua do yt-dlp que
+  // uma frase genérica — foi a falta disto que deixou um beta tester
+  // com "deu erro" e nada mais.
+  const errors = log.match(/^ERROR:.*$/gm);
+  if (errors && errors.length > 0) {
+    const last = errors[errors.length - 1].replace(/^ERROR:\s*/, "").slice(0, 220);
+    return `O yt-dlp reclamou: ${last}`;
+  }
+  return "O yt-dlp não concluiu. O log abaixo diz onde parou.";
 }
 
 // ── formatação ─────────────────────────────────────────────────────

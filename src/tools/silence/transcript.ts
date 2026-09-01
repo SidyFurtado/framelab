@@ -143,6 +143,7 @@ function readSegments(data: Record<string, unknown>): VoicedSpan[] | null {
         end: end + offset,
         filler: hasFillerTag(raw.tags),
         confidence: readConfidence(raw.confidence),
+        text: readText(raw),
       });
     }
   }
@@ -182,6 +183,7 @@ function readMonologues(data: Record<string, unknown>): VoicedSpan[] | null {
         end,
         filler: hasFillerTag(raw.tags),
         confidence: readConfidence(raw.confidence),
+        text: readText(raw),
       });
     }
   }
@@ -212,6 +214,21 @@ function readConfidence(value: unknown): number {
     return 1;
   }
   return Math.min(1, Math.max(0, parsed));
+}
+
+/**
+ * A palavra escrita. O schema atual usa `text`; exportadores antigos
+ * usam `word` ou `value`. Sem texto, vale undefined — quem consome
+ * decide o que fazer com uma palavra muda.
+ */
+function readText(raw: Record<string, unknown>): string | undefined {
+  for (const key of ["text", "word", "value"]) {
+    const value = raw[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return undefined;
 }
 
 function hasFillerTag(tags: unknown): boolean {

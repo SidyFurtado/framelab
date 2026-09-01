@@ -4,6 +4,7 @@ import { flowTool } from "../tools/flow/flowTool";
 import { silenceTool } from "../tools/silence/silenceTool";
 import { organizeTool } from "../tools/organize/organizeTool";
 import { downloadTool } from "../tools/download/downloadTool";
+import { fillersTool } from "../tools/fillers/fillersTool";
 
 /**
  * The catalogue. Adding a Tool means writing it and listing it here —
@@ -19,6 +20,7 @@ export const categories: readonly Category[] = [
 export const tools: readonly Tool[] = [
   zoomTool,
   silenceTool,
+  fillersTool,
   flowTool,
   downloadTool,
   organizeTool,

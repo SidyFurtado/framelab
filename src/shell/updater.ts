@@ -20,7 +20,7 @@ export interface UpdateCheckResult {
   error?: string;
 }
 
-const GITHUB_REPO = "SidyFurtado/edit-toolbox";
+const GITHUB_REPO = "SidyFurtado/framelab";
 const VERSION_MANIFEST_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/main/version.json`;
 
 export class PluginUpdater {
@@ -163,7 +163,7 @@ export class PluginUpdater {
       return {
         success: true,
         requiresReload: true,
-        message: `Edit Toolbox v${manifest.version} instalado com sucesso!`,
+        message: `Framelab v${manifest.version} instalado com sucesso!`,
       };
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);

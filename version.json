@@ -2,12 +2,12 @@
   "version": "0.1.0",
   "releaseDate": "2026-09-01",
   "minPremiereVersion": "25.0.0",
-  "changelog": "Versão inicial Beta com ferramentas de corte de silêncio (Silence Cut), Sound Design AI, Curvas de Animação e integração UXP com Premiere Pro.",
-  "downloadUrl": "https://github.com/SidyFurtado/edit-toolbox/releases/latest/download/EditToolbox-macOS.zip",
+  "changelog": "Versão inicial Beta do Framelab com Silence Cut, AI Sound Design, Curvas de Animação e integração UXP nativa.",
+  "downloadUrl": "https://github.com/SidyFurtado/framelab/releases/latest/download/Framelab-macOS.zip",
   "bundleFiles": {
-    "manifest.json": "https://raw.githubusercontent.com/SidyFurtado/edit-toolbox/main/dist/manifest.json",
-    "index.html": "https://raw.githubusercontent.com/SidyFurtado/edit-toolbox/main/dist/index.html",
-    "index.js": "https://raw.githubusercontent.com/SidyFurtado/edit-toolbox/main/dist/index.js",
-    "index.css": "https://raw.githubusercontent.com/SidyFurtado/edit-toolbox/main/dist/index.css"
+    "manifest.json": "https://raw.githubusercontent.com/SidyFurtado/framelab/main/dist/manifest.json",
+    "index.html": "https://raw.githubusercontent.com/SidyFurtado/framelab/main/dist/index.html",
+    "index.js": "https://raw.githubusercontent.com/SidyFurtado/framelab/main/dist/index.js",
+    "index.css": "https://raw.githubusercontent.com/SidyFurtado/framelab/main/dist/index.css"
   }
 }

@@ -14,7 +14,7 @@ export default defineConfig({
     lib: {
       entry: "src/main.ts",
       formats: ["iife"],
-      name: "EditToolbox",
+      name: "Framelab",
       fileName: () => "index.js",
     },
     rollupOptions: {

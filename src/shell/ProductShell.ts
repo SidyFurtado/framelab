@@ -21,7 +21,7 @@ import {
 } from "../bridge/premiere";
 import { PluginUpdater, type VersionManifest } from "./updater";
 
-const PRODUCT_NAME = "Edit Toolbox";
+const PRODUCT_NAME = "Framelab";
 const PRODUCT_TAGLINE = "Premiere";
 const VERSION = "0.1.0";
 

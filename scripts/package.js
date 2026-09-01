@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Packaging and Release Script for Edit Toolbox
+ * Packaging and Release Script for Framelab
  * Builds, packages .ccx, creates standalone macOS installer ZIP, and updates version.json.
  */
 
@@ -21,7 +21,7 @@ function run(command, cwd = ROOT_DIR) {
 }
 
 function main() {
-  console.log("\n\x1b[33m=== Empacotador do Edit Toolbox (macOS) ===\x1b[0m\n");
+  console.log("\n\x1b[33m=== Empacotador do Framelab (macOS) ===\x1b[0m\n");
 
   const pkg = JSON.parse(fs.readFileSync(PKG_JSON_PATH, "utf8"));
   const version = pkg.version || "0.1.0";
@@ -32,12 +32,12 @@ function main() {
   run("npm run build");
 
   // 2. Criação do pacote .ccx (ZIP do conteúdo de dist/)
-  console.log("\n[2/5] Gerando pacote Adobe CCX (EditToolbox.ccx)...");
-  const ccxPath = path.join(DIST_DIR, "EditToolbox.ccx");
+  console.log("\n[2/5] Gerando pacote Adobe CCX (Framelab.ccx)...");
+  const ccxPath = path.join(DIST_DIR, "Framelab.ccx");
   if (fs.existsSync(ccxPath)) fs.unlinkSync(ccxPath);
 
   // Executa zip dentro de dist
-  execSync(`zip -q -r EditToolbox.ccx manifest.json index.html index.js index.css`, {
+  execSync(`zip -q -r Framelab.ccx manifest.json index.html index.js index.css`, {
     cwd: DIST_DIR,
   });
   console.log(`  ✓ CCX gerado em: ${ccxPath}`);
@@ -48,17 +48,17 @@ function main() {
     fs.rmSync(STAGE_DIR, { recursive: true, force: true });
   }
 
-  const bundleFolder = path.join(STAGE_DIR, "EditToolbox-macOS");
+  const bundleFolder = path.join(STAGE_DIR, "Framelab-macOS");
   fs.mkdirSync(bundleFolder, { recursive: true });
 
   // Copia os scripts do instalador
   fs.copyFileSync(
-    path.join(INSTALLER_DIR, "Instalar_Edit_Toolbox.command"),
-    path.join(bundleFolder, "Instalar_Edit_Toolbox.command")
+    path.join(INSTALLER_DIR, "Instalar_Framelab.command"),
+    path.join(bundleFolder, "Instalar_Framelab.command")
   );
   fs.copyFileSync(
-    path.join(INSTALLER_DIR, "Desinstalar_Edit_Toolbox.command"),
-    path.join(bundleFolder, "Desinstalar_Edit_Toolbox.command")
+    path.join(INSTALLER_DIR, "Desinstalar_Framelab.command"),
+    path.join(bundleFolder, "Desinstalar_Framelab.command")
   );
   fs.copyFileSync(
     path.join(INSTALLER_DIR, "LEIA-ME.txt"),
@@ -68,7 +68,7 @@ function main() {
     path.join(INSTALLER_DIR, "GUIA_BETA_TESTER.md"),
     path.join(bundleFolder, "GUIA_BETA_TESTER.md")
   );
-  fs.copyFileSync(ccxPath, path.join(bundleFolder, "EditToolbox.ccx"));
+  fs.copyFileSync(ccxPath, path.join(bundleFolder, "Framelab.ccx"));
 
   // Copia pasta dist para dentro do pacote
   const distInBundle = path.join(bundleFolder, "dist");
@@ -81,15 +81,15 @@ function main() {
   }
 
   // Garante permissão de execução nos scripts
-  fs.chmodSync(path.join(bundleFolder, "Instalar_Edit_Toolbox.command"), 0o755);
-  fs.chmodSync(path.join(bundleFolder, "Desinstalar_Edit_Toolbox.command"), 0o755);
+  fs.chmodSync(path.join(bundleFolder, "Instalar_Framelab.command"), 0o755);
+  fs.chmodSync(path.join(bundleFolder, "Desinstalar_Framelab.command"), 0o755);
 
   // 4. Criação do ZIP final de distribuição
-  console.log("\n[4/5] Criando arquivo ZIP final de distribuição (EditToolbox-macOS.zip)...");
-  const zipOutputPath = path.join(DIST_DIR, "EditToolbox-macOS.zip");
+  console.log("\n[4/5] Criando arquivo ZIP final de distribuição (Framelab-macOS.zip)...");
+  const zipOutputPath = path.join(DIST_DIR, "Framelab-macOS.zip");
   if (fs.existsSync(zipOutputPath)) fs.unlinkSync(zipOutputPath);
 
-  execSync(`zip -q -r "${zipOutputPath}" EditToolbox-macOS`, {
+  execSync(`zip -q -r "${zipOutputPath}" Framelab-macOS`, {
     cwd: STAGE_DIR,
   });
   console.log(`  ✓ ZIP gerado: ${zipOutputPath} (${(fs.statSync(zipOutputPath).size / 1024 / 1024).toFixed(2)} MB)`);
@@ -110,7 +110,7 @@ function main() {
 
   versionManifest.version = version;
   versionManifest.releaseDate = new Date().toISOString().split("T")[0];
-  versionManifest.downloadUrl = `https://github.com/SidyFurtado/edit-toolbox/releases/latest/download/EditToolbox-macOS.zip`;
+  versionManifest.downloadUrl = `https://github.com/SidyFurtado/framelab/releases/latest/download/Framelab-macOS.zip`;
 
   fs.writeFileSync(VERSION_JSON_PATH, JSON.stringify(versionManifest, null, 2) + "\n");
   console.log("  ✓ version.json sincronizado com a versão " + version);

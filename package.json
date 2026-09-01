@@ -1,8 +1,8 @@
 {
-  "name": "edit-toolbox",
+  "name": "framelab",
   "version": "0.1.0",
   "private": true,
-  "description": "Multi-tool platform for Adobe Premiere Pro (UXP)",
+  "description": "Framelab — Multi-tool precision platform for Adobe Premiere Pro (UXP)",
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "vite build",

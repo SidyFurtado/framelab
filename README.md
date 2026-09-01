@@ -1,8 +1,8 @@
-# Edit Toolbox — Adobe Premiere Pro UXP Extension
+# Framelab — Adobe Premiere Pro UXP Extension
 
 > Suíte multiferramentas de precisão e automação com inteligência artificial para o Adobe Premiere Pro.
 
-![Edit Toolbox Beta](https://img.shields.io/badge/Release-Beta%20v0.1.0-orange?style=flat-square)
+![Framelab Beta](https://img.shields.io/badge/Release-Beta%20v0.1.0-orange?style=flat-square)
 ![Premiere Pro](https://img.shields.io/badge/Premiere%20Pro-v24.2%2B%20%7C%20v25%2B-blue?style=flat-square)
 ![Platform](https://img.shields.io/badge/Platform-macOS%20(Apple%20Silicon%20%26%20Intel)-lightgrey?style=flat-square)
 
@@ -10,10 +10,10 @@
 
 ## ⚡ Instalação Rápida para Beta Testers
 
-1. Baixe o instalador mais recente em [Releases](https://github.com/SidyFurtado/edit-toolbox/releases/latest) ou através do [Beta Hub](https://sidyfurtado.github.io/edit-toolbox/).
-2. Descompacte o arquivo `EditToolbox-macOS.zip`.
-3. Dê dois cliques em `Instalar_Edit_Toolbox.command`.
-4. Abra o Adobe Premiere Pro e acesse **Janela (Window)** > **Extensões (Extensions)** > **Edit Toolbox**.
+1. Baixe o instalador mais recente em [Releases](https://github.com/SidyFurtado/framelab/releases/latest) ou através do [Beta Hub](https://sidyfurtado.github.io/framelab/).
+2. Descompacte o arquivo `Framelab-macOS.zip`.
+3. Dê dois cliques em `Instalar_Framelab.command`.
+4. Abra o Adobe Premiere Pro e acesse **Janela (Window)** > **Extensões (Extensions)** > **Framelab**.
 
 ---
 

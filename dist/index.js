@@ -7209,7 +7209,7 @@
     const path = PATHS[name] ?? PATHS.frame;
     return '<svg viewBox="0 0 14 14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="square">' + path + "</svg>";
   }
-  const GITHUB_REPO = "SidyFurtado/edit-toolbox";
+  const GITHUB_REPO = "SidyFurtado/framelab";
   const VERSION_MANIFEST_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/main/version.json`;
   class PluginUpdater {
     constructor(currentVersion) {
@@ -7324,7 +7324,7 @@
         return {
           success: true,
           requiresReload: true,
-          message: `Edit Toolbox v${manifest.version} instalado com sucesso!`
+          message: `Framelab v${manifest.version} instalado com sucesso!`
         };
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause);
@@ -7381,7 +7381,7 @@
     if (cMinor < curMinor) return false;
     return cPatch > curPatch;
   }
-  const PRODUCT_NAME = "Edit Toolbox";
+  const PRODUCT_NAME = "Framelab";
   const PRODUCT_TAGLINE = "Premiere";
   const VERSION = "0.1.0";
   class ProductShell {

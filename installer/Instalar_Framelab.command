@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # ============================================================
-#  EDIT TOOLBOX — INSTALADOR AUTOMÁTICO PARA MAC (BETA)
+#  FRAMELAB — INSTALADOR AUTOMÁTICO PARA MAC (BETA)
 # ============================================================
 
 clear
 echo ""
-echo -e "\033[38;2;227;155;60m   ███████╗██████╗ ██╗████████╗    ████████╗ ██████╗  ██████╗ ██╗     ██████╗  ██████╗ ██╗  ██╗\033[0m"
-echo -e "\033[38;2;227;155;60m   ██╔════╝██╔══██╗██║╚══██╔══╝    ╚══██╔══╝██╔═══██╗██╔═══██╗██║     ██╔══██╗██╔═══██╗╚██╗██╔╝\033[0m"
-echo -e "\033[38;2;227;155;60m   █████╗  ██║  ██║██║   ██║          ██║   ██║   ██║██║   ██║██║     ██████╔╝██║   ██║ ╚███╔╝ \033[0m"
-echo -e "\033[38;2;227;155;60m   ██╔══╝  ██║  ██║██║   ██║          ██║   ██║   ██║██║   ██║██║     ██╔══██╗██║   ██║ ██╔██╗ \033[0m"
-echo -e "\033[38;2;227;155;60m   ███████╗██████╔╝██║   ██║          ██║   ╚██████╔╝╚██████╔╝███████╗██████╔╝╚██████╔╝██╔╝ ██╗\033[0m"
-echo -e "\033[38;2;227;155;60m   ╚══════╝╚═════╝ ╚═╝   ╚═╝          ╚═╝    ╚═════╝  ╚═════╝ ╚══════╝╚═════╝  ╚═════╝ ╚═╝  ╚═╝\033[0m"
+echo -e "\033[38;2;227;155;60m   ███████╗██████╗  █████╗ ███╗   ███╗███████╗██╗      █████╗ ██████╗ \033[0m"
+echo -e "\033[38;2;227;155;60m   ██╔════╝██╔══██╗██╔══██╗████╗ ████║██╔════╝██║     ██╔══██╗██╔══██╗\033[0m"
+echo -e "\033[38;2;227;155;60m   █████╗  ██████╔╝███████║██╔████╔██║█████╗  ██║     ███████║██████╔╝\033[0m"
+echo -e "\033[38;2;227;155;60m   ██╔══╝  ██╔══██╗██╔══██║██║╚██╔╝██║██╔══╝  ██║     ██╔══██║██╔══██╗\033[0m"
+echo -e "\033[38;2;227;155;60m   ██║     ██║  ██║██║  ██║██║ ╚═╝ ██║███████╗███████╗██║  ██║██████╔╝\033[0m"
+echo -e "\033[38;2;227;155;60m   ╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝╚═════╝ \033[0m"
 echo ""
 echo -e "\033[1;37m   Suíte de Precisão & Automação para Adobe Premiere Pro\033[0m"
 echo -e "\033[38;2;154;159;154m   Versão Beta 0.1.0 • Desenvolvido por Sidy Furtado\033[0m"
@@ -28,8 +28,8 @@ elif [ -d "$SOURCE_DIR/dist" ] && [ -f "$SOURCE_DIR/dist/manifest.json" ]; then
     PLUGIN_FILES="$SOURCE_DIR/dist"
 elif [ -d "$SOURCE_DIR/../dist" ] && [ -f "$SOURCE_DIR/../dist/manifest.json" ]; then
     PLUGIN_FILES="$SOURCE_DIR/../dist"
-elif [ -d "$SOURCE_DIR/EditToolbox" ] && [ -f "$SOURCE_DIR/EditToolbox/manifest.json" ]; then
-    PLUGIN_FILES="$SOURCE_DIR/EditToolbox"
+elif [ -d "$SOURCE_DIR/Framelab" ] && [ -f "$SOURCE_DIR/Framelab/manifest.json" ]; then
+    PLUGIN_FILES="$SOURCE_DIR/Framelab"
 fi
 
 if [ -z "$PLUGIN_FILES" ]; then
@@ -43,8 +43,8 @@ fi
 echo -e "\033[1;33m[1/3]\033[0m Verificando ambiente Adobe no macOS..."
 
 # Pastas de destino UXP no macOS
-UXP_TARGET_1="$HOME/Library/Application Support/Adobe/UXP/Plugins/External/com.edittoolbox.premiere"
-UXP_TARGET_2="$HOME/Library/Application Support/Adobe/UXP/PluginsStorage/com.edittoolbox.premiere"
+UXP_TARGET_1="$HOME/Library/Application Support/Adobe/UXP/Plugins/External/com.framelab.premiere"
+UXP_TARGET_2="$HOME/Library/Application Support/Adobe/UXP/PluginsStorage/com.framelab.premiere"
 
 # Cria as pastas de destino se não existirem
 mkdir -p "$UXP_TARGET_1"
@@ -53,7 +53,7 @@ mkdir -p "$UXP_TARGET_2"
 echo -e "\033[32m  ✓ Diretórios UXP preparados com sucesso.\033[0m"
 echo ""
 
-echo -e "\033[1;33m[2/3]\033[0m Instalando arquivos do Edit Toolbox..."
+echo -e "\033[1;33m[2/3]\033[0m Instalando arquivos do Framelab..."
 
 # Copia os arquivos do bundle
 cp -f "$PLUGIN_FILES/manifest.json" "$UXP_TARGET_1/" 2>/dev/null || true
@@ -94,7 +94,7 @@ echo ""
 echo -e "   \033[1;37mComo abrir o plugin no Premiere Pro:\033[0m"
 echo -e "   1. Abra o \033[1;33mAdobe Premiere Pro\033[0m."
 echo -e "   2. No menu superior, clique em \033[1;33mJanela\033[0m (Window) > \033[1;33mExtensões\033[0m (Extensions)."
-echo -e "   3. Selecione \033[1;32mEdit Toolbox\033[0m."
+echo -e "   3. Selecione \033[1;32mFramelab\033[0m."
 echo ""
 echo -e "   \033[38;2;154;159;154mDica: Atualizações futuras aparecerão automaticamente dentro do painel!\033[0m"
 echo ""

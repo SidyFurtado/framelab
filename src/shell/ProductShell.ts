@@ -695,18 +695,16 @@ function formatDuration(seconds: number): string {
   return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
 }
 
-/* The site's own mark: a film frame with perforations and a rec dot. */
+/* The Framelab mark: a precision calibrated viewfinder reticle with sensor core. */
 function brandMark(): string {
   return (
-    '<svg viewBox="0 0 100 100" aria-hidden="true">' +
-    '<rect x="1" y="1" width="98" height="98" fill="none" stroke="currentColor" stroke-width="6"/>' +
-    '<rect x="14" y="18" width="10" height="12" fill="currentColor"/>' +
-    '<rect x="14" y="44" width="10" height="12" fill="currentColor"/>' +
-    '<rect x="14" y="70" width="10" height="12" fill="currentColor"/>' +
-    '<rect x="76" y="18" width="10" height="12" fill="currentColor"/>' +
-    '<rect x="76" y="44" width="10" height="12" fill="currentColor"/>' +
-    '<rect x="76" y="70" width="10" height="12" fill="currentColor"/>' +
-    '<circle cx="50" cy="50" r="15" fill="#E5372A"/></svg>'
+    '<svg viewBox="0 0 100 100" aria-hidden="true" fill="none">' +
+    '<path d="M12 34V14h22" stroke="currentColor" stroke-width="8" stroke-linecap="square"/>' +
+    '<path d="M66 14h22v20" stroke="currentColor" stroke-width="8" stroke-linecap="square"/>' +
+    '<path d="M88 66v20H66" stroke="currentColor" stroke-width="8" stroke-linecap="square"/>' +
+    '<path d="M34 86H12V66" stroke="currentColor" stroke-width="8" stroke-linecap="square"/>' +
+    '<rect x="34" y="34" width="32" height="32" fill="#E39B3C"/>' +
+    '</svg>'
   );
 }
 

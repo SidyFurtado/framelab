@@ -156,8 +156,8 @@ export async function defaultDestination(): Promise<string> {
     return (await workspace()).nativeBase;
   }
   return isWindows()
-    ? join(home, "Videos", "Edit Toolbox")
-    : join(home, "Movies", "Edit Toolbox");
+    ? join(home, "Videos", "Framelab")
+    : join(home, "Movies", "Framelab");
 }
 
 // ── qualidades ─────────────────────────────────────────────────────
@@ -733,8 +733,8 @@ function q(value: string): string {
 function unixPreamble(folder: string, config: DownloadConfig): string[] {
   return [
     "#!/bin/bash",
-    "# Gerado pelo Edit Toolbox — Baixar Vídeos. Pode apagar.",
-    `printf '\\033]0;Edit Toolbox — baixando\\007'`,
+    "# Gerado pelo Framelab — Baixar Vídeos. Pode apagar.",
+    `printf '\\033]0;Framelab — baixando\\007'`,
     "set -u",
     `WORK=${q(folder)}`,
     `CUSTOM=${q(config.ytdlpPath)}`,
@@ -781,7 +781,7 @@ const UNIX_CLOSE = [
   'echo "Pronto. Pode voltar ao Premiere."',
   // Fecha só a própria janela, achada pelo título posto no preâmbulo.
   // Se o macOS negar a automação, a janela fica aberta e nada quebra.
-  `osascript -e 'tell application "Terminal" to close (every window whose name contains "Edit Toolbox")' >/dev/null 2>&1 &`,
+  `osascript -e 'tell application "Terminal" to close (every window whose name contains "Framelab")' >/dev/null 2>&1 &`,
   "exit 0",
 ];
 
@@ -880,8 +880,8 @@ export function installScriptUnix(folder: string): string {
   return (
     [
       "#!/bin/bash",
-      "# Gerado pelo Edit Toolbox — Baixar Vídeos. Pode apagar.",
-      `printf '\\033]0;Edit Toolbox — instalando yt-dlp\\007'`,
+      "# Gerado pelo Framelab — Baixar Vídeos. Pode apagar.",
+      `printf '\\033]0;Framelab — instalando yt-dlp\\007'`,
       "set -u",
       `WORK=${q(folder)}`,
       `echo "Baixando o yt-dlp oficial…"`,
@@ -938,8 +938,8 @@ function bq(value: string): string {
 function winPreamble(config: DownloadConfig, folder: string): string[] {
   return [
     "@echo off",
-    "rem Gerado pelo Edit Toolbox - Baixar Videos. Pode apagar.",
-    "title Edit Toolbox - baixando",
+    "rem Gerado pelo Framelab - Baixar Videos. Pode apagar.",
+    "title Framelab - baixando",
     `set "WORK=${batValue(folder)}"`,
     `set "YTDLP=${batValue(config.ytdlpPath)}"`,
     `if "%YTDLP%"=="" if exist "%WORK%\\${LOCAL_BIN_WIN}" set "YTDLP=%WORK%\\${LOCAL_BIN_WIN}"`,
@@ -1033,8 +1033,8 @@ export function installScriptWin(folder: string): string {
   return (
     [
       "@echo off",
-      "rem Gerado pelo Edit Toolbox - Baixar Videos. Pode apagar.",
-      "title Edit Toolbox - instalando yt-dlp",
+      "rem Gerado pelo Framelab - Baixar Videos. Pode apagar.",
+      "title Framelab - instalando yt-dlp",
       `set "WORK=${batValue(folder)}"`,
       "echo Baixando o yt-dlp oficial...",
       `powershell -NoProfile -Command "try { Invoke-WebRequest -Uri '${RELEASE_WIN}' ` +

@@ -3125,8 +3125,8 @@
   function unixScript(jobs, folder, ffmpegPath) {
     const lines = [
       "#!/bin/bash",
-      "# Gerado pelo Edit Toolbox — Corte de Silêncios. Pode apagar.",
-      `printf '\\033]0;Edit Toolbox — analisando áudio\\007'`,
+      "# Gerado pelo Framelab — Corte de Silêncios. Pode apagar.",
+      `printf '\\033]0;Framelab — analisando áudio\\007'`,
       "set -u",
       `WORK=${shellQuote(folder)}`,
       `CUSTOM=${shellQuote(ffmpegPath)}`,
@@ -3168,7 +3168,7 @@
       'echo "Pronto. Pode voltar ao Premiere."',
       // Fecha só a própria janela, achada pelo título posto lá em cima.
       // Se o macOS negar a automação, a janela fica aberta e nada quebra.
-      `osascript -e 'tell application "Terminal" to close (every window whose name contains "Edit Toolbox")' >/dev/null 2>&1 &`,
+      `osascript -e 'tell application "Terminal" to close (every window whose name contains "Framelab")' >/dev/null 2>&1 &`,
       "exit 0"
     );
     return lines.join("\n") + "\n";
@@ -3180,8 +3180,8 @@
     const quote = (value) => `"${batchValue(value)}"`;
     const lines = [
       "@echo off",
-      "rem Gerado pelo Edit Toolbox — Corte de Silêncios. Pode apagar.",
-      `title Edit Toolbox - analisando audio`,
+      "rem Gerado pelo Framelab — Corte de Silêncios. Pode apagar.",
+      `title Framelab - analisando audio`,
       `set "WORK=${batchValue(folder)}"`,
       `set "FFMPEG=${batchValue(ffmpegPath)}"`,
       'if "%FFMPEG%"=="" for %%i in (ffmpeg.exe) do @set "FFMPEG=%%~$PATH:i"',
@@ -3224,7 +3224,7 @@
     }
     return [
       "#!/bin/bash",
-      `printf '\\033]0;Edit Toolbox — teste\\007'`,
+      `printf '\\033]0;Framelab — teste\\007'`,
       "set -u",
       `CUSTOM=${shellQuote(ffmpegPath)}`,
       "FFMPEG=''",
@@ -3234,7 +3234,7 @@
       'if [ -z "$FFMPEG" ]; then FFMPEG="$(command -v ffmpeg 2>/dev/null || true)"; fi',
       `printf '{"ffmpeg":"%s"}' "$FFMPEG" > ${shellQuote(join(folder, "probe.json"))}`,
       'echo "Teste concluído. ffmpeg: $FFMPEG"',
-      `osascript -e 'tell application "Terminal" to close (every window whose name contains "Edit Toolbox")' >/dev/null 2>&1 &`,
+      `osascript -e 'tell application "Terminal" to close (every window whose name contains "Framelab")' >/dev/null 2>&1 &`,
       "exit 0"
     ].join("\n") + "\n";
   }
@@ -6060,7 +6060,7 @@
     if (!home) {
       return (await workspace()).nativeBase;
     }
-    return isWindows() ? join(home, "Videos", "Edit Toolbox") : join(home, "Movies", "Edit Toolbox");
+    return isWindows() ? join(home, "Videos", "Framelab") : join(home, "Movies", "Framelab");
   }
   const QUALITIES = [
     { id: "best", label: "Máxima", height: null, audioOnly: false },
@@ -6365,8 +6365,8 @@
   function unixPreamble(folder, config) {
     return [
       "#!/bin/bash",
-      "# Gerado pelo Edit Toolbox — Baixar Vídeos. Pode apagar.",
-      `printf '\\033]0;Edit Toolbox — baixando\\007'`,
+      "# Gerado pelo Framelab — Baixar Vídeos. Pode apagar.",
+      `printf '\\033]0;Framelab — baixando\\007'`,
       "set -u",
       `WORK=${q(folder)}`,
       `CUSTOM=${q(config.ytdlpPath)}`,
@@ -6403,7 +6403,7 @@
     'echo "Pronto. Pode voltar ao Premiere."',
     // Fecha só a própria janela, achada pelo título posto no preâmbulo.
     // Se o macOS negar a automação, a janela fica aberta e nada quebra.
-    `osascript -e 'tell application "Terminal" to close (every window whose name contains "Edit Toolbox")' >/dev/null 2>&1 &`,
+    `osascript -e 'tell application "Terminal" to close (every window whose name contains "Framelab")' >/dev/null 2>&1 &`,
     "exit 0"
   ];
   function probeScriptUnix(urls, config, folder) {
@@ -6468,8 +6468,8 @@
   function installScriptUnix(folder) {
     return [
       "#!/bin/bash",
-      "# Gerado pelo Edit Toolbox — Baixar Vídeos. Pode apagar.",
-      `printf '\\033]0;Edit Toolbox — instalando yt-dlp\\007'`,
+      "# Gerado pelo Framelab — Baixar Vídeos. Pode apagar.",
+      `printf '\\033]0;Framelab — instalando yt-dlp\\007'`,
       "set -u",
       `WORK=${q(folder)}`,
       `echo "Baixando o yt-dlp oficial…"`,
@@ -6508,8 +6508,8 @@
   function winPreamble(config, folder) {
     return [
       "@echo off",
-      "rem Gerado pelo Edit Toolbox - Baixar Videos. Pode apagar.",
-      "title Edit Toolbox - baixando",
+      "rem Gerado pelo Framelab - Baixar Videos. Pode apagar.",
+      "title Framelab - baixando",
       `set "WORK=${batValue(folder)}"`,
       `set "YTDLP=${batValue(config.ytdlpPath)}"`,
       `if "%YTDLP%"=="" if exist "%WORK%\\${LOCAL_BIN_WIN}" set "YTDLP=%WORK%\\${LOCAL_BIN_WIN}"`,
@@ -6572,8 +6572,8 @@
   function installScriptWin(folder) {
     return [
       "@echo off",
-      "rem Gerado pelo Edit Toolbox - Baixar Videos. Pode apagar.",
-      "title Edit Toolbox - instalando yt-dlp",
+      "rem Gerado pelo Framelab - Baixar Videos. Pode apagar.",
+      "title Framelab - instalando yt-dlp",
       `set "WORK=${batValue(folder)}"`,
       "echo Baixando o yt-dlp oficial...",
       `powershell -NoProfile -Command "try { Invoke-WebRequest -Uri '${RELEASE_WIN}' -OutFile ('%WORK%\\${LOCAL_BIN_WIN}') -UseBasicParsing } catch { exit 1 }"`,
@@ -7869,7 +7869,7 @@
     return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
   }
   function brandMark() {
-    return '<svg viewBox="0 0 100 100" aria-hidden="true"><rect x="1" y="1" width="98" height="98" fill="none" stroke="currentColor" stroke-width="6"/><rect x="14" y="18" width="10" height="12" fill="currentColor"/><rect x="14" y="44" width="10" height="12" fill="currentColor"/><rect x="14" y="70" width="10" height="12" fill="currentColor"/><rect x="76" y="18" width="10" height="12" fill="currentColor"/><rect x="76" y="44" width="10" height="12" fill="currentColor"/><rect x="76" y="70" width="10" height="12" fill="currentColor"/><circle cx="50" cy="50" r="15" fill="#E5372A"/></svg>';
+    return '<svg viewBox="0 0 100 100" aria-hidden="true" fill="none"><path d="M12 34V14h22" stroke="currentColor" stroke-width="8" stroke-linecap="square"/><path d="M66 14h22v20" stroke="currentColor" stroke-width="8" stroke-linecap="square"/><path d="M88 66v20H66" stroke="currentColor" stroke-width="8" stroke-linecap="square"/><path d="M34 86H12V66" stroke="currentColor" stroke-width="8" stroke-linecap="square"/><rect x="34" y="34" width="32" height="32" fill="#E39B3C"/></svg>';
   }
   function searchGlyph() {
     return '<svg viewBox="0 0 14 14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.2"><circle cx="6" cy="6" r="4"/><path d="M9.2 9.2 12.4 12.4"/></svg>';
@@ -7899,7 +7899,7 @@
     try {
       new ProductShell(root).start();
     } catch (cause) {
-      console.error("[Edit Toolbox] falha ao iniciar:", cause);
+      console.error("[Framelab] falha ao iniciar:", cause);
       renderFatal(root, cause);
     }
   }

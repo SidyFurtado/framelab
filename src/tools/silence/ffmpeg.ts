@@ -472,8 +472,8 @@ export function unixScript(
 ): string {
   const lines: string[] = [
     "#!/bin/bash",
-    "# Gerado pelo Edit Toolbox — Corte de Silêncios. Pode apagar.",
-    `printf '\\033]0;Edit Toolbox — analisando áudio\\007'`,
+    "# Gerado pelo Framelab — Corte de Silêncios. Pode apagar.",
+    `printf '\\033]0;Framelab — analisando áudio\\007'`,
     "set -u",
     `WORK=${shellQuote(folder)}`,
     `CUSTOM=${shellQuote(ffmpegPath)}`,
@@ -520,7 +520,7 @@ export function unixScript(
     'echo "Pronto. Pode voltar ao Premiere."',
     // Fecha só a própria janela, achada pelo título posto lá em cima.
     // Se o macOS negar a automação, a janela fica aberta e nada quebra.
-    `osascript -e 'tell application "Terminal" to close (every window whose name contains "Edit Toolbox")' >/dev/null 2>&1 &`,
+    `osascript -e 'tell application "Terminal" to close (every window whose name contains "Framelab")' >/dev/null 2>&1 &`,
     "exit 0"
   );
 
@@ -549,8 +549,8 @@ export function windowsScript(
   const quote = (value: string): string => `"${batchValue(value)}"`;
   const lines: string[] = [
     "@echo off",
-    "rem Gerado pelo Edit Toolbox — Corte de Silêncios. Pode apagar.",
-    `title Edit Toolbox - analisando audio`,
+    "rem Gerado pelo Framelab — Corte de Silêncios. Pode apagar.",
+    `title Framelab - analisando audio`,
     `set "WORK=${batchValue(folder)}"`,
     `set "FFMPEG=${batchValue(ffmpegPath)}"`,
     'if "%FFMPEG%"=="" for %%i in (ffmpeg.exe) do @set "FFMPEG=%%~$PATH:i"',
@@ -601,7 +601,7 @@ export function probeScript(folder: string, ffmpegPath: string): string {
   }
   return [
     "#!/bin/bash",
-    `printf '\\033]0;Edit Toolbox — teste\\007'`,
+    `printf '\\033]0;Framelab — teste\\007'`,
     "set -u",
     `CUSTOM=${shellQuote(ffmpegPath)}`,
     "FFMPEG=''",
@@ -611,7 +611,7 @@ export function probeScript(folder: string, ffmpegPath: string): string {
     'if [ -z "$FFMPEG" ]; then FFMPEG="$(command -v ffmpeg 2>/dev/null || true)"; fi',
     `printf '{"ffmpeg":"%s"}' "$FFMPEG" > ${shellQuote(join(folder, "probe.json"))}`,
     'echo "Teste concluído. ffmpeg: $FFMPEG"',
-    `osascript -e 'tell application "Terminal" to close (every window whose name contains "Edit Toolbox")' >/dev/null 2>&1 &`,
+    `osascript -e 'tell application "Terminal" to close (every window whose name contains "Framelab")' >/dev/null 2>&1 &`,
     "exit 0",
   ].join("\n") + "\n";
 }

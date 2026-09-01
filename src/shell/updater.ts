@@ -1,5 +1,5 @@
 /**
- * Auto-Updater for Edit Toolbox
+ * Auto-Updater for Framelab
  * Checks for updates on GitHub and performs seamless in-place updates.
  */
 

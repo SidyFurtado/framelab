@@ -16,7 +16,7 @@ function bootstrap(): void {
   try {
     new ProductShell(root).start();
   } catch (cause) {
-    console.error("[Edit Toolbox] falha ao iniciar:", cause);
+    console.error("[Framelab] falha ao iniciar:", cause);
     renderFatal(root, cause);
   }
 }

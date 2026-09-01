@@ -1,6 +1,6 @@
 # 🎬 Guia de Instalação e Testes — Framelab (Beta macOS)
 
-Bem-vindo ao programa de Beta Testing do **Framelab**, a suíte de ferramentas de precisão e automação com inteligência artificial para o Adobe Premiere Pro!
+Bem-vindo ao programa de Beta Testing do **Framelab**, o painel de ferramentas de automação para o Adobe Premiere Pro.
 
 ---
 
@@ -21,7 +21,7 @@ Bem-vindo ao programa de Beta Testing do **Framelab**, a suíte de ferramentas d
 
 ## 🚀 Como Abrir o Plugin no Premiere Pro
 
-1. Abra o **Adobe Premiere Pro** (v24.2, v25.0 ou superior).
+1. Abra o **Adobe Premiere Pro** (v25.0 ou superior).
 2. No menu superior da barra de menus do macOS, acesse:
    **Janela** (*Window*) → **Extensões** (*Extensions*) → **Framelab**.
 3. O painel se abrirá! Você pode acoplá-lo ao lado da sua linha de tempo (timeline), nas abas de efeitos ou utilizá-lo flutuante.
@@ -39,10 +39,21 @@ Sempre que uma nova funcionalidade ou correção for lançada:
 
 ## 🛠 Ferramentas Disponíveis na Versão Beta
 
-- **Silence Cut**: Detecção e remoção inteligente de silêncio na timeline com controle de gate, transiente e margem de corte.
-- **AI Sound Design**: Criação, busca e sincronização de efeitos sonoros (SFX) por inteligência artificial.
-- **Dynamic Zoom**: Efeitos dinâmicos de escala e enquadramento rápido.
-- **Curvas de Animação**: Aplicação com 1 clique de curvas de interpolação e aceleração suaves em keyframes de vídeo.
+São cinco, em três categorias — as mesmas que aparecem na lista do painel.
+
+**Edição**
+- **Zoom In / Out**: punch-in animado nos clipes selecionados. Os keyframes entram num efeito Transform novo, sem tocar no Motion original.
+- **Corte de Silêncios**: detecta as pausas pela onda do áudio, corta e encosta os trechos com fala. Precisa do ffmpeg instalado.
+- **Curvas de velocidade**: assa easing entre keyframes que já existem, por trecho.
+
+**Mídia**
+- **Baixar Vídeos**: baixa do YouTube e do TikTok, escolhendo a qualidade. O TikTok vem sempre sem marca d'água, e o arquivo pode entrar direto no projeto aberto.
+
+**Projeto**
+- **Organizar Pastas**: separa por tipo os arquivos e sequências soltos na raiz. Suas pastas e as de outros plugins não são tocadas.
+
+### Ainda não nesta versão
+- **AI Sound Design**: sugestão e sincronia de efeitos sonoros por IA. Está no plano, mas **não vem nesta build** — se você não achar essa ferramenta no painel, é isso mesmo.
 
 ---
 

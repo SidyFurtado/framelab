@@ -2,7 +2,7 @@
   "version": "0.1.0",
   "releaseDate": "2026-09-01",
   "minPremiereVersion": "25.0.0",
-  "changelog": "Versão inicial Beta do Framelab com Silence Cut, AI Sound Design, Curvas de Animação e integração UXP nativa.",
+  "changelog": "Versão inicial beta do Framelab: Zoom In / Out, Corte de Silêncios, Curvas de velocidade, Baixar Vídeos (YouTube e TikTok) e Organizar Pastas.",
   "downloadUrl": "https://github.com/SidyFurtado/framelab/releases/latest/download/Framelab-macOS.zip",
   "bundleFiles": {
     "manifest.json": "https://raw.githubusercontent.com/SidyFurtado/framelab/main/dist/manifest.json",

@@ -2,17 +2,19 @@
                  FRAMELAB — INSTALAÇÃO NO MAC (BETA)
 ========================================================================
 
-COMO INSTALAR:
+COMO INSTALAR (Escolha a mais fácil para você):
 
-1. Dê 2 cliques no arquivo:
-   👉 Instalar_Framelab.command
+Opção 1 (Recomendada):
+👉 Dê 2 cliques em "Framelab.pkg" (Instalador nativo Apple - 2 cliques)
 
-2. Abra o Adobe Premiere Pro.
+Opção 2:
+👉 Dê 2 cliques em "Framelab.ccx" (Instalador Adobe Creative Cloud)
 
-3. No menu superior, vá em:
-   Janela (Window) > Extensões (Extensions) > Framelab
+Opção 3:
+👉 Dê 2 cliques em "Instalar_Framelab.command" (Script Terminal)
 
-Pronto!
+Depois abra o Adobe Premiere Pro e acesse:
+Janela (Window) > Extensões (Extensions) > Framelab
 
 ------------------------------------------------------------------------
 ATUALIZAÇÕES AUTOMÁTICAS:

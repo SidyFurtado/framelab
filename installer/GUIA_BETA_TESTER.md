@@ -4,18 +4,20 @@ Bem-vindo ao programa de Beta Testing do **Framelab**, o painel de ferramentas d
 
 ---
 
-## ⚡ Instalação Rápida (1 Minuto)
+## ⚡ Instalação em 2 Cliques (Zero Terminal)
 
-### Opção 1: Instalador Automático (Recomendado)
-1. Descompacte o arquivo `Framelab-macOS.zip` que você baixou.
-2. Dê **dois cliques** no arquivo `Instalar_Framelab.command`.
-3. Uma janela do Terminal será aberta confirmando a instalação.
-4. Pressione `ENTER` e pronto!
+### Opção 1: Instalador Nativo do Mac (Recomendado)
+1. Dê **dois cliques** no arquivo `Framelab.pkg`.
+2. Siga o assistente de instalação padrão do macOS (*Continuar → Instalar*).
+3. Pronto! O Framelab já está instalado para todos os usuários do Premiere.
 
-### Opção 2: Pacote `.ccx` (Creative Cloud)
-1. Dê dois cliques no arquivo `Framelab.ccx`.
-2. O aplicativo Adobe Creative Cloud abrirá automaticamente solicitando a instalação.
-3. Clique em **Instalar** (Install locally).
+### Opção 2: Pacote Adobe Creative Cloud (.ccx)
+1. Dê **dois cliques** no arquivo `Framelab.ccx`.
+2. O aplicativo Adobe Creative Cloud abrirá automaticamente com o botão **Instalar**.
+3. Clique em **Instalar** e pronto!
+
+### Opção 3: Script de Instalação Alternativo
+1. Dê dois cliques em `Instalar_Framelab.command`, confirme com Enter no Terminal.
 
 ---
 

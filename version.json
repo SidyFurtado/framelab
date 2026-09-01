@@ -1,8 +1,8 @@
 {
-  "version": "0.2.0",
+  "version": "0.2.1",
   "releaseDate": "2026-09-01",
   "minPremiereVersion": "25.0.0",
-  "changelog": "Baixar Vídeos ficou rápido de verdade: TikTok sem marca d'água em segundos, sem instalar nada (o painel se prepara sozinho) e sem janela de Terminal abrindo. Nova ferramenta: Cortar Muletas — remove os ééé e aaamm da fala pela transcrição do Premiere. Erros de download agora dizem o motivo real.",
+  "changelog": "Baixar Vídeos sem janela nenhuma: o TikTok baixa dentro do próprio painel, com barra de progresso em MB de verdade. Na primeira vez o painel pode pedir para você escolher a pasta de destino — é uma vez só, e é o que garante o download silencioso dali em diante.",
   "downloadUrl": "https://github.com/SidyFurtado/framelab/releases/latest/download/Framelab-macOS.zip",
   "bundleFiles": {
     "manifest.json": "https://raw.githubusercontent.com/SidyFurtado/framelab/main/dist/manifest.json",

@@ -94,6 +94,12 @@ export interface DownloadConfig {
   ytdlpPath: string;
   /** Pasta de destino em caminho NATIVO. Vazio = a padrão do sistema. */
   destination: string;
+  /**
+   * Token persistente da pasta escolhida no seletor. É a permissão de
+   * escrita que sobrevive entre sessões — o caminho sozinho é só
+   * texto, e texto pode ser rota que o host recusa.
+   */
+  destinationToken: string;
   /** Última qualidade usada. Escolha de hábito, não de projeto. */
   quality: string;
   /** Navegador de onde tirar os cookies, para vídeo restrito. */
@@ -105,6 +111,7 @@ export interface DownloadConfig {
 export const DEFAULT_CONFIG: DownloadConfig = {
   ytdlpPath: "",
   destination: "",
+  destinationToken: "",
   quality: "best",
   cookies: "none",
   importToProject: true,
@@ -120,6 +127,8 @@ export async function readConfig(): Promise<DownloadConfig> {
     return {
       ytdlpPath: typeof parsed.ytdlpPath === "string" ? parsed.ytdlpPath : "",
       destination: typeof parsed.destination === "string" ? parsed.destination : "",
+      destinationToken:
+        typeof parsed.destinationToken === "string" ? parsed.destinationToken : "",
       quality: typeof parsed.quality === "string" ? parsed.quality : "best",
       cookies: isCookies(parsed.cookies) ? parsed.cookies : "none",
       importToProject: parsed.importToProject !== false,
@@ -962,7 +971,7 @@ export function downloadScriptUnix(
     lines.push(
       `echo "[${index + 1}/${total}] ${escapeEcho(job.fileName)}"`,
       `printf '%s/%s' ${index + 1} ${total} > "$WORK/${PROGRESS_FILE}"`,
-      `if curl -fSL --retry 3 -o ${target} ${q(job.mediaUrl)} 2>> "$WORK/${LOG_FILE}"; then`,
+      `if curl -fL --progress-bar --retry 3 -o ${target} ${q(job.mediaUrl)} 2>> "$WORK/${LOG_FILE}"; then`,
       `  printf '%s\\n' "$DEST/"${q(job.fileName)} >> "$WORK/${FILES_FILE}"`,
       "else",
       "  FAILED=$((FAILED+1))",

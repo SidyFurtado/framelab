@@ -6093,6 +6093,7 @@
   const DEFAULT_CONFIG = {
     ytdlpPath: "",
     destination: "",
+    destinationToken: "",
     quality: "best",
     cookies: "none",
     importToProject: true
@@ -6107,6 +6108,7 @@
       return {
         ytdlpPath: typeof parsed.ytdlpPath === "string" ? parsed.ytdlpPath : "",
         destination: typeof parsed.destination === "string" ? parsed.destination : "",
+        destinationToken: typeof parsed.destinationToken === "string" ? parsed.destinationToken : "",
         quality: typeof parsed.quality === "string" ? parsed.quality : "best",
         cookies: isCookies(parsed.cookies) ? parsed.cookies : "none",
         importToProject: parsed.importToProject !== false
@@ -6598,7 +6600,7 @@
       lines.push(
         `echo "[${index + 1}/${total}] ${escapeEcho(job.fileName)}"`,
         `printf '%s/%s' ${index + 1} ${total} > "$WORK/${PROGRESS_FILE}"`,
-        `if curl -fSL --retry 3 -o ${target} ${q(job.mediaUrl)} 2>> "$WORK/${LOG_FILE}"; then`,
+        `if curl -fL --progress-bar --retry 3 -o ${target} ${q(job.mediaUrl)} 2>> "$WORK/${LOG_FILE}"; then`,
         `  printf '%s\\n' "$DEST/"${q(job.fileName)} >> "$WORK/${FILES_FILE}"`,
         "else",
         "  FAILED=$((FAILED+1))",
@@ -6988,6 +6990,152 @@
     }
     return `https://www.tikwm.com${value.startsWith("/") ? "" : "/"}${value}`;
   }
+  const CHUNK_BYTES = 4 * 1024 * 1024;
+  const MAX_BYTES = 300 * 1024 * 1024;
+  function stageError(stage, cause) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    return new Error(`${stage}: ${detail}`);
+  }
+  async function rememberFolderToken(entry) {
+    try {
+      const api = storageApi();
+      if (!api?.lfs.createPersistentToken) {
+        return null;
+      }
+      return await api.lfs.createPersistentToken(entry);
+    } catch {
+      return null;
+    }
+  }
+  function storageApi() {
+    const storage = uxpModule("uxp")?.storage;
+    const lfs = storage?.localFileSystem;
+    if (!lfs || typeof lfs.getEntryWithUrl !== "function") {
+      return null;
+    }
+    return { lfs, binary: storage?.formats?.binary };
+  }
+  function fileUrl(nativePathValue) {
+    return "file://" + nativePathValue.split("/").map((part) => encodeURIComponent(part)).join("/");
+  }
+  async function destinationFolder(destination, token) {
+    const api = storageApi();
+    if (!api) {
+      throw new Error("destino: storage do UXP indisponível");
+    }
+    if (token && api.lfs.getEntryForPersistentToken) {
+      try {
+        const folder = await api.lfs.getEntryForPersistentToken(token);
+        return { folder, binary: api.binary };
+      } catch {
+      }
+    }
+    try {
+      try {
+        const folder = await api.lfs.getEntryWithUrl(fileUrl(destination));
+        return { folder, binary: api.binary };
+      } catch {
+      }
+      const cut = destination.replace(/\/+$/, "").lastIndexOf("/");
+      if (cut <= 0) {
+        throw new Error("sem pasta-mãe");
+      }
+      const parent = await api.lfs.getEntryWithUrl(fileUrl(destination.slice(0, cut)));
+      const leaf = destination.slice(cut + 1);
+      try {
+        const folder = await parent.createFolder(leaf);
+        return { folder, binary: api.binary };
+      } catch {
+        const existing = await parent.getEntry(leaf);
+        return { folder: existing, binary: api.binary };
+      }
+    } catch (cause) {
+      throw stageError("destino", cause);
+    }
+  }
+  async function downloadInPanel(job, destination, token, onProgress) {
+    const { folder, binary } = await destinationFolder(destination, token);
+    let combined;
+    try {
+      combined = await fetchAllBytes(job.mediaUrl, onProgress);
+    } catch (cause) {
+      throw stageError("rede", cause);
+    }
+    try {
+      const file = await folder.createFile(job.fileName, { overwrite: true });
+      try {
+        await file.write(
+          combined.buffer,
+          binary !== void 0 ? { format: binary } : void 0
+        );
+      } catch {
+        await file.write(combined.buffer, { format: "binary" });
+      }
+      return file.nativePath ?? `${destination}/${job.fileName}`;
+    } catch (cause) {
+      throw stageError("escrita", cause);
+    }
+  }
+  async function fetchAllBytes(mediaUrl, onProgress) {
+    const parts = [];
+    let received = 0;
+    let total = null;
+    for (; ; ) {
+      const from = received;
+      const to = from + CHUNK_BYTES - 1;
+      let response;
+      try {
+        response = await fetch(mediaUrl, {
+          headers: { Range: `bytes=${from}-${to}` }
+        });
+      } catch (cause) {
+        if (from > 0) {
+          throw cause;
+        }
+        response = await fetch(mediaUrl);
+      }
+      if (response.status === 200) {
+        const whole = await response.arrayBuffer();
+        if (whole.byteLength > MAX_BYTES) {
+          throw new Error("arquivo grande demais para o painel");
+        }
+        parts.length = 0;
+        parts.push(new Uint8Array(whole));
+        received = whole.byteLength;
+        total = received;
+        onProgress?.(received, total);
+        break;
+      }
+      if (response.status !== 206) {
+        throw new Error(`CDN respondeu ${response.status}`);
+      }
+      const chunk = await response.arrayBuffer();
+      parts.push(new Uint8Array(chunk));
+      received += chunk.byteLength;
+      if (total === null) {
+        const range = response.headers.get("content-range");
+        const match = range ? /\/(\d+)\s*$/.exec(range) : null;
+        total = match ? Number.parseInt(match[1], 10) : null;
+        if (total !== null && total > MAX_BYTES) {
+          throw new Error("arquivo grande demais para o painel");
+        }
+      }
+      onProgress?.(received, total);
+      if (chunk.byteLength < CHUNK_BYTES || total !== null && received >= total) {
+        break;
+      }
+    }
+    if (received === 0) {
+      throw new Error("CDN devolveu zero bytes");
+    }
+    const combined = new Uint8Array(received);
+    let offset = 0;
+    for (const part of parts) {
+      combined.set(part, offset);
+      offset += part.byteLength;
+    }
+    return combined;
+  }
   function mountDropdown(host, source) {
     host.className = "dl-pick-wrap";
     host.innerHTML = `<div class="dl-pick" ${CONTROL} data-pick-button aria-expanded="false"><span class="dl-pick-value" data-pick-value></span><span class="dl-pick-meta" data-pick-meta></span><span class="dl-pick-caret" aria-hidden="true">▾</span></div><div class="dl-menu" data-pick-menu hidden></div>`;
@@ -7055,6 +7203,7 @@
       let config = {
         ytdlpPath: "",
         destination: "",
+        destinationToken: "",
         quality: "1080",
         cookies: "none",
         importToProject: true
@@ -7180,6 +7329,7 @@
         }
         startBusy("Consultando os links…");
         if (scanEl) scanEl.textContent = "Consultando…";
+        showProgress("consulta", null, "lendo os links…");
         try {
           const byUrl = /* @__PURE__ */ new Map();
           const tiktoks = list.filter((url) => isTikTokUrl(url));
@@ -7233,6 +7383,7 @@
         } catch (cause) {
           context.setStatus(describeError(cause), "error");
         } finally {
+          showProgress(null, null);
           if (scanEl) scanEl.textContent = "Analisar links";
           endBusy();
         }
@@ -7263,32 +7414,101 @@
               slow.push(url);
             }
           }
-          const outcome = await downloadUrls(
-            slow,
-            quality,
-            config,
-            direct,
-            (done, total, percent, log) => {
-              showProgress(`${done || 1}/${total}`, percent);
-              showLog(log);
-            },
-            () => cancelled,
-            showManual
-          );
+          const total = list.length;
+          const panelFiles = [];
+          const scriptDirect = [];
+          const destination = config.destination || await defaultDestination();
+          const tryPanel = async (job, step2) => {
+            showProgress(step2, null, "conectando…");
+            return downloadInPanel(
+              job,
+              config.destination || destination,
+              config.destinationToken || null,
+              (done, size) => {
+                showProgress(
+                  step2,
+                  size ? done / size * 100 : null,
+                  size ? `${formatBytes(done)} de ${formatBytes(size)}` : formatBytes(done)
+                );
+              }
+            );
+          };
+          for (let index = 0; index < direct.length; index += 1) {
+            const job = direct[index];
+            const step2 = `${index + 1}/${total}`;
+            try {
+              panelFiles.push(await tryPanel(job, step2));
+              continue;
+            } catch (cause) {
+              const reason = cause instanceof Error ? cause.message : String(cause);
+              console.warn("[Download] painel recusou:", reason);
+              if (reason.startsWith("destino") && !config.destinationToken) {
+                context.setStatus("Escolha a pasta de destino — só desta vez.");
+                await pickFolder();
+                if (config.destinationToken) {
+                  try {
+                    panelFiles.push(await tryPanel(job, step2));
+                    continue;
+                  } catch (second) {
+                    const again = second instanceof Error ? second.message : String(second);
+                    console.warn("[Download] painel recusou de novo:", again);
+                    showLog(`download em painel indisponível (${again}) — plano B.`);
+                  }
+                } else {
+                  showLog(
+                    `download em painel indisponível (${reason}) — plano B.`
+                  );
+                }
+              } else {
+                showLog(`download em painel indisponível (${reason}) — plano B.`);
+              }
+              scriptDirect.push(job);
+            }
+          }
+          let outcome = {
+            ok: true,
+            error: null,
+            failed: 0,
+            log: "",
+            files: []
+          };
+          if (slow.length > 0 || scriptDirect.length > 0) {
+            const scripted = await downloadUrls(
+              slow,
+              quality,
+              config,
+              scriptDirect,
+              (done, scriptTotal, percent, log) => {
+                showProgress(
+                  `${panelFiles.length + (done || 1)}/${total}`,
+                  percent,
+                  percent === null ? "trabalhando…" : ""
+                );
+                showLog(log);
+              },
+              () => cancelled,
+              showManual
+            );
+            outcome = { ...outcome, ...scripted };
+          }
+          const files = [...panelFiles, ...outcome.files];
           showProgress(null, null);
           showLog(outcome.ok && outcome.failed === 0 ? "" : outcome.log);
-          if (!outcome.ok && outcome.files.length === 0) {
-            context.setStatus(describeRunError(outcome.error, outcome.log), "error");
+          if (files.length === 0) {
+            context.setStatus(
+              describeRunError(outcome.error ?? "ytdlp-failed", outcome.log),
+              "error"
+            );
             return;
           }
-          const imported = config.importToProject ? await importFiles(outcome.files) : null;
-          const count = outcome.files.length;
+          const imported = config.importToProject ? await importFiles(files) : null;
+          const count = files.length;
           const head = `${count} ${count === 1 ? "arquivo baixado" : "arquivos baixados"}` + (outcome.failed > 0 ? ` · ${outcome.failed} falharam` : "");
           context.setStatus(
             imported === null ? head : `${head} · ${imported}`,
             outcome.failed > 0 ? "error" : "done"
           );
-          renderFiles(outcome.files);
+          renderFiles(files);
           context.setResetHandler(() => clearAll());
         } catch (cause) {
           context.setStatus(describeError(cause), "error");
@@ -7381,6 +7601,7 @@
             return;
           }
           config.destination = folder.nativePath;
+          config.destinationToken = await rememberFolderToken(folder) ?? "";
           persist();
           renderDestination();
         } catch (cause) {
@@ -7438,7 +7659,7 @@
         persist();
         renderSegs();
       });
-      function showProgress(step2, percent) {
+      function showProgress(step2, percent, detail = "") {
         if (!progressEl) return;
         if (step2 === null) {
           progressEl.hidden = true;
@@ -7446,8 +7667,10 @@
           return;
         }
         progressEl.hidden = false;
-        const width = percent === null ? 0 : Math.max(0, Math.min(100, percent));
-        progressEl.innerHTML = `<div class="dl-bar"><span class="dl-bar-fill" style="width:${width.toFixed(1)}%"></span></div><div class="dl-bar-legend"><span>${escapeHtml$2(step2)}</span><span>${percent === null ? "…" : `${width.toFixed(0)}%`}</span></div>`;
+        const waiting = percent === null;
+        const width = waiting ? 30 : Math.max(0, Math.min(100, percent));
+        const right = waiting ? detail || "…" : `${detail ? `${escapeHtml$2(detail)} · ` : ""}${width.toFixed(0)}%`;
+        progressEl.innerHTML = `<div class="dl-bar${waiting ? " is-wait" : ""}"><span class="dl-bar-fill" style="width:${width.toFixed(1)}%"></span></div><div class="dl-bar-legend"><span>${escapeHtml$2(step2)}</span><span>${waiting ? escapeHtml$2(right) : right}</span></div>`;
       }
       function showLog(text2) {
         if (!logEl) return;
@@ -8116,12 +8339,12 @@
         const fileEntries = Object.entries(filesToUpdate);
         const totalFiles = fileEntries.length;
         let completed = 0;
-        for (const [filename, fileUrl] of fileEntries) {
+        for (const [filename, fileUrl2] of fileEntries) {
           onProgress?.(
             `Baixando ${filename}...`,
             20 + Math.round(completed / totalFiles * 60)
           );
-          const fileResponse = await fetch(`${fileUrl}?_t=${Date.now()}`, {
+          const fileResponse = await fetch(`${fileUrl2}?_t=${Date.now()}`, {
             cache: "no-store"
           });
           if (!fileResponse.ok) {
@@ -8203,7 +8426,7 @@
   }
   const PRODUCT_NAME = "Framelab";
   const PRODUCT_TAGLINE = "Premiere";
-  const VERSION = "0.2.0";
+  const VERSION = "0.2.1";
   class ProductShell {
     constructor(root) {
       this.updateBadgeEl = null;

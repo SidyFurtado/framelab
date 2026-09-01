@@ -44,6 +44,7 @@ import {
   type TikTokFast,
 } from "./tiktok";
 import type { DirectJob } from "./ytdlp";
+import { downloadInPanel, rememberFolderToken } from "./panelFetch";
 
 /**
  * Um botão que abre uma lista de opções.
@@ -192,6 +193,7 @@ export const downloadTool: Tool = {
     let config: DownloadConfig = {
       ytdlpPath: "",
       destination: "",
+      destinationToken: "",
       quality: "1080",
       cookies: "none",
       importToProject: true,
@@ -355,6 +357,7 @@ export const downloadTool: Tool = {
       }
       startBusy("Consultando os links…");
       if (scanEl) scanEl.textContent = "Consultando…";
+      showProgress("consulta", null, "lendo os links…");
 
       try {
         // TikTok vai pela via rápida (uma chamada de API, ~1s); o que
@@ -417,6 +420,7 @@ export const downloadTool: Tool = {
       } catch (cause) {
         context.setStatus(describeError(cause), "error");
       } finally {
+        showProgress(null, null);
         if (scanEl) scanEl.textContent = "Analisar links";
         endBusy();
       }
@@ -463,31 +467,115 @@ export const downloadTool: Tool = {
           }
         }
 
-        const outcome = await downloadUrls(
-          slow,
-          quality,
-          config,
-          direct,
-          (done, total, percent, log) => {
-            showProgress(`${done || 1}/${total}`, percent);
-            showLog(log);
-          },
-          () => cancelled,
-          showManual
-        );
+        // Primeiro o download DENTRO do painel: sem script, sem shell,
+        // sem Terminal — e com os bytes na barra, porque é o painel que
+        // os recebe. O que tropeçar aqui desce para o script junto com
+        // o que sempre foi dele (YouTube e afins).
+        const total = list.length;
+        const panelFiles: string[] = [];
+        const scriptDirect: DirectJob[] = [];
+        const destination = config.destination || (await defaultDestination());
+
+        const tryPanel = async (job: DirectJob, step: string): Promise<string> => {
+          showProgress(step, null, "conectando…");
+          return downloadInPanel(
+            job,
+            config.destination || destination,
+            config.destinationToken || null,
+            (done, size) => {
+              showProgress(
+                step,
+                size ? (done / size) * 100 : null,
+                size
+                  ? `${formatBytes(done)} de ${formatBytes(size)}`
+                  : formatBytes(done)
+              );
+            }
+          );
+        };
+
+        for (let index = 0; index < direct.length; index += 1) {
+          const job = direct[index];
+          const step = `${index + 1}/${total}`;
+          try {
+            panelFiles.push(await tryPanel(job, step));
+            continue;
+          } catch (cause) {
+            const reason = cause instanceof Error ? cause.message : String(cause);
+            console.warn("[Download] painel recusou:", reason);
+
+            // Host que não atende destino por caminho: o seletor de
+            // pasta resolve — diálogo nativo UMA vez, token guardado,
+            // e o lote inteiro segue em painel. Um diálogo é o oposto
+            // de uma janela de Terminal: é o host pedindo licença.
+            if (reason.startsWith("destino") && !config.destinationToken) {
+              context.setStatus("Escolha a pasta de destino — só desta vez.");
+              await pickFolder();
+              if (config.destinationToken) {
+                try {
+                  panelFiles.push(await tryPanel(job, step));
+                  continue;
+                } catch (second) {
+                  const again =
+                    second instanceof Error ? second.message : String(second);
+                  console.warn("[Download] painel recusou de novo:", again);
+                  showLog(`download em painel indisponível (${again}) — plano B.`);
+                }
+              } else {
+                showLog(
+                  `download em painel indisponível (${reason}) — plano B.`
+                );
+              }
+            } else {
+              showLog(`download em painel indisponível (${reason}) — plano B.`);
+            }
+            scriptDirect.push(job);
+          }
+        }
+
+        let outcome = {
+          ok: true,
+          error: null as string | null,
+          failed: 0,
+          log: "",
+          files: [] as string[],
+        };
+        if (slow.length > 0 || scriptDirect.length > 0) {
+          const scripted = await downloadUrls(
+            slow,
+            quality,
+            config,
+            scriptDirect,
+            (done, scriptTotal, percent, log) => {
+              void scriptTotal;
+              showProgress(
+                `${panelFiles.length + (done || 1)}/${total}`,
+                percent,
+                percent === null ? "trabalhando…" : ""
+              );
+              showLog(log);
+            },
+            () => cancelled,
+            showManual
+          );
+          outcome = { ...outcome, ...scripted };
+        }
+
+        const files = [...panelFiles, ...outcome.files];
         showProgress(null, null);
         showLog(outcome.ok && outcome.failed === 0 ? "" : outcome.log);
 
-        if (!outcome.ok && outcome.files.length === 0) {
-          context.setStatus(describeRunError(outcome.error, outcome.log), "error");
+        if (files.length === 0) {
+          context.setStatus(
+            describeRunError(outcome.error ?? "ytdlp-failed", outcome.log),
+            "error"
+          );
           return;
         }
 
-        const imported = config.importToProject
-          ? await importFiles(outcome.files)
-          : null;
+        const imported = config.importToProject ? await importFiles(files) : null;
 
-        const count = outcome.files.length;
+        const count = files.length;
         const head =
           `${count} ${count === 1 ? "arquivo baixado" : "arquivos baixados"}` +
           (outcome.failed > 0 ? ` · ${outcome.failed} falharam` : "");
@@ -495,7 +583,7 @@ export const downloadTool: Tool = {
           imported === null ? head : `${head} · ${imported}`,
           outcome.failed > 0 ? "error" : "done"
         );
-        renderFiles(outcome.files);
+        renderFiles(files);
         context.setResetHandler(() => clearAll());
       } catch (cause) {
         context.setStatus(describeError(cause), "error");
@@ -620,6 +708,10 @@ export const downloadTool: Tool = {
           return;
         }
         config.destination = folder.nativePath;
+        // A entry em mãos é permissão de escrita; o token a torna
+        // permanente. É o que faz o download em painel — silencioso —
+        // funcionar em qualquer build, escolhendo a pasta UMA vez.
+        config.destinationToken = (await rememberFolderToken(folder)) ?? "";
         persist();
         renderDestination();
       } catch (cause) {
@@ -693,7 +785,16 @@ export const downloadTool: Tool = {
 
     // ── progresso, log e o contorno da recusa ─────────────────
 
-    function showProgress(step: string | null, percent: number | null): void {
+    /**
+     * A barra. Sem porcentagem ela não fica parada no zero — anima em
+     * vai-e-vem, que é a diferença entre "trabalhando" e "travou".
+     * `detail` é a legenda humana: "8,4 de 10,5 MB", "conectando…".
+     */
+    function showProgress(
+      step: string | null,
+      percent: number | null,
+      detail = ""
+    ): void {
       if (!progressEl) return;
       if (step === null) {
         progressEl.hidden = true;
@@ -701,12 +802,16 @@ export const downloadTool: Tool = {
         return;
       }
       progressEl.hidden = false;
-      const width = percent === null ? 0 : Math.max(0, Math.min(100, percent));
+      const waiting = percent === null;
+      const width = waiting ? 30 : Math.max(0, Math.min(100, percent));
+      const right = waiting
+        ? detail || "…"
+        : `${detail ? `${escapeHtml(detail)} · ` : ""}${width.toFixed(0)}%`;
       progressEl.innerHTML =
-        '<div class="dl-bar"><span class="dl-bar-fill" style="width:' +
-        `${width.toFixed(1)}%"></span></div>` +
+        `<div class="dl-bar${waiting ? " is-wait" : ""}">` +
+        `<span class="dl-bar-fill" style="width:${width.toFixed(1)}%"></span></div>` +
         `<div class="dl-bar-legend"><span>${escapeHtml(step)}</span>` +
-        `<span>${percent === null ? "…" : `${width.toFixed(0)}%`}</span></div>`;
+        `<span>${waiting ? escapeHtml(right) : right}</span></div>`;
     }
 
     function showLog(text: string): void {

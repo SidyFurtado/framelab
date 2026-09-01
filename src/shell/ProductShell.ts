@@ -23,7 +23,7 @@ import { PluginUpdater, type VersionManifest } from "./updater";
 
 const PRODUCT_NAME = "Framelab";
 const PRODUCT_TAGLINE = "Premiere";
-const VERSION = "0.2.0";
+const VERSION = "0.2.1";
 
 /**
  * Product Shell: top bar, navigator, active Tool workspace, action bar

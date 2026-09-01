@@ -1709,6 +1709,19 @@ input[type="range"]:focus-visible { outline: 1px solid var(--tungsten); outline-
   background: var(--tungsten);
   transition: width 300ms var(--ease-out);
 }
+/* sem número ainda: a barra respira em vez de fingir zero */
+.dl-bar.is-wait { overflow: hidden; }
+.dl-bar.is-wait .dl-bar-fill {
+  animation: dl-sweep 1.1s var(--ease-out) infinite alternate;
+  transition: none;
+}
+@keyframes dl-sweep {
+  from { transform: translateX(-40%); }
+  to { transform: translateX(280%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dl-bar.is-wait .dl-bar-fill { animation: none; }
+}
 .dl-bar-legend {
   display: flex;
   justify-content: space-between;

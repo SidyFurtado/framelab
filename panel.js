@@ -17,6 +17,7 @@ var GLYPHS = {
   cut: '<path d="M2 7h10"/><path d="M4.5 3v8M9.5 3v8"/>',
   curve: '<path d="M2 11c3.4 0 3.4-8 5-8s2.6 4.5 5 4.5"/>',
   download: '<path d="M7 2.4v6.4"/><path d="M4.2 6.2 7 9l2.8-2.8"/><path d="M2.6 11.4h8.8"/>',
+  speech: '<path d="M2 3h10v6H8l-2.6 2.2V9H2z"/><path d="M4.2 6h.9M6.6 6h.9M9 6h.9"/>',
   folder: '<path d="M2 4.2h3.6l1 1.4H12v5.2H2z"/>'
 };
 
@@ -89,6 +90,20 @@ var TOOLS = [
       '<p class="p-empty-desc">Selecione os clipes na timeline e analise ' +
       "para visualizar o corte.</p></div>" +
       '<span class="p-scan">Analisar Seleção</span>'
+  },
+  {
+    id: "fillers",
+    cat: "edicao",
+    glyph: "speech",
+    name: "Cortar Muletas",
+    summary: "Remove os ééé e aaamm da fala",
+    hint: "Selecione os clipes falados e analise. Usa a transcrição do " +
+      "Premiere — só as muletas caem, o resto da fala e as pausas ficam " +
+      "como estão.",
+    apply: "CORTAR MULETAS",
+    body: slider("Margem ao redor", "0.12s", 30) +
+      slider("Esticado a partir de", "0.45s", 45) +
+      field("Tag da transcrição (né, tipo…)", seg(["Cortar", "Manter"]))
   },
   {
     id: "flow",

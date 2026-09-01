@@ -1,0 +1,23 @@
+========================================================================
+             EDIT TOOLBOX — INSTALAÇÃO NO MAC (BETA)
+========================================================================
+
+COMO INSTALAR:
+
+1. Dê 2 cliques no arquivo:
+   👉 Instalar_Edit_Toolbox.command
+
+2. Abra o Adobe Premiere Pro.
+
+3. No menu superior, vá em:
+   Janela (Window) > Extensões (Extensions) > Edit Toolbox
+
+Pronto!
+
+------------------------------------------------------------------------
+ATUALIZAÇÕES AUTOMÁTICAS:
+Você não precisará baixar novas versões manualmente. Quando houver
+novidades, um botão "Atualizar" aparecerá direto dentro do plugin!
+------------------------------------------------------------------------
+Suporte e feedback: https://github.com/SidyFurtado/edit-toolbox
+========================================================================

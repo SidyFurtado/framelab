@@ -72,14 +72,30 @@ for c in "$DIR/Framelab.ccx" "$DIR/../Framelab.ccx"; do
   [ -f "$c" ] && CCX="$c" && break
 done
 
+EXTERNAL="$HOME/Library/Application Support/Adobe/UXP/Plugins/External"
+
+# Toda instalação anterior sai da frente ANTES de qualquer coisa.
+#
+# Duas razões. A primeira é óbvia: cada versão é uma pasta própria, e
+# duas pastas fazem o Premiere listar o plugin duas vezes. A segunda
+# custou uma hora para achar — o agente da Adobe RECUSA instalar se já
+# houver algo ocupando o lugar (um symlink, uma cópia de uma tentativa
+# anterior), e recusa sem dizer o motivo.
+limpar_anteriores() {
+  [ -d "$EXTERNAL" ] || return 0
+  for velha in "$EXTERNAL/${ID}_"* "$EXTERNAL/$ID"; do
+    [ -e "$velha" ] || [ -L "$velha" ] || continue
+    rm -rf "$velha" 2>/dev/null || true
+  done
+}
+
 INSTALADO=""
 if [ -x "$UPIA" ] && [ -n "$CCX" ]; then
   echo -e "\033[32m  ✓ Encontrado. Instalando pelo caminho oficial da Adobe.\033[0m"
   echo ""
   echo -e "\033[1;33m[2/3]\033[0m Instalando…"
-  # A versão anterior sai antes: instalar por cima deixa duas pastas e
-  # o Premiere lista o plugin duas vezes.
   "$UPIA" --remove "Framelab" >/dev/null 2>&1 || true
+  limpar_anteriores
   if "$UPIA" --install "$CCX" 2>&1 | grep -q "Installation Successful"; then
     INSTALADO="upia"
     echo -e "\033[32m  ✓ Instalado e registrado pelo Adobe UPIA.\033[0m"
@@ -94,15 +110,8 @@ fi
 
 # ── rota 2: a pasta que o Premiere varre sozinho ──────────────────
 if [ -z "$INSTALADO" ]; then
-  DESTINO="$HOME/Library/Application Support/Adobe/UXP/Plugins/External/${ID}_${VERSAO}"
-  # Versões antigas do MESMO plugin saem: cada uma é uma pasta, e o
-  # Premiere carregaria as duas.
-  ANTIGAS="$HOME/Library/Application Support/Adobe/UXP/Plugins/External"
-  if [ -d "$ANTIGAS" ]; then
-    for velha in "$ANTIGAS/${ID}_"*; do
-      [ -e "$velha" ] && [ "$velha" != "$DESTINO" ] && rm -rf "$velha"
-    done
-  fi
+  DESTINO="$EXTERNAL/${ID}_${VERSAO}"
+  limpar_anteriores
   mkdir -p "$DESTINO" || falhar "Não consegui criar a pasta de destino."
   for f in manifest.json index.html index.js index.css; do
     cp -f "$ARQUIVOS/$f" "$DESTINO/" || falhar "Não consegui copiar $f."
@@ -125,6 +134,19 @@ if [ -n "$VISTO" ]; then
   echo -e "\033[32m$VISTO\033[0m"
 else
   falhar "A instalação não deixou rastro. Me mande esta janela."
+fi
+
+# A v0.3.0 e anteriores instalavam pelo .pkg numa pasta do SISTEMA,
+# com um manifesto que o Premiere recusa. Ela não atrapalha — some da
+# contagem de plugins — mas enche o log de erro a cada abertura, e
+# quem for procurar defeito vai achar ela primeiro.
+SOBRA="/Library/Application Support/Adobe/UXP/Plugins/External/com.framelab.premiere"
+if [ -e "$SOBRA" ]; then
+  echo ""
+  echo -e "\033[38;2;227;155;60m   ℹ Achei uma instalação antiga que ficou para trás:\033[0m"
+  echo -e "\033[38;2;106;112;108m     $SOBRA\033[0m"
+  echo -e "     Ela não atrapalha, mas se quiser limpar, cole no Terminal:"
+  echo -e "\033[38;2;154;159;154m     sudo rm -rf \"$SOBRA\"\033[0m"
 fi
 
 echo ""

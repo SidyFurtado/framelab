@@ -69,6 +69,28 @@ function main() {
     console.log(`  ✓ src/shell/ProductShell.ts → ${version}`);
   }
 
+  // O manifesto tem que passar pelo carregador de plugin de TERCEIRO,
+  // que é mais rigoroso que o de desenvolvimento. Um `host` em array
+  // carrega perfeitamente pelo UXP Developer Tool e é RECUSADO na
+  // instalação de verdade:
+  //
+  //   [Error] Plugin com.framelab.premiere : Expected the host
+  //           attribute to be an object for the 3P Plugin
+  //   [Error] Failed to parse the manifest.json file.
+  //
+  // O plugin instalava, o Premiere lia a pasta, e nada aparecia. Sem
+  // esta trava, a única forma de descobrir era um beta tester
+  // reclamando.
+  if (Array.isArray(manifest.host)) {
+    throw new Error(
+      'manifest.host é um array — o Premiere recusa plugin de terceiro assim. ' +
+        "Use um objeto: \"host\": { \"app\": \"premierepro\", ... }"
+    );
+  }
+  if (!manifest.host || typeof manifest.host !== "object" || !manifest.host.app) {
+    throw new Error("manifest.host precisa ser um objeto com `app`.");
+  }
+
   // 1. Build Vite
   console.log("[1/6] Compilando TypeScript e gerando bundle Vite...");
   run("vite build");
@@ -85,6 +107,9 @@ function main() {
   console.log(`  ✓ CCX gerado em: ${ccxPath}`);
 
   // 3. Criação do pacote .pkg nativo do macOS (Apple Installer)
+  // O nome da pasta É a convenção do UXP: `id_versão`. Sem o sufixo,
+  // o Premiere varre a pasta, acha o manifesto e ignora o plugin — foi
+  // metade do motivo de "instalei e não apareceu nada".
   console.log("\n[3/6] Gerando instalador nativo Apple (.pkg)...");
   const pkgOutputPath = path.join(DIST_DIR, "Framelab.pkg");
   if (fs.existsSync(pkgOutputPath)) fs.unlinkSync(pkgOutputPath);
@@ -97,7 +122,7 @@ function main() {
 
   try {
     execSync(
-      `pkgbuild --identifier com.framelab.premiere --version "${version}" --root "${pkgStageDir}" --install-location "/Library/Application Support/Adobe/UXP/Plugins/External/com.framelab.premiere" "${pkgOutputPath}"`,
+      `pkgbuild --identifier com.framelab.premiere --version "${version}" --root "${pkgStageDir}" --install-location "/Library/Application Support/Adobe/UXP/Plugins/External/com.framelab.premiere_${version}" "${pkgOutputPath}"`,
       { stdio: "pipe" }
     );
     console.log(`  ✓ PKG nativo gerado em: ${pkgOutputPath}`);

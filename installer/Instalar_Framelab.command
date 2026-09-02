@@ -1,8 +1,30 @@
 #!/usr/bin/env bash
 # ============================================================
-#  FRAMELAB — INSTALADOR AUTOMÁTICO PARA MAC (BETA)
+#  FRAMELAB — INSTALADOR PARA MAC
+# ============================================================
+#
+#  Duas rotas, nesta ordem:
+#
+#  1. UPIA — o instalador de plugins da própria Adobe, que vem com o
+#     Creative Cloud. É o mesmo que o Creative Cloud usa por dentro:
+#     copia os arquivos E registra o plugin em PluginsInfo. Quando ele
+#     existe, é a rota certa, sem discussão.
+#
+#  2. Cópia manual para a pasta que o Premiere varre sozinho. O log do
+#     Premiere mostra que ele lê três pastas "fallback" na abertura,
+#     sem precisar de registro nenhum:
+#
+#       upic::Loading plugins from user fallback plugins folder:
+#         ~/Library/Application Support/Adobe/UXP/Plugins/External
+#
+#     O nome da pasta é `id_versão` — a convenção do UXP.
+#
+#  A rota 2 existe porque nem toda máquina tem o Creative Cloud no
+#  lugar esperado, e um instalador que depende de uma coisa só é um
+#  instalador que falha calado.
 # ============================================================
 
+set -u
 clear
 echo ""
 echo -e "\033[38;2;227;155;60m   ███████╗██████╗  █████╗ ███╗   ███╗███████╗██╗      █████╗ ██████╗ \033[0m"
@@ -13,89 +35,109 @@ echo -e "\033[38;2;227;155;60m   ██║     ██║  ██║██║  �
 echo -e "\033[38;2;227;155;60m   ╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝╚═════╝ \033[0m"
 echo ""
 echo -e "\033[1;37m   Suíte de Precisão & Automação para Adobe Premiere Pro\033[0m"
-echo -e "\033[38;2;154;159;154m   Versão Beta 0.1.0 • Desenvolvido por Sidy Furtado\033[0m"
 echo -e "\033[38;2;106;112;108m   ───────────────────────────────────────────────────────────────────────────\033[0m"
 echo ""
 
-# Localiza a pasta onde o script está sendo executado
-SOURCE_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
-# Encontra a pasta com os arquivos do plugin (pode ser dist/ ou a própria pasta se descompactado)
-PLUGIN_FILES=""
-if [ -f "$SOURCE_DIR/manifest.json" ] && [ -f "$SOURCE_DIR/index.js" ]; then
-    PLUGIN_FILES="$SOURCE_DIR"
-elif [ -d "$SOURCE_DIR/dist" ] && [ -f "$SOURCE_DIR/dist/manifest.json" ]; then
-    PLUGIN_FILES="$SOURCE_DIR/dist"
-elif [ -d "$SOURCE_DIR/../dist" ] && [ -f "$SOURCE_DIR/../dist/manifest.json" ]; then
-    PLUGIN_FILES="$SOURCE_DIR/../dist"
-elif [ -d "$SOURCE_DIR/Framelab" ] && [ -f "$SOURCE_DIR/Framelab/manifest.json" ]; then
-    PLUGIN_FILES="$SOURCE_DIR/Framelab"
-fi
+falhar() {
+  echo ""
+  echo -e "\033[1;31m   ✗ $1\033[0m"
+  echo ""
+  read -r -p "   Pressione ENTER para fechar..."
+  exit 1
+}
 
-if [ -z "$PLUGIN_FILES" ]; then
-    echo -e "\033[1;31m❌ Erro: Arquivos do plugin não foram encontrados na pasta de instalação.\033[0m"
-    echo -e "   Certifique-se de que descompactou o arquivo ZIP por completo antes de executar."
-    echo ""
-    read -p "Pressione ENTER para fechar..."
-    exit 1
-fi
+# ── onde estão os arquivos do plugin ──────────────────────────────
+ARQUIVOS=""
+for candidato in "$DIR" "$DIR/dist" "$DIR/../dist"; do
+  if [ -f "$candidato/manifest.json" ] && [ -f "$candidato/index.js" ]; then
+    ARQUIVOS="$candidato"
+    break
+  fi
+done
+[ -n "$ARQUIVOS" ] || falhar "Não achei os arquivos do plugin. Descompacte o ZIP por completo antes de abrir este instalador."
 
-echo -e "\033[1;33m[1/3]\033[0m Verificando ambiente Adobe no macOS..."
+# O id e a versão saem do manifesto — não de constantes que envelhecem
+# em silêncio quando a versão sobe.
+ID=$(sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$ARQUIVOS/manifest.json" | head -1)
+VERSAO=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$ARQUIVOS/manifest.json" | head -1)
+[ -n "$ID" ] && [ -n "$VERSAO" ] || falhar "O manifest.json do pacote está ilegível."
 
-# Pastas de destino UXP no macOS
-UXP_TARGET_1="$HOME/Library/Application Support/Adobe/UXP/Plugins/External/com.framelab.premiere"
-UXP_TARGET_2="$HOME/Library/Application Support/Adobe/UXP/PluginsStorage/com.framelab.premiere"
+echo -e "\033[1;33m[1/3]\033[0m Framelab v$VERSAO — procurando o instalador da Adobe…"
 
-# Cria as pastas de destino se não existirem
-mkdir -p "$UXP_TARGET_1"
-mkdir -p "$UXP_TARGET_2"
-
-echo -e "\033[32m  ✓ Diretórios UXP preparados com sucesso.\033[0m"
-echo ""
-
-echo -e "\033[1;33m[2/3]\033[0m Instalando arquivos do Framelab..."
-
-# Copia os arquivos do bundle
-cp -f "$PLUGIN_FILES/manifest.json" "$UXP_TARGET_1/" 2>/dev/null || true
-cp -f "$PLUGIN_FILES/index.html" "$UXP_TARGET_1/" 2>/dev/null || true
-cp -f "$PLUGIN_FILES/index.js" "$UXP_TARGET_1/" 2>/dev/null || true
-cp -f "$PLUGIN_FILES/index.css" "$UXP_TARGET_1/" 2>/dev/null || true
-
-# Copia também para PluginsStorage para máxima compatibilidade
-cp -Rf "$PLUGIN_FILES/"* "$UXP_TARGET_2/" 2>/dev/null || true
-
-# Garante permissões adequadas
-chmod -R 755 "$UXP_TARGET_1" 2>/dev/null || true
-chmod -R 755 "$UXP_TARGET_2" 2>/dev/null || true
-
-echo -e "\033[32m  ✓ Arquivos instalados em:\033[0m"
-echo -e "    \033[38;2;154;159;154m$UXP_TARGET_1\033[0m"
-echo ""
-
-echo -e "\033[1;33m[3/3]\033[0m Verificando Adobe Premiere Pro instalado..."
-
-PREMIERE_FOUND=false
-for app_path in "/Applications/Adobe Premiere Pro 2025" "/Applications/Adobe Premiere Pro 2024" "/Applications/Adobe Premiere Pro 2026" "/Applications/Adobe Premiere Pro Beta"; do
-    if [ -d "$app_path" ]; then
-        echo -e "\033[32m  ✓ Encontrado: $(basename "$app_path")\033[0m"
-        PREMIERE_FOUND=true
-    fi
+UPIA="/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent"
+CCX=""
+for c in "$DIR/Framelab.ccx" "$DIR/../Framelab.ccx"; do
+  [ -f "$c" ] && CCX="$c" && break
 done
 
-if [ "$PREMIERE_FOUND" = false ]; then
-    echo -e "\033[38;2;227;155;60m  ℹ Premiere Pro não detectado no caminho padrão, mas os arquivos foram instalados.\033[0m"
+INSTALADO=""
+if [ -x "$UPIA" ] && [ -n "$CCX" ]; then
+  echo -e "\033[32m  ✓ Encontrado. Instalando pelo caminho oficial da Adobe.\033[0m"
+  echo ""
+  echo -e "\033[1;33m[2/3]\033[0m Instalando…"
+  # A versão anterior sai antes: instalar por cima deixa duas pastas e
+  # o Premiere lista o plugin duas vezes.
+  "$UPIA" --remove "Framelab" >/dev/null 2>&1 || true
+  if "$UPIA" --install "$CCX" 2>&1 | grep -q "Installation Successful"; then
+    INSTALADO="upia"
+    echo -e "\033[32m  ✓ Instalado e registrado pelo Adobe UPIA.\033[0m"
+  else
+    echo -e "\033[38;2;227;155;60m  ℹ O instalador da Adobe recusou. Seguindo pela cópia direta.\033[0m"
+  fi
+else
+  echo -e "\033[38;2;227;155;60m  ℹ Não encontrado nesta máquina. Seguindo pela cópia direta.\033[0m"
+  echo ""
+  echo -e "\033[1;33m[2/3]\033[0m Instalando…"
+fi
+
+# ── rota 2: a pasta que o Premiere varre sozinho ──────────────────
+if [ -z "$INSTALADO" ]; then
+  DESTINO="$HOME/Library/Application Support/Adobe/UXP/Plugins/External/${ID}_${VERSAO}"
+  # Versões antigas do MESMO plugin saem: cada uma é uma pasta, e o
+  # Premiere carregaria as duas.
+  ANTIGAS="$HOME/Library/Application Support/Adobe/UXP/Plugins/External"
+  if [ -d "$ANTIGAS" ]; then
+    for velha in "$ANTIGAS/${ID}_"*; do
+      [ -e "$velha" ] && [ "$velha" != "$DESTINO" ] && rm -rf "$velha"
+    done
+  fi
+  mkdir -p "$DESTINO" || falhar "Não consegui criar a pasta de destino."
+  for f in manifest.json index.html index.js index.css; do
+    cp -f "$ARQUIVOS/$f" "$DESTINO/" || falhar "Não consegui copiar $f."
+  done
+  chmod -R 755 "$DESTINO" 2>/dev/null || true
+  INSTALADO="pasta"
+  echo -e "\033[32m  ✓ Copiado para:\033[0m"
+  echo -e "    \033[38;2;154;159;154m$DESTINO\033[0m"
+fi
+
+echo ""
+echo -e "\033[1;33m[3/3]\033[0m Conferindo…"
+VISTO=""
+if [ -x "$UPIA" ] && "$UPIA" --list "Premiere Pro" 2>/dev/null | grep -q "Framelab"; then
+  VISTO="  ✓ O Premiere já lista o Framelab."
+elif [ -f "$HOME/Library/Application Support/Adobe/UXP/Plugins/External/${ID}_${VERSAO}/manifest.json" ]; then
+  VISTO="  ✓ Os arquivos estão no lugar."
+fi
+if [ -n "$VISTO" ]; then
+  echo -e "\033[32m$VISTO\033[0m"
+else
+  falhar "A instalação não deixou rastro. Me mande esta janela."
 fi
 
 echo ""
 echo -e "\033[38;2;106;112;108m   ───────────────────────────────────────────────────────────────────────────\033[0m"
-echo -e "\033[1;32m   🎉 INSTALAÇÃO CONCLUÍDA COM SUCESSO!\033[0m"
+echo -e "\033[1;32m   🎉 FRAMELAB v$VERSAO INSTALADO\033[0m"
 echo -e "\033[38;2;106;112;108m   ───────────────────────────────────────────────────────────────────────────\033[0m"
 echo ""
-echo -e "   \033[1;37mComo abrir o plugin no Premiere Pro:\033[0m"
-echo -e "   1. Abra o \033[1;33mAdobe Premiere Pro\033[0m."
-echo -e "   2. No menu superior, clique em \033[1;33mJanela\033[0m (Window) > \033[1;33mExtensões\033[0m (Extensions)."
-echo -e "   3. Selecione \033[1;32mFramelab\033[0m."
+echo -e "   \033[1;37mPara abrir:\033[0m"
+echo -e "   1. \033[1;33mFeche o Premiere Pro por completo\033[0m (se estiver aberto)."
+echo -e "      Ele só procura plugins novos quando abre."
+echo -e "   2. Abra o Premiere."
+echo -e "   3. Menu \033[1;33mJanela\033[0m (Window) → \033[1;33mExtensões\033[0m (Extensions) → \033[1;32mFramelab\033[0m."
 echo ""
-echo -e "   \033[38;2;154;159;154mDica: Atualizações futuras aparecerão automaticamente dentro do painel!\033[0m"
+echo -e "   \033[38;2;154;159;154mAs próximas atualizações aparecem dentro do próprio painel.\033[0m"
 echo ""
-read -p "Pressione ENTER para finalizar..."
+read -r -p "   Pressione ENTER para finalizar..."

@@ -1,8 +1,8 @@
 {
-  "version": "0.3.0",
+  "version": "0.3.1",
   "releaseDate": "2026-09-02",
   "minPremiereVersion": "25.0.0",
-  "changelog": "LEGENDAS (nova): transcreve por faixa de áudio — A1, A2, todas — sem precisar selecionar clipe, e devolve um .srt pronto no seu projeto. Mais precisa que a do Premiere em pontuação e acento, com glossário do projeto que aprende com as suas correções. Você controla caracteres por linha, número de linhas, duração mínima e máxima, velocidade de leitura e o intervalo em quadros, com prévia ao vivo e três presets (Vertical, Padrão, Cinema); mudar um ajuste refaz o .srt em um segundo, sem transcrever de novo. PERMISSÃO UMA VEZ SÓ: o painel deixou de pedir autorização a cada ação. Agora um assistente sobe na primeira vez e atende o resto da sessão. DESLIZADORES REFEITOS: clicar em qualquer ponto da barra leva o valor para lá (antes só as pontas respondiam), e dois cliques no número abrem a digitação — quer 25, digite 25. Vale para todas as ferramentas. DOWNLOAD: quando um link falha, a linha dele diz o porquê (vídeo privado, removido, pede login) em vez de 'não foi possível ler'.",
+  "changelog": "CORREÇÃO DA INSTALAÇÃO. Quem instalou a v0.3.0 pelo .pkg viu o instalador terminar e nada aparecer no Premiere; quem tentou pelo .ccx viu o Creative Cloud não reagir. Era o mesmo defeito nos dois: o manifesto declarava o host num formato que o Premiere aceita em modo de desenvolvimento e RECUSA na instalação de verdade — o plugin era lido e descartado em silêncio. Corrigido, e o empacotador agora falha se a forma errada voltar. O instalador passou a usar o próprio agente da Adobe (o mesmo do Creative Cloud), com cópia direta como reserva, e o desinstalador finalmente remove de verdade. Todo o conteúdo da v0.3.0 continua aqui: Legendas, permissão uma vez só por sessão, e os deslizadores refeitos.",
   "downloadUrl": "https://github.com/SidyFurtado/framelab/releases/latest/download/Framelab-macOS.zip",
   "bundleFiles": {
     "manifest.json": "https://raw.githubusercontent.com/SidyFurtado/framelab/main/dist/manifest.json",

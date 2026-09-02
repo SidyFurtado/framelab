@@ -11168,7 +11168,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
   }
   const PRODUCT_NAME = "Framelab";
   const PRODUCT_TAGLINE = "Premiere";
-  const VERSION = "0.3.0";
+  const VERSION = "0.3.1";
   class ProductShell {
     constructor(root) {
       this.updateBadgeEl = null;

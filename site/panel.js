@@ -18,6 +18,7 @@ var GLYPHS = {
   curve: '<path d="M2 11c3.4 0 3.4-8 5-8s2.6 4.5 5 4.5"/>',
   download: '<path d="M7 2.4v6.4"/><path d="M4.2 6.2 7 9l2.8-2.8"/><path d="M2.6 11.4h8.8"/>',
   speech: '<path d="M2 3h10v6H8l-2.6 2.2V9H2z"/><path d="M4.2 6h.9M6.6 6h.9M9 6h.9"/>',
+  caption: '<rect x="2" y="3.6" width="10" height="6.8"/><path d="M4.2 6.4h3.2M4.2 8.2h5.6"/>',
   folder: '<path d="M2 4.2h3.6l1 1.4H12v5.2H2z"/>'
 };
 
@@ -27,9 +28,10 @@ function glyph(name) {
     (GLYPHS[name] || "") + "</svg>";
 }
 
-function seg(items) {
+function seg(items, active) {
+  var on = typeof active === "number" ? active : 0;
   return '<div class="p-seg">' + items.map(function (item, index) {
-    return '<span class="p-seg-item"' + (index === 0 ? ' data-on' : "") + ">" +
+    return '<span class="p-seg-item"' + (index === on ? ' data-on' : "") + ">" +
       item + "</span>";
   }).join("") + "</div>";
 }
@@ -56,6 +58,7 @@ function field(label, inner) {
 
 var CATEGORIES = [
   { id: "edicao", name: "Edição" },
+  { id: "texto", name: "Texto" },
   { id: "midia", name: "Mídia" },
   { id: "projeto", name: "Projeto" }
 ];
@@ -123,6 +126,28 @@ var TOOLS = [
       "</div>") +
       '<div class="p-draw"><span class="p-draw-mark"></span>' +
       "<span>Desenhar a minha</span></div>"
+  },
+  {
+    id: "captions",
+    cat: "texto",
+    glyph: "caption",
+    name: "Legendas",
+    summary: "Transcrição mais precisa, por faixa de áudio",
+    hint: "Escolha a faixa de áudio e transcreva — não precisa selecionar " +
+      "clipe. Sai um .srt já dentro do seu projeto: arraste da janela do " +
+      "projeto para a timeline e a legenda aparece.",
+    apply: "TRANSCREVER",
+    body: field("Faixa de áudio",
+      '<span class="p-pick"><b>Todas as faixas</b><span>3 clipes</span>' +
+      '<i aria-hidden="true">▾</i></span>') +
+      field("Idioma",
+        '<span class="p-pick"><b>Português</b>' +
+        '<i aria-hidden="true">▾</i></span>') +
+      field("Linhas", seg(["1 linha", "2 linhas", "3 linhas"], 1)) +
+      // 42 numa faixa de 16 a 64, 17 numa de 0 a 30: os padrões reais
+      // de srt.ts, não números escolhidos por caberem bem.
+      slider("Caracteres por linha", "42", 54) +
+      slider("Velocidade de leitura", "17 car/s", 57)
   },
   {
     id: "download",

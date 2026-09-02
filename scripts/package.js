@@ -34,6 +34,41 @@ function main() {
   const version = pkg.version || "0.1.0";
   console.log(`Versão: \x1b[32mv${version}\x1b[0m\n`);
 
+  // 0. A versão, num lugar só
+  //
+  // Ela vivia em quatro arquivos e o empacotador cuidava de dois. Os
+  // outros dois eram justamente os que o usuário vê: o manifesto que
+  // o Premiere lê e a constante que o painel mostra e COMPARA com a
+  // do servidor. Publicar com eles atrasados fazia o plugin se dizer
+  // eternamente na versão antiga — e oferecer a mesma atualização
+  // depois de já tê-la instalado.
+  console.log("[0/6] Sincronizando a versão nos arquivos que a carregam...");
+  const MANIFEST_PATH = path.join(ROOT_DIR, "static", "manifest.json");
+  const SHELL_PATH = path.join(ROOT_DIR, "src", "shell", "ProductShell.ts");
+
+  const manifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, "utf8"));
+  if (manifest.version !== version) {
+    manifest.version = version;
+    fs.writeFileSync(MANIFEST_PATH, JSON.stringify(manifest, null, 2) + "\n");
+    console.log(`  ✓ static/manifest.json → ${version}`);
+  }
+
+  const shellSource = fs.readFileSync(SHELL_PATH, "utf8");
+  const shellPatched = shellSource.replace(
+    /^const VERSION = "[^"]*";$/m,
+    `const VERSION = "${version}";`
+  );
+  if (shellPatched === shellSource && !shellSource.includes(`const VERSION = "${version}"`)) {
+    throw new Error(
+      "não achei `const VERSION` em ProductShell.ts — a versão do painel " +
+        "ficaria atrasada e o updater ofereceria a mesma atualização para sempre"
+    );
+  }
+  if (shellPatched !== shellSource) {
+    fs.writeFileSync(SHELL_PATH, shellPatched);
+    console.log(`  ✓ src/shell/ProductShell.ts → ${version}`);
+  }
+
   // 1. Build Vite
   console.log("[1/6] Compilando TypeScript e gerando bundle Vite...");
   run("vite build");

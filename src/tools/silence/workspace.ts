@@ -366,7 +366,42 @@ export async function ensureDir(space: Workspace, relative: string): Promise<voi
   if (!fs) {
     throw new Error('require("fs") não resolveu');
   }
-  await fs.mkdir(join(space.fsBase, relative), { recursive: true });
+  /*
+   * Um nível de cada vez, NUNCA confiando em `recursive`.
+   *
+   * O `mkdir` do UXP aceita a opção e, em parte das builds, ignora o
+   * recursivo em silêncio: pedir `App.app/Contents/MacOS` de uma vez
+   * devolvia sucesso sem criar nada, o bundle do runner nascia
+   * quebrado e TODA ferramenta caía no Terminal — sem erro nenhum
+   * para explicar por quê.
+   *
+   * Criar nível a nível também dá o diagnóstico certo: se falhar,
+   * falha no nível que o host recusou.
+   */
+  const parts = relative.split("/").filter(Boolean);
+  let path = space.fsBase;
+  for (const part of parts) {
+    path = join(path, part);
+    try {
+      await fs.mkdir(path);
+    } catch {
+      // Já existir é o caso comum e não é falha.
+    }
+  }
+}
+
+/** true quando o caminho existe e pode ser lido. */
+export function exists(space: Workspace, relative: string): boolean {
+  const fs = fsModule();
+  if (!fs) {
+    return false;
+  }
+  try {
+    fs.readFileSync(join(space.fsBase, relative), { encoding: "utf-8" });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function readText(space: Workspace, name: string): string | null {

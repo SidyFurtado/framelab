@@ -641,7 +641,7 @@ body {
   font-size: 12.5px;
   color: var(--leader-dim);
 }
-.slider-row input[type="range"] { flex: 1; min-width: 40px; }
+.slider-row .fl-slider { flex: 1; min-width: 40px; }
 .slider-row .slider-value {
   flex: none;
   min-width: 46px;
@@ -652,30 +652,58 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-input[type="range"] {
-  -webkit-appearance: none;
-  appearance: none;
+/* O deslizador é desenhado por nós (ver shell/slider.ts): a pista
+   inteira é o alvo do clique, e o traço é só a marca de onde se está.
+   Os 18px de altura são área de acerto, não enfeite — o traço visível
+   continua com 1px, centrado. */
+.fl-slider {
+  position: relative;
   width: 100%;
-  height: 15px;
-  margin: 0;
-  background: none;
+  height: 18px;
   cursor: ew-resize;
+  -webkit-user-select: none;
+  user-select: none;
 }
-input[type="range"]::-webkit-slider-runnable-track { height: 1px; background: var(--line-strong); }
-input[type="range"]::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  width: 3px; height: 13px;
-  margin-top: -6px;
-  border: 0;
+.fl-slider-line,
+.fl-slider-fill {
+  position: absolute;
+  top: 8px;
+  left: 0;
+  height: 1px;
+}
+.fl-slider-line { right: 0; background: var(--line-strong); }
+.fl-slider-fill { background: var(--tungsten); opacity: 0.45; }
+.fl-slider-thumb {
+  position: absolute;
+  top: 2px;
+  width: 3px;
+  height: 13px;
   background: var(--tungsten);
+  transform: translateX(-50%);
 }
-input[type="range"]::-moz-range-track { height: 1px; background: var(--line-strong); }
-input[type="range"]::-moz-range-thumb {
-  width: 3px; height: 13px;
-  border: 0;
-  background: var(--tungsten);
+.fl-slider:hover .fl-slider-thumb { box-shadow: 0 0 0 2px rgba(227, 155, 60, 0.18); }
+.fl-slider:focus-visible { outline: 1px solid var(--tungsten); outline-offset: 2px; }
+
+/* O número é editável: dois cliques abrem a digitação. O tracejado é
+   a única pista de que ele responde — sem ela ninguém descobriria. */
+.field-val.is-typable {
+  cursor: text;
+  border-bottom: 1px dotted var(--line-strong);
 }
-input[type="range"]:focus-visible { outline: 1px solid var(--tungsten); outline-offset: 2px; }
+.field-val.is-typable:hover { color: var(--leader); border-bottom-color: var(--tungsten); }
+.field-val.is-typable:focus-visible { outline: 1px solid var(--tungsten); outline-offset: 2px; }
+.fl-slider-entry {
+  width: 58px;
+  text-align: right;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--leader);
+  background: var(--ink-3);
+  border-bottom: 1px solid var(--tungsten);
+  padding: 0 3px;
+  font-variant-numeric: tabular-nums;
+}
+.fl-slider-entry:focus { outline: none; }
 
 .field-note {
   margin: 0;
@@ -1615,6 +1643,142 @@ input[type="range"]:focus-visible { outline: 1px solid var(--tungsten); outline-
 }
 
 
+/* ── Legendas ───────────────────────────────────────────────────── */
+
+/* o aviso dos diálogos do sistema: informação, não alarme — borda
+   discreta e texto legível, sem ícone de perigo */
+.cc-heads-up {
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  background: var(--ink-2);
+}
+.cc-heads-up-title {
+  margin: 0 0 5px;
+  font-family: var(--sans);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--leader-dim);
+}
+.cc-heads-up-body {
+  margin: 0;
+  font-family: var(--sans);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--leader-mute);
+}
+.cc-heads-up-body b { color: var(--leader-dim); font-weight: 600; }
+
+/* As ações empilham. Lado a lado, num painel de 320px, os dois
+   rótulos quebravam em duas linhas cada e a fileira lia como defeito —
+   visto renderizado antes de mudar. Empilhado, cada um tem a largura
+   inteira e cabe numa linha só em qualquer largura de painel. */
+.cc-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+.cc-actions .org-scan,
+.cc-actions .cc-learn {
+  margin: 0;
+  width: 100%;
+}
+
+/* o de aprender é secundário: contorno em vez de preenchimento, para
+   a ação principal continuar sendo uma só */
+.cc-learn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--line-strong);
+  color: var(--leader-dim);
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 500;
+  transition: color 160ms var(--ease-out), border-color 160ms;
+}
+.cc-learn:hover:not([aria-disabled="true"]) {
+  color: var(--leader);
+  border-color: var(--tungsten);
+}
+.cc-learn[aria-disabled="true"] { color: var(--leader-mute); border-color: var(--line); }
+.cc-learn:focus-visible { outline: 1px solid var(--tungsten); outline-offset: 1px; }
+
+/* carregamento e progresso da transcrição */
+.cc-progress {
+  display: block;
+  margin-top: 12px;
+  padding: 12px 14px;
+  background: var(--ink-2);
+  border: 1px solid var(--line-strong);
+}
+.cc-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.cc-progress-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--leader);
+}
+.cc-progress-spinner {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 2px solid rgba(227, 155, 60, 0.25);
+  border-top-color: var(--tungsten);
+  border-radius: 50%;
+  animation: cc-spin 800ms linear infinite;
+  flex: none;
+}
+@keyframes cc-spin {
+  to { transform: rotate(360deg); }
+}
+.cc-progress-time {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--tungsten);
+  font-weight: 500;
+}
+.cc-progress-track {
+  display: block;
+  height: 3px;
+  background: rgba(237, 231, 217, 0.08);
+  overflow: hidden;
+  position: relative;
+}
+.cc-progress-fill {
+  display: block;
+  height: 100%;
+  width: 35%;
+  background: var(--tungsten);
+  animation: cc-sweep 1.2s var(--ease-out) infinite alternate;
+}
+@keyframes cc-sweep {
+  from { transform: translateX(-40%); }
+  to { transform: translateX(260%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cc-progress-spinner { animation: none; }
+  .cc-progress-fill { animation: none; width: 100%; }
+}
+.cc-progress-desc {
+  margin: 6px 0 0;
+  font-family: var(--sans);
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--leader-faint);
+}
+
 /* ── Cortar Muletas ─────────────────────────────────────────────── */
 
 /* cada muleta achada é um chip: a palavra como foi ouvida e o tempo
@@ -1822,10 +1986,15 @@ input[type="range"]:focus-visible { outline: 1px solid var(--tungsten); outline-
    painel inteiro debaixo do dedo de quem foi escolher */
 .dl-menu {
   position: absolute;
-  top: calc(100% + 2px);
+  top: 100%;
   left: 0;
   right: 0;
   z-index: 20;
+  /* Rolagem PRÓPRIA: uma lista de treze idiomas passa de 380px e
+     estourava o corpo rolável do painel, que no UXP abria um vão no
+     meio do menu. Aqui ela rola dentro de si e o painel não sente. */
+  max-height: 232px;
+  overflow-y: auto;
   border: 1px solid var(--line-strong);
   background: var(--ink-3);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
@@ -1834,7 +2003,9 @@ input[type="range"]:focus-visible { outline: 1px solid var(--tungsten); outline-
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 29px;
+  /* min-height, não height: no UXP uma linha de altura fixa podia
+     esticar ou colapsar conforme o conteúdo do lado. */
+  min-height: 29px;
   padding: 0 9px;
   color: var(--leader-dim);
   transition: background 140ms var(--ease-out), color 140ms;
@@ -2068,3 +2239,134 @@ input[type="range"]:focus-visible { outline: 1px solid var(--tungsten); outline-
   cursor: default;
 }
 
+
+/* ── prévia da legenda ──────────────────────────────────────────────
+ *
+ * Um poço escuro dentro do painel: é a imagem, não mais um cartão de
+ * interface. A legenda é desenhada como o espectador a veria — sans,
+ * centrada, com a sombra que toda legenda tem sobre imagem clara — e a
+ * contagem de caracteres fica na margem, que é o número que os
+ * controles acima mexem.
+ *
+ * A linha nunca quebra sozinha (`nowrap`): a quebra é decisão das
+ * regras, e uma quebra do CSS faria a prévia mentir sobre o resultado.
+ */
+.cc-cap-preview {
+  margin-top: 11px;
+  border: 1px solid var(--line);
+  background: #080B0A;
+}
+.cc-cap-screen {
+  padding: 9px 10px 11px;
+}
+.cc-cap-screen + .cc-cap-screen { border-top: 1px solid rgba(237, 231, 217, 0.06); }
+
+.cc-cap-clock {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--mono);
+  font-size: 8.5px;
+  letter-spacing: 0.05em;
+  color: var(--leader-mute);
+  font-variant-numeric: tabular-nums;
+}
+.cc-cap-dur { color: var(--tungsten); opacity: 0.7; }
+
+.cc-cap-lines {
+  margin-top: 7px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.cc-cap-line {
+  position: relative;
+  padding: 0 20px;
+  text-align: center;
+}
+.cc-cap-text {
+  font-family: var(--sans);
+  /* o corpo vem calculado da medida da linha — ver preview.ts */
+  font-size: var(--cc-cap-size, 11px);
+  line-height: 1.35;
+  color: var(--leader);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+}
+.cc-cap-count {
+  position: absolute;
+  right: 0;
+  top: 1px;
+  font-family: var(--mono);
+  font-size: 8.5px;
+  color: var(--leader-mute);
+  font-variant-numeric: tabular-nums;
+}
+
+.cc-cap-stats {
+  display: flex;
+  gap: 12px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 8.5px;
+  letter-spacing: 0.04em;
+  color: var(--leader-mute);
+  font-variant-numeric: tabular-nums;
+}
+.cc-cap-stats b { color: var(--leader-dim); font-weight: 400; }
+
+.cc-cap-warn {
+  margin: 0;
+  padding: 7px 10px;
+  border-top: 1px solid rgba(229, 55, 42, 0.25);
+  background: rgba(229, 55, 42, 0.07);
+  font-family: var(--sans);
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--leader-dim);
+}
+.cc-cap-source {
+  margin: 0;
+  padding: 6px 10px 7px;
+  border-top: 1px solid var(--line);
+  font-family: var(--sans);
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--leader-mute);
+}
+.cc-cap-empty {
+  margin: 0;
+  padding: 14px 10px;
+  text-align: center;
+  font-family: var(--sans);
+  font-size: 11px;
+  color: var(--leader-faint);
+}
+
+/* refazer o .srt é irmão de "aprender": contorno, largura inteira, e
+   só aparece quando existe uma transcrição para refazer */
+.cc-redo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 34px;
+  margin-top: 9px;
+  padding: 0 14px;
+  border: 1px solid var(--line-strong);
+  color: var(--leader-dim);
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 500;
+  transition: color 160ms var(--ease-out), border-color 160ms;
+}
+.cc-redo:hover:not([aria-disabled="true"]) {
+  color: var(--leader);
+  border-color: var(--tungsten);
+}
+.cc-redo[aria-disabled="true"] { color: var(--leader-mute); border-color: var(--line); }
+.cc-redo:focus-visible { outline: 1px solid var(--tungsten); outline-offset: 1px; }
+.cc-redo[hidden] { display: none !important; }

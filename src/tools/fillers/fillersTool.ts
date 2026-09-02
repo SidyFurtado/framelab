@@ -32,6 +32,7 @@ import {
   type FillerPlan,
   type FillerReason,
 } from "./planFillers";
+import { mountSlider, type SliderHandle } from "../../shell/slider";
 
 const REASON_LABELS: Record<FillerReason, string> = {
   tag: "tag da transcrição",
@@ -41,6 +42,9 @@ const REASON_LABELS: Record<FillerReason, string> = {
 
 /** Deixa `unmount` desligar uma varredura que ainda roda. */
 let cancelActiveScan: (() => void) | null = null;
+/** Os deslizadores, para soltar os ouvintes que põem em `document`. */
+let padSlider: SliderHandle | null = null;
+let stretchSlider: SliderHandle | null = null;
 
 export const fillersTool: Tool = {
   id: "fillers",
@@ -67,9 +71,9 @@ export const fillersTool: Tool = {
     const scanBtn = container.querySelector<HTMLElement>("[data-scan]");
     const emptyEl = container.querySelector<HTMLElement>("[data-empty]");
     const reportEl = container.querySelector<HTMLElement>("[data-report]");
-    const padInput = container.querySelector<HTMLInputElement>("[data-pad]");
+    const padRail = container.querySelector<HTMLElement>("[data-pad]");
     const padOut = container.querySelector<HTMLElement>("[data-out-pad]");
-    const stretchInput = container.querySelector<HTMLInputElement>("[data-stretch]");
+    const stretchRail = container.querySelector<HTMLElement>("[data-stretch]");
     const stretchOut = container.querySelector<HTMLElement>("[data-out-stretch]");
     const tagSeg = container.querySelector<HTMLElement>("[data-tag-seg]");
 
@@ -81,13 +85,11 @@ export const fillersTool: Tool = {
     // ── parâmetros ────────────────────────────────────────────
 
     function syncOutputs(): void {
-      if (padOut) padOut.textContent = `${params.padSeconds.toFixed(2)}s`;
-      if (stretchOut) {
-        stretchOut.textContent =
-          params.stretchedSeconds > 0
-            ? `${params.stretchedSeconds.toFixed(2)}s`
-            : "desligado";
-      }
+      // O número é do deslizador: quem o escrevia aqui brigava com o
+      // `format` dele, e o "desligado" do zero era apagado no arrasto
+      // seguinte.
+      padSlider?.set(params.padSeconds);
+      stretchSlider?.set(params.stretchedSeconds);
       for (const item of tagSeg?.querySelectorAll<HTMLElement>(".seg-item") ?? []) {
         item.setAttribute(
           "aria-pressed",
@@ -96,16 +98,39 @@ export const fillersTool: Tool = {
       }
     }
 
-    padInput?.addEventListener("input", () => {
-      params.padSeconds = Number.parseFloat(padInput.value) || 0;
-      syncOutputs();
-      rebuild();
-    });
-    stretchInput?.addEventListener("input", () => {
-      params.stretchedSeconds = Number.parseFloat(stretchInput.value) || 0;
-      syncOutputs();
-      rebuild();
-    });
+    if (padRail) {
+      padSlider = mountSlider(padRail, {
+        min: 0,
+        max: 0.4,
+        step: 0.01,
+        value: params.padSeconds,
+        label: "Margem ao redor de cada muleta",
+        format: (value) => `${value.toFixed(2)}s`,
+        output: padOut,
+        onInput: (value) => {
+          params.padSeconds = value;
+          syncOutputs();
+          rebuild();
+        },
+      });
+    }
+    if (stretchRail) {
+      stretchSlider = mountSlider(stretchRail, {
+        min: 0,
+        max: 1,
+        step: 0.05,
+        value: params.stretchedSeconds,
+        label: "Duração a partir da qual é e ah contam como muleta",
+        // Zero não é "0,00s": é a regra desligada.
+        format: (value) => (value > 0 ? `${value.toFixed(2)}s` : "desligado"),
+        output: stretchOut,
+        onInput: (value) => {
+          params.stretchedSeconds = value;
+          syncOutputs();
+          rebuild();
+        },
+      });
+    }
     tagSeg?.addEventListener("click", (event) => {
       const item = (event.target as Element | null)?.closest<HTMLElement>("[data-tag]");
       if (!item) return;
@@ -349,6 +374,10 @@ export const fillersTool: Tool = {
   unmount(): void {
     cancelActiveScan?.();
     cancelActiveScan = null;
+    padSlider?.destroy();
+    padSlider = null;
+    stretchSlider?.destroy();
+    stretchSlider = null;
   },
 };
 
@@ -363,10 +392,7 @@ function markup(params: FillerParams): string {
             '<span class="t-label">Margem ao redor</span>' +
             `<span class="field-val" data-out-pad>${params.padSeconds.toFixed(2)}s</span>` +
           "</div>" +
-          '<div class="slider-row">' +
-            `<input type="range" min="0" max="0.4" step="0.01" value="${params.padSeconds}" ` +
-            'data-pad aria-label="Margem ao redor de cada muleta">' +
-          "</div>" +
+          '<div class="slider-row"><div data-pad></div></div>' +
           '<p class="field-note">Quanto de ar cai junto com cada muleta. A margem ' +
           "avança pelo silêncio vizinho e para na palavra ao lado — nunca morde fala.</p>" +
         "</div>" +
@@ -375,10 +401,7 @@ function markup(params: FillerParams): string {
             '<span class="t-label">Esticado a partir de</span>' +
             `<span class="field-val" data-out-stretch>${params.stretchedSeconds.toFixed(2)}s</span>` +
           "</div>" +
-          '<div class="slider-row">' +
-            `<input type="range" min="0" max="1" step="0.05" value="${params.stretchedSeconds}" ` +
-            'data-stretch aria-label="Duração a partir da qual é e ah contam como muleta">' +
-          "</div>" +
+          '<div class="slider-row"><div data-stretch></div></div>' +
           '<p class="field-note">Um "é" ou "ah" mais longo que isso é hesitação, não ' +
           "palavra. Zero desliga — aí só sons inequívocos (ééé, hum) e a tag cortam.</p>" +
         "</div>" +

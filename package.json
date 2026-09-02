@@ -1,12 +1,13 @@
 {
   "name": "framelab",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "private": true,
-  "description": "Framelab — Multi-tool precision platform for Adobe Premiere Pro (UXP)",
+  "description": "Framelab \u2014 Multi-tool precision platform for Adobe Premiere Pro (UXP)",
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "vite build",
-    "package": "node scripts/package.js"
+    "package": "node scripts/package.js",
+    "bench:captions": "node scripts/captions-bench.js"
   },
   "devDependencies": {
     "@adobe/cc-ext-uxp-types": "^7.3.1",

@@ -38,6 +38,7 @@ import {
   type SilenceParams,
   type SliderSpec,
 } from "./presets";
+import { mountSlider, type SliderHandle } from "../../shell/slider";
 
 /** Rótulo curto por status, para a linha do clipe na lista. */
 const STATUS_LABEL: Record<ClipStatus, string> = {
@@ -58,6 +59,8 @@ const STATUS_LABEL: Record<ClipStatus, string> = {
  * is looking at.
  */
 let cancelActiveScan: (() => void) | null = null;
+/** Solta os ouvintes que os oito deslizadores põem em `document`. */
+let releaseSliders: (() => void) | null = null;
 
 export const silenceTool: Tool = {
   id: "silence",
@@ -83,6 +86,7 @@ export const silenceTool: Tool = {
 
     const modeSeg = container.querySelector<HTMLElement>("[data-mode-seg]");
     const presetRail = container.querySelector<HTMLElement>("[data-preset-rail]");
+    const sliders = new Map<SliderSpec["key"], SliderHandle>();
     const presetNote = container.querySelector<HTMLElement>("[data-preset-note]");
     const fillerField = container.querySelector<HTMLElement>("[data-filler-field]");
     const fillerSeg = container.querySelector<HTMLElement>("[data-filler-seg]");
@@ -219,17 +223,10 @@ export const silenceTool: Tool = {
     }
 
     function syncSliders(): void {
+      // `set` redesenha e reescreve o número, e não dispara `onInput`:
+      // o aperto que `clampParams` faz num vizinho não vira laço.
       for (const spec of SLIDERS) {
-        const input = container.querySelector<HTMLInputElement>(
-          `[data-slider="${spec.key}"]`
-        );
-        const output = container.querySelector<HTMLElement>(`[data-out="${spec.key}"]`);
-        if (input) {
-          input.value = String(params[spec.key]);
-        }
-        if (output) {
-          output.textContent = formatParam(spec, params[spec.key]);
-        }
+        sliders.get(spec.key)?.set(params[spec.key]);
       }
       for (const item of fillerSeg?.querySelectorAll<HTMLElement>(".seg-item") ?? []) {
         item.setAttribute(
@@ -253,17 +250,30 @@ export const silenceTool: Tool = {
     }
 
     for (const spec of SLIDERS) {
-      const input = container.querySelector<HTMLInputElement>(
-        `[data-slider="${spec.key}"]`
+      const rail = container.querySelector<HTMLElement>(`[data-slider="${spec.key}"]`);
+      if (!rail) continue;
+      sliders.set(
+        spec.key,
+        mountSlider(rail, {
+          min: spec.min,
+          max: spec.max,
+          step: spec.step,
+          value: params[spec.key],
+          label: spec.label,
+          format: (value) => formatParam(spec, value),
+          output: container.querySelector<HTMLElement>(`[data-out="${spec.key}"]`),
+          onInput: (value) => {
+            params = { ...params, [spec.key]: value };
+            paramsChanged();
+          },
+        })
       );
-      input?.addEventListener("input", () => {
-        const parsed = Number.parseFloat(input.value);
-        if (Number.isFinite(parsed)) {
-          params = { ...params, [spec.key]: parsed };
-          paramsChanged();
-        }
-      });
     }
+
+    releaseSliders = () => {
+      for (const handle of sliders.values()) handle.destroy();
+      sliders.clear();
+    };
 
     presetRail?.addEventListener("click", (event) => {
       const pill = (event.target as Element | null)?.closest<HTMLElement>(".preset-pill");
@@ -546,6 +556,8 @@ export const silenceTool: Tool = {
   unmount(): void {
     cancelActiveScan?.();
     cancelActiveScan = null;
+    releaseSliders?.();
+    releaseSliders = null;
   },
 };
 
@@ -566,10 +578,7 @@ function markup(params: SilenceParams): string {
       params[spec.key]
     )}</span>` +
     "</div>" +
-    '<div class="slider-row">' +
-    `<input type="range" min="${spec.min}" max="${spec.max}" step="${spec.step}" ` +
-    `value="${params[spec.key]}" data-slider="${spec.key}" aria-label="${spec.label}">` +
-    "</div>" +
+    `<div class="slider-row"><div data-slider="${spec.key}"></div></div>` +
     // The notes were written, typed and shipped, and never rendered — the
     // whole explanation of the Tool's hardest controls sat unreachable in
     // presets.ts.

@@ -15,9 +15,13 @@ import { curveGeometry, type CurveShape } from "./curve";
 import { CONTROL } from "../../shell/controls";
 import type { EasingCurve } from "../../curves/easing";
 import { mountCurvePicker, type CurvePicker } from "../../curves/picker";
+import { mountSlider, type SliderHandle } from "../../shell/slider";
 
 /** The live picker, so unmount can release the editor it may hold. */
 let livePicker: CurvePicker | null = null;
+/** Os deslizadores, para soltar os ouvintes que eles põem em `document`. */
+let scaleSlider: SliderHandle | null = null;
+let durationSlider: SliderHandle | null = null;
 
 const PREVIEW_WIDTH = 220;
 const PREVIEW_HEIGHT = 84;
@@ -63,10 +67,10 @@ export const zoomTool: Tool = {
     const presetButtons = Array.from(
       container.querySelectorAll<HTMLElement>("[data-preset-dur]")
     );
-    const scaleInput = container.querySelector<HTMLInputElement>("[data-scale]");
+    const scaleRail = container.querySelector<HTMLElement>("[data-scale]");
     const scaleOut = container.querySelector<HTMLElement>("[data-out-scale]");
     const durationField = container.querySelector<HTMLElement>("[data-duration-field]");
-    const durationInput = container.querySelector<HTMLInputElement>("[data-duration]");
+    const durationRail = container.querySelector<HTMLElement>("[data-duration]");
     const durationOut = container.querySelector<HTMLElement>("[data-out-duration]");
     const metaRange = container.querySelector<HTMLElement>("[data-meta-range]");
     const metaSpan = container.querySelector<HTMLElement>("[data-meta-span]");
@@ -157,22 +161,18 @@ export const zoomTool: Tool = {
     }
 
     function setScale(value: number): void {
-      scalePercent = value;
-      if (scaleInput) {
-        scaleInput.value = String(value);
-      }
-      if (scaleOut) {
-        scaleOut.textContent = `${value}%`;
+      scalePercent = Math.round(Math.max(SCALE_MIN, Math.min(SCALE_MAX, value)));
+      scaleSlider?.set(scalePercent);
+      if (scaleOut && !scaleSlider) {
+        scaleOut.textContent = `${scalePercent}%`;
       }
       draw();
     }
 
     function setDuration(value: number): void {
       punchDuration = Math.max(PUNCH_DURATION_MIN, Math.min(PUNCH_DURATION_MAX, value));
-      if (durationInput) {
-        durationInput.value = String(punchDuration);
-      }
-      if (durationOut) {
+      durationSlider?.set(punchDuration);
+      if (durationOut && !durationSlider) {
         durationOut.textContent = `${punchDuration.toFixed(1)}s`;
       }
       for (const btn of presetButtons) {
@@ -216,16 +216,33 @@ export const zoomTool: Tool = {
       });
     }
 
-    scaleInput?.addEventListener("input", () => {
-      const parsed = Number.parseFloat(scaleInput.value);
-      scaleTouched = true;
-      setScale(Number.isFinite(parsed) ? parsed : SCALE_DEFAULTS[style]);
-    });
-
-    durationInput?.addEventListener("input", () => {
-      const parsed = Number.parseFloat(durationInput.value);
-      setDuration(Number.isFinite(parsed) ? parsed : PUNCH_DURATION_DEFAULT);
-    });
+    if (scaleRail) {
+      scaleSlider = mountSlider(scaleRail, {
+        min: SCALE_MIN,
+        max: SCALE_MAX,
+        step: 1,
+        value: scalePercent,
+        label: "Intensidade",
+        format: (value) => `${value}%`,
+        output: scaleOut,
+        onInput: (value) => {
+          scaleTouched = true;
+          setScale(value);
+        },
+      });
+    }
+    if (durationRail) {
+      durationSlider = mountSlider(durationRail, {
+        min: PUNCH_DURATION_MIN,
+        max: PUNCH_DURATION_MAX,
+        step: 0.1,
+        value: punchDuration,
+        label: "Duração do punch",
+        format: (value) => `${value.toFixed(1)}s`,
+        output: durationOut,
+        onInput: (value) => setDuration(value),
+      });
+    }
 
     draw();
 
@@ -263,6 +280,10 @@ export const zoomTool: Tool = {
   unmount(): void {
     // The editor listens on window for resizes; the Shell wiping the
     // body would leave that listener behind on a detached node.
+    scaleSlider?.destroy();
+    scaleSlider = null;
+    durationSlider?.destroy();
+    durationSlider = null;
     livePicker?.destroy();
     livePicker = null;
   },
@@ -309,10 +330,7 @@ function markup(
             `<span class="field-val" data-out-duration>${punchDuration.toFixed(1)}s</span>` +
           "</div>" +
           `<div class="preset-rail">${presetButtonsHtml}</div>` +
-          '<div class="slider-row">' +
-            `<input type="range" min="${PUNCH_DURATION_MIN}" max="${PUNCH_DURATION_MAX}" step="0.1" ` +
-            `value="${punchDuration}" data-duration aria-label="Duração do punch">` +
-          "</div>" +
+          '<div class="slider-row"><div data-duration></div></div>' +
         "</div>" +
 
         // Scale target
@@ -321,10 +339,7 @@ function markup(
             '<span class="t-label">Intensidade (Escala Alvo)</span>' +
             `<span class="field-val" data-out-scale>${scalePercent}%</span>` +
           "</div>" +
-          '<div class="slider-row">' +
-            `<input type="range" min="${SCALE_MIN}" max="${SCALE_MAX}" step="1" ` +
-            `value="${scalePercent}" data-scale aria-label="Intensidade">` +
-          "</div>" +
+          '<div class="slider-row"><div data-scale></div></div>' +
           '<p class="field-note">100% mantém o enquadramento; valores acima aumentam o corte com Transform.</p>' +
         "</div>" +
         '<div class="preview-meta"><b data-meta-range></b>' +

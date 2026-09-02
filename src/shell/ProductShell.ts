@@ -19,10 +19,11 @@ import {
   type SelectionSummary,
 } from "../bridge/premiere";
 import { PluginUpdater, type VersionManifest } from "./updater";
+import { startAgentHeartbeat } from "../tools/download/runner";
 
 const PRODUCT_NAME = "Framelab";
 const PRODUCT_TAGLINE = "Premiere";
-const VERSION = "0.2.2";
+const VERSION = "0.3.0";
 
 /**
  * Product Shell: top bar, navigator, active Tool workspace, action bar
@@ -176,6 +177,10 @@ export class ProductShell {
   }
 
   start(): void {
+    // O agente que roda os scripts só continua vivo enquanto este
+    // batimento existir — é o que impede um processo órfão quando o
+    // Premiere fecha, e o que evita pedir permissão a cada ação.
+    startAgentHeartbeat();
     this.reportHostGaps();
     this.renderNav();
     const first = tools.find((tool) => tool.available) ?? tools[0];

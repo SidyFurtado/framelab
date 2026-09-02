@@ -17,6 +17,7 @@
  */
 import type { Tool, ToolContext } from "../../shell/tool";
 import { CONTROL, setDisabled, escapeHtml } from "../../shell/controls";
+import { mountDropdown, type Dropdown } from "../../shell/dropdown";
 import { getPremiere, describeError } from "../../bridge/premiere";
 import {
   availableQualities,
@@ -45,102 +46,6 @@ import {
 } from "./tiktok";
 import type { DirectJob } from "./ytdlp";
 import { downloadInPanel, rememberFolderToken } from "./panelFetch";
-
-/**
- * Um botão que abre uma lista de opções.
- *
- * Existe porque a alternativa — uma barra de segmentos com sete
- * degraus de qualidade e uma linha de nota embaixo explicando os
- * degraus — enchia a tela para responder uma pergunta que se responde
- * uma vez. Fechado, ocupa uma linha e diz a escolha; aberto, mostra o
- * tamanho de cada opção, que é a informação que de fato decide.
- *
- * Também resolve os seis navegadores dos cookies: o UXP não honra
- * `flex-wrap`, então uma fila de seis chips não quebrava linha — ela
- * espremia todos até ninguém conseguir ler.
- */
-interface MenuOption {
-  readonly id: string;
-  readonly label: string;
-  /** Direita da linha: tamanho, resolução. Vazio some. */
-  readonly meta?: string;
-}
-
-interface Dropdown {
-  /** Relê as opções e o selecionado. */
-  render(): void;
-  /** Fecha, a menos que o clique tenha sido dentro dele. */
-  closeUnless(target: Element | null): void;
-}
-
-function mountDropdown(
-  host: HTMLElement,
-  source: {
-    options(): MenuOption[];
-    selected(): string;
-    onPick(id: string): void;
-  }
-): Dropdown {
-  host.className = "dl-pick-wrap";
-  host.innerHTML =
-    `<div class="dl-pick" ${CONTROL} data-pick-button aria-expanded="false">` +
-      '<span class="dl-pick-value" data-pick-value></span>' +
-      '<span class="dl-pick-meta" data-pick-meta></span>' +
-      '<span class="dl-pick-caret" aria-hidden="true">▾</span>' +
-    "</div>" +
-    '<div class="dl-menu" data-pick-menu hidden></div>';
-
-  const button = host.querySelector<HTMLElement>("[data-pick-button]")!;
-  const valueEl = host.querySelector<HTMLElement>("[data-pick-value]")!;
-  const metaEl = host.querySelector<HTMLElement>("[data-pick-meta]")!;
-  const menu = host.querySelector<HTMLElement>("[data-pick-menu]")!;
-
-  function setOpen(open: boolean): void {
-    menu.hidden = !open;
-    button.setAttribute("aria-expanded", String(open));
-  }
-
-  function render(): void {
-    const options = source.options();
-    const selected = source.selected();
-    const current = options.find((option) => option.id === selected);
-
-    valueEl.textContent = current?.label ?? "—";
-    metaEl.textContent = current?.meta ?? "";
-
-    menu.innerHTML = options
-      .map(
-        (option) =>
-          `<div class="dl-menu-item" ${CONTROL} data-value="${escapeHtml(option.id)}" ` +
-          `aria-pressed="${option.id === selected}">` +
-          `<span class="dl-menu-name">${escapeHtml(option.label)}</span>` +
-          `<span class="dl-menu-meta">${escapeHtml(option.meta ?? "")}</span>` +
-          "</div>"
-      )
-      .join("");
-  }
-
-  button.addEventListener("click", () => setOpen(menu.hidden));
-
-  menu.addEventListener("click", (event) => {
-    const item = (event.target as Element | null)?.closest<HTMLElement>("[data-value]");
-    const id = item?.dataset.value;
-    if (!id) return;
-    setOpen(false);
-    source.onPick(id);
-  });
-
-  render();
-
-  return {
-    render,
-    closeUnless(target) {
-      if (!menu.hidden && !host.contains(target)) {
-        setOpen(false);
-      }
-    },
-  };
-}
 
 /**
  * A via rápida consultada para cada posição da lista.

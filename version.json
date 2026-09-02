@@ -1,8 +1,8 @@
 {
-  "version": "0.2.2",
-  "releaseDate": "2026-09-01",
+  "version": "0.3.0",
+  "releaseDate": "2026-09-02",
   "minPremiereVersion": "25.0.0",
-  "changelog": "Revisão geral de estabilidade. O Corte de Silêncios também deixou de abrir o Terminal. Corrigidos: transcrição com marcação de tempo relativa (que podia cortar fala), o Zoom desfazendo um zoom que deu certo, cancelar uma análise e a seguinte pegar o resultado da antiga, e o botão Aplicar morrendo depois de uma recusa do Premiere. O painel abre e lê a seleção bem mais rápido, e a pasta do plugin parou de acumular arquivos de áudio temporários.",
+  "changelog": "LEGENDAS (nova): transcreve por faixa de áudio — A1, A2, todas — sem precisar selecionar clipe, e devolve um .srt pronto no seu projeto. Mais precisa que a do Premiere em pontuação e acento, com glossário do projeto que aprende com as suas correções. Você controla caracteres por linha, número de linhas, duração mínima e máxima, velocidade de leitura e o intervalo em quadros, com prévia ao vivo e três presets (Vertical, Padrão, Cinema); mudar um ajuste refaz o .srt em um segundo, sem transcrever de novo. PERMISSÃO UMA VEZ SÓ: o painel deixou de pedir autorização a cada ação. Agora um assistente sobe na primeira vez e atende o resto da sessão. DESLIZADORES REFEITOS: clicar em qualquer ponto da barra leva o valor para lá (antes só as pontas respondiam), e dois cliques no número abrem a digitação — quer 25, digite 25. Vale para todas as ferramentas. DOWNLOAD: quando um link falha, a linha dele diz o porquê (vídeo privado, removido, pede login) em vez de 'não foi possível ler'.",
   "downloadUrl": "https://github.com/SidyFurtado/framelab/releases/latest/download/Framelab-macOS.zip",
   "bundleFiles": {
     "manifest.json": "https://raw.githubusercontent.com/SidyFurtado/framelab/main/dist/manifest.json",

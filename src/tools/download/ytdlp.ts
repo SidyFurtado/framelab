@@ -31,7 +31,7 @@
  * mantém no páreo os formatos que simplesmente não têm essa etiqueta,
  * que é o caso do YouTube inteiro. Sem ele, o filtro derrubava tudo.
  */
-import { ensureSilentLauncher } from "./runner";
+import { dispatch, withdraw } from "./runner";
 import { readConfig as readSilenceConfig } from "../silence/ffmpeg";
 
 /** Alias local: o escapador compartilhado, no nome curto dos templates. */
@@ -555,15 +555,10 @@ async function run(launch: Launch): Promise<RunResult> {
   // carimbo de início não aparecer — o Terminal volta como plano B:
   // feio e visível, mas nunca uma funcionalidade morta.
   let launchError: string | null = null;
-  let awaitingStamp = false;
-  try {
-    const launcher = await ensureSilentLauncher(scriptName());
-    await shell.openPath(launcher.path, launch.purpose);
-    awaitingStamp = true;
-  } catch (cause) {
-    console.error("[Download] runner silencioso recusado:", describe(cause));
-  }
+  const sent = await dispatch(scriptName());
+  let awaitingStamp = sent.mode !== "denied";
   if (!awaitingStamp) {
+    console.error("[Download] agente recusado:", sent.error);
     try {
       await shell.openPath(scriptPath, launch.purpose);
     } catch (cause) {
@@ -588,7 +583,10 @@ async function run(launch: Launch): Promise<RunResult> {
     if (awaitingStamp && Date.now() > stampDeadline) {
       awaitingStamp = false;
       if (!readText(space, runFiles.started)) {
-        console.warn("[Download] sem carimbo do runner — caindo para o Terminal.");
+        console.warn("[Download] sem carimbo do agente — caindo para o Terminal.");
+        // Sai da fila antes: um agente que acordasse depois baixaria
+        // o mesmo vídeo uma segunda vez.
+        await withdraw(sent.ticket);
         try {
           await shell.openPath(scriptPath, launch.purpose);
         } catch (cause) {
@@ -688,6 +686,57 @@ function readPercent(log: string): number | null {
 
 // ── as três operações ──────────────────────────────────────────────
 
+/**
+ * Liga cada reclamação do yt-dlp ao link de onde ela veio.
+ *
+ * O log é do LOTE: cinco links viram cinco linhas `ERROR:` num arquivo
+ * só. O que amarra uma linha ao seu link é o id que o yt-dlp imprime
+ * — `ERROR: [youtube] ukoShFrJ_Dc: Private video` — ou a própria URL,
+ * quando a queixa é sobre ela ("Unsupported URL: …").
+ *
+ * Casado por ÍNDICE e sem reaproveitar linha: o mesmo vídeo colado
+ * duas vezes falha duas vezes, e as duas linhas são dele.
+ *
+ * Exportada para ser provável fora do Premiere: atribuição errada não
+ * quebra nada — só cola no link A o motivo do link B, e ninguém
+ * percebe.
+ */
+export function complaintsByIndex(
+  urls: readonly string[],
+  log: string
+): Map<number, string> {
+  const lines = log.split(/\r?\n/).filter((line) => line.startsWith("ERROR:"));
+  const out = new Map<number, string>();
+  const orphans: string[] = [];
+
+  for (const line of lines) {
+    const index = urls.findIndex((url, at) => !out.has(at) && mentions(line, url));
+    if (index >= 0) {
+      out.set(index, shortReason(line));
+    } else {
+      orphans.push(line);
+    }
+  }
+
+  // Um link só e uma queixa sem dono são, necessariamente, o mesmo
+  // caso — vale para o erro que não cita id nem URL.
+  if (urls.length === 1 && !out.has(0) && orphans.length > 0) {
+    out.set(0, shortReason(orphans[orphans.length - 1]));
+  }
+  return out;
+}
+
+/** Esta linha de erro fala deste link? */
+function mentions(line: string, url: string): boolean {
+  if (url.length > 0 && line.includes(url)) {
+    return true;
+  }
+  // `ERROR: [youtube] ukoShFrJ_Dc: …` — o id é a única coisa que liga
+  // a queixa ao link que o editor colou.
+  const id = /^ERROR:\s*\[[^\]]+\]\s*([^\s:]+):/.exec(line)?.[1];
+  return !!id && id.length >= 4 && url.includes(id);
+}
+
 export async function probeUrls(
   urls: readonly string[],
   config: DownloadConfig,
@@ -712,13 +761,20 @@ export async function probeUrls(
   });
 
   const space = await workspace();
+  const complaints = complaintsByIndex(urls, result.log);
   const probes = urls.map((url, index) => {
     const raw = readText(space, infoFile(index));
     if (!raw) {
       return {
         url,
         ok: false,
-        error: "O yt-dlp não conseguiu ler este link.",
+        // O log SABE por que este link falhou — "Private video",
+        // "Unsupported URL", o que for. A linha da lista dizia sempre
+        // "não conseguiu ler este link" e jogava fora o diagnóstico,
+        // enquanto a barra de status logo abaixo mostrava o motivo
+        // certo: duas mensagens contraditórias na mesma tela, e a
+        // errada era justamente a que fica colada no link.
+        error: complaints.get(index) ?? "não foi possível ler",
         title: url,
         id: "",
         site: "",
@@ -1405,51 +1461,123 @@ export function describeRunError(code: string | null, log: string): string {
 }
 
 /**
- * Lê o desabafo do yt-dlp e devolve a frase que aponta o conserto.
+ * Por que o yt-dlp parou, em duas medidas.
  *
  * "ERROR: unable to download" não diz nada a ninguém; as causas reais
- * são poucas e cada uma tem uma saída diferente no painel.
+ * são poucas e cada uma tem uma saída diferente no painel. Cada causa
+ * é escrita duas vezes de propósito:
+ *
+ *   • `short` cabe ao lado do link, na linha estreita da lista, que é
+ *     onde o editor olha primeiro para saber QUAL link falhou;
+ *   • `long` explica e diz o que fazer, na barra de status.
+ *
+ * Duas tabelas separadas divergiriam na primeira correção — por isso
+ * as duas formas moram na mesma linha.
+ *
+ * A ordem importa: "Private video" do YouTube costuma vir acompanhado
+ * de "Sign in if you've been granted access", e a regra de login é
+ * larga o bastante para roubá-lo. O caso mais específico vem antes.
  */
-function diagnoseLog(log: string): string {
-  if (/unable to extract universal data|rehydration/i.test(log)) {
-    return (
+interface Cause {
+  test: RegExp;
+  /** Duas ou três palavras — a linha do link é estreita. */
+  short: string;
+  /** A explicação e a saída. */
+  long: string;
+}
+
+const CAUSES: readonly Cause[] = [
+  {
+    test: /unable to extract universal data|rehydration/i,
+    short: "TikTok recusou",
+    long:
       "O TikTok recusou a conversa desta vez — acontece em rajadas. " +
-      "Espere alguns segundos e tente de novo."
-    );
-  }
-  if (/sign in to confirm|not a bot|cookies/i.test(log)) {
-    return (
+      "Espere alguns segundos e tente de novo.",
+  },
+  {
+    test: /private video/i,
+    short: "vídeo privado",
+    long:
+      "Esse vídeo é privado. Se você tem acesso a ele, escolha nos ajustes " +
+      "avançados o navegador onde está logado — o painel usa os cookies dele.",
+  },
+  {
+    test: /video unavailable|removed by the uploader/i,
+    short: "vídeo removido",
+    long: "O vídeo foi removido ou não está disponível.",
+  },
+  {
+    test: /age.?restrict/i,
+    short: "restrição de idade",
+    long:
+      "Vídeo com restrição de idade — use os cookies do navegador nos " +
+      "ajustes avançados.",
+  },
+  {
+    test: /sign in to confirm|not a bot|cookies/i,
+    short: "pede login",
+    long:
       "O site pediu login. Nos ajustes avançados, escolha o navegador onde " +
-      "você já está logado para o yt-dlp usar os cookies dele."
-    );
-  }
-  if (/private video|video unavailable|removed by the uploader/i.test(log)) {
-    return "O vídeo é privado ou foi removido.";
-  }
-  if (/age.?restrict/i.test(log)) {
-    return "Vídeo com restrição de idade — use os cookies do navegador nos ajustes avançados.";
-  }
-  if (/ffmpeg is not installed|ffmpeg not found/i.test(log)) {
-    return (
+      "você já está logado para o yt-dlp usar os cookies dele.",
+  },
+  {
+    test: /ffmpeg is not installed|ffmpeg not found/i,
+    short: "falta o ffmpeg",
+    long:
       "Falta o ffmpeg para juntar vídeo e áudio nesta qualidade. Instale com " +
-      '"brew install ffmpeg" ou escolha 1080p ou menos.'
-    );
+      '"brew install ffmpeg" ou escolha 1080p ou menos.',
+  },
+  {
+    test: /unsupported url/i,
+    short: "site não suportado",
+    long: "O yt-dlp não reconhece esse link.",
+  },
+  {
+    test: /urlopen error|network|timed out|connection/i,
+    short: "falha de rede",
+    long: "Falha de rede durante o download.",
+  },
+];
+
+/** A última reclamação crua do yt-dlp, sem o prefixo. */
+function rawComplaint(log: string): string | null {
+  const errors = log.match(/^ERROR:.*$/gm);
+  if (!errors || errors.length === 0) {
+    return null;
   }
-  if (/unsupported url/i.test(log)) {
-    return "O yt-dlp não reconhece esse link.";
-  }
-  if (/urlopen error|network|timed out|connection/i.test(log)) {
-    return "Falha de rede durante o download.";
+  return errors[errors.length - 1].replace(/^ERROR:\s*/, "").trim();
+}
+
+export function diagnoseLog(log: string): string {
+  const cause = CAUSES.find((entry) => entry.test.test(log));
+  if (cause) {
+    return cause.long;
   }
   // Nenhum padrão conhecido: melhor a reclamação crua do yt-dlp que
   // uma frase genérica — foi a falta disto que deixou um beta tester
   // com "deu erro" e nada mais.
-  const errors = log.match(/^ERROR:.*$/gm);
-  if (errors && errors.length > 0) {
-    const last = errors[errors.length - 1].replace(/^ERROR:\s*/, "").slice(0, 220);
-    return `O yt-dlp reclamou: ${last}`;
+  const raw = rawComplaint(log);
+  return raw
+    ? `O yt-dlp reclamou: ${raw.slice(0, 220)}`
+    : "O yt-dlp não concluiu. O log abaixo diz onde parou.";
+}
+
+/** O mesmo diagnóstico em duas ou três palavras. */
+export function shortReason(log: string): string {
+  const cause = CAUSES.find((entry) => entry.test.test(log));
+  if (cause) {
+    return cause.short;
   }
-  return "O yt-dlp não concluiu. O log abaixo diz onde parou.";
+  const raw = rawComplaint(log);
+  if (!raw) {
+    return "não foi possível ler";
+  }
+  // Fora o prefixo `[extrator] id:`, o que sobra é a queixa em si.
+  // Curta: medida a 320px, uma queixa de 42 caracteres espremia o
+  // link para 99px e o endereço sumia — e é o link que diz QUAL falhou.
+  // O texto inteiro está logo abaixo, na barra de status e no log.
+  const clean = raw.replace(/^\[[^\]]+\]\s*[^\s:]*:\s*/, "");
+  return clean.length > 30 ? `${clean.slice(0, 28)}…` : clean;
 }
 
 // ── formatação ─────────────────────────────────────────────────────

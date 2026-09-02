@@ -27,7 +27,7 @@
  * `workspace.ts`; a razão de existirem dois está lá.
  */
 import { EnvelopeBuilder, PCM_SAMPLE_RATE, type Envelope } from "./waveform";
-import { ensureSilentLauncher } from "../download/runner";
+import { agentIsUp, dispatch, withdraw } from "../download/runner";
 import {
   describe,
   fsModule,
@@ -209,24 +209,15 @@ export async function extractAudio(
    * e esta ferramenta era a que faltava. Se o lançamento falhar, ou o
    * carimbo de início não aparecer, o Terminal volta como plano B.
    */
+  const PURPOSE =
+    "Extrair o áudio dos clipes selecionados com o ffmpeg, para detectar os silêncios pela onda.";
   let launchError: string | null = null;
-  let awaitingStamp = false;
-  try {
-    const launcher = await ensureSilentLauncher(scriptName());
-    await shell.openPath(
-      launcher.path,
-      "Extrair o áudio dos clipes selecionados com o ffmpeg, para detectar os silêncios pela onda."
-    );
-    awaitingStamp = true;
-  } catch (cause) {
-    console.error("[Silêncios] runner silencioso recusado:", describe(cause));
-  }
+  const sent = await dispatch(scriptName());
+  let awaitingStamp = sent.mode !== "denied";
   if (!awaitingStamp) {
+    console.error("[Silêncios] agente recusado:", sent.error);
     try {
-      await shell.openPath(
-        scriptPath,
-        "Extrair o áudio dos clipes selecionados com o ffmpeg, para detectar os silêncios pela onda."
-      );
+      await shell.openPath(scriptPath, PURPOSE);
     } catch (cause) {
       launchError = describe(cause);
       console.error("[Silêncios] openPath recusou:", cause);
@@ -247,7 +238,10 @@ export async function extractAudio(
     if (awaitingStamp && Date.now() > stampDeadline) {
       awaitingStamp = false;
       if (!readText(space, runStarted)) {
-        console.warn("[Silêncios] sem carimbo do runner — caindo para o Terminal.");
+        console.warn("[Silêncios] sem carimbo do agente — caindo para o Terminal.");
+        // Sai da fila antes: um agente que acordasse depois extrairia
+        // o mesmo áudio uma segunda vez.
+        await withdraw(sent.ticket);
         try {
           await shell.openPath(scriptPath, "Extrair o áudio dos clipes selecionados.");
         } catch (cause) {
@@ -403,6 +397,15 @@ export async function diagnose(ffmpegPath: string): Promise<DiagnosticLine[]> {
     "módulo uxp.shell",
     !!shell && typeof shell.openPath === "function",
     shell?.openPath ? "openPath disponível" : "openPath ausente"
+  );
+  // Com o assistente de pé, nenhuma ação pede permissão; sem ele, a
+  // próxima pede uma vez. É a primeira coisa a olhar quando o editor
+  // reclama de diálogo repetido.
+  const up = await agentIsUp();
+  add(
+    "assistente residente",
+    up,
+    up ? "de pé — as ações não pedem permissão" : "parado — a próxima ação pede uma vez"
   );
 
   try {

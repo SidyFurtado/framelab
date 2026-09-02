@@ -19,9 +19,12 @@ import {
   renderCurvePreview,
   type CurvePicker,
 } from "../../curves/picker";
+import { mountSlider, type SliderHandle } from "../../shell/slider";
 
 /** The live picker, so unmount can release the editor it may hold. */
 let livePicker: CurvePicker | null = null;
+/** O deslizador, para soltar os ouvintes que ele põe em `document`. */
+let densitySlider: SliderHandle | null = null;
 
 /**
  * Speed curves. Premiere gives no way to read which keyframes are
@@ -54,7 +57,7 @@ export const flowTool: Tool = {
 
     const list = container.querySelector<HTMLElement>("[data-param-list]")!;
     const densityOut = container.querySelector<HTMLElement>("[data-out-density]");
-    const densityInput = container.querySelector<HTMLInputElement>("[data-density]");
+    const densityRail = container.querySelector<HTMLElement>("[data-density]");
     function targets(): FlowTarget[] {
       const out: FlowTarget[] = [];
       for (const param of params) {
@@ -196,19 +199,26 @@ export const flowTool: Tool = {
       .querySelector<HTMLElement>("[data-rescan]")
       ?.addEventListener("click", () => void reload());
 
-    densityInput?.addEventListener("input", () => {
-      setDensity(Number.parseInt(densityInput.value, 10));
-    });
+    if (densityRail) {
+      densitySlider = mountSlider(densityRail, {
+        min: DENSITY_MIN,
+        max: DENSITY_MAX,
+        step: 1,
+        value: density,
+        label: "Densidade da assadura",
+        format: (value) => `${value} kf`,
+        output: densityOut,
+        onInput: (value) => setDensity(value),
+      });
+    }
 
     function setDensity(value: number): void {
       if (!Number.isFinite(value)) {
         return;
       }
       density = Math.min(DENSITY_MAX, Math.max(DENSITY_MIN, value));
-      if (densityInput) {
-        densityInput.value = String(density);
-      }
-      if (densityOut) {
+      densitySlider?.set(density);
+      if (densityOut && !densitySlider) {
         densityOut.textContent = `${density} kf`;
       }
       for (const button of container.querySelectorAll<HTMLElement>("[data-density-preset]")) {
@@ -263,6 +273,8 @@ export const flowTool: Tool = {
   unmount(): void {
     // The editor listens on window for resizes; the Shell wiping the
     // body would leave that listener behind on a detached node.
+    densitySlider?.destroy();
+    densitySlider = null;
     livePicker?.destroy();
     livePicker = null;
   },
@@ -339,8 +351,7 @@ function shellMarkup(density: number): string {
             `<span class="field-val" data-out-density>${density} kf</span>` +
           "</div>" +
           `<div class="preset-rail">${presets}</div>` +
-          `<input type="range" min="${DENSITY_MIN}" max="${DENSITY_MAX}" step="1" ` +
-          `value="${density}" data-density aria-label="Densidade">` +
+          '<div class="slider-row"><div data-density></div></div>' +
           '<p class="field-note">Cada keyframe assado é um keyframe que você não retima ' +
           "mais. Use Linear para desfazer e reajustar o tempo.</p>" +
         "</div>" +

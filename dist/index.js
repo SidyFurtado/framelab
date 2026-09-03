@@ -3166,7 +3166,7 @@
   function wait$1(ms) {
     return new Promise((resolve2) => setTimeout(resolve2, ms));
   }
-  const AGENT_VERSION = "2";
+  const AGENT_VERSION = "3";
   const ALIVE_FILE = "agent-alive.txt";
   const PANEL_FILE = "agent-panel.txt";
   const STOP_FILE = "agent-stop.txt";
@@ -3194,11 +3194,14 @@
     }
     return version === AGENT_VERSION ? "live" : "old";
   }
-  async function agentIsUp() {
+  async function agentStatus() {
     try {
-      return agentState(await workspace()) === "live";
+      const space = await workspace();
+      const raw = readText(space, ALIVE_FILE) ?? "";
+      const arch = raw.split(/\s+/)[2] ?? "?";
+      return { up: agentState(space) === "live", arch };
     } catch {
-      return false;
+      return { up: false, arch: "?" };
     }
   }
   async function dispatch(scriptName2) {
@@ -3289,6 +3292,14 @@
       `  <key>CFBundleShortVersionString</key><string>${AGENT_VERSION}.0</string>`,
       "  <key>LSUIElement</key><true/>",
       "  <key>LSBackgroundOnly</key><true/>",
+      // Sem isto o LaunchServices abre o bundle sob ROSETTA: o executável
+      // é um script, e sem uma fatia arm64 para inspecionar ele assume o
+      // pior. O bash então roda x86_64, e todo filho — ffmpeg, whisper,
+      // yt-dlp, todos universais — herda a emulação. Foi assim que uma
+      // transcrição de 7 minutos passou de 12: o Metal funcionava, mas a
+      // metade em CPU do whisper rodava traduzida a 300% de CPU.
+      "  <key>LSArchitecturePriority</key><array><string>arm64</string></array>",
+      "  <key>LSRequiresNativeExecution</key><true/>",
       "</dict>",
       "</plist>",
       ""
@@ -3298,6 +3309,11 @@
     return [
       "#!/bin/bash",
       "# Gerado pelo Framelab — agente residente. Pode apagar.",
+      "# Se o LaunchServices nos abriu sob Rosetta, relança nativo: tudo",
+      "# que este laço executar herdaria a emulação.",
+      'if [ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = "1" ] && command -v arch >/dev/null 2>&1; then',
+      '  exec arch -arm64 /bin/bash "$0" "$@"',
+      "fi",
       'DIR="$(cd "$(dirname "$0")/../../.." && pwd)"',
       'cd "$DIR" || exit 1',
       `LOCK="$DIR/agent-lock"`,
@@ -3307,8 +3323,11 @@
       "",
       "# O carimbo vai por arquivo temporário: o painel nunca deve ler",
       "# um carimbo pela metade e concluir que o agente morreu.",
+      "# Terceiro campo: native ou rosetta. É o que deixa o diagnóstico do",
+      "# painel dizer 'o agente está emulado' em vez de 'está lento'.",
+      'ARCH="native"; [ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = "1" ] && ARCH="rosetta"',
       "stamp() {",
-      `  printf '%s ${AGENT_VERSION}' "$(date +%s)" > "$ALIVE.tmp" 2>/dev/null &&`,
+      `  printf '%s ${AGENT_VERSION} %s' "$(date +%s)" "$ARCH" > "$ALIVE.tmp" 2>/dev/null &&`,
       '    mv -f "$ALIVE.tmp" "$ALIVE" 2>/dev/null',
       "}",
       "",
@@ -3640,11 +3659,11 @@
       !!shell && typeof shell.openPath === "function",
       shell?.openPath ? "openPath disponível" : "openPath ausente"
     );
-    const up = await agentIsUp();
+    const agent = await agentStatus();
     add(
       "assistente residente",
-      up,
-      up ? "de pé — as ações não pedem permissão" : "parado — a próxima ação pede uma vez"
+      agent.up && agent.arch !== "rosetta",
+      !agent.up ? "parado — a próxima ação pede uma vez" : agent.arch === "rosetta" ? "de pé, mas EMULADO (Rosetta): whisper e ffmpeg rodam até 10x mais devagar — recarregue o painel" : `de pé, nativo (${agent.arch}) — as ações não pedem permissão`
     );
     try {
       const os = uxpModule("os");
@@ -3727,6 +3746,9 @@
       "#!/bin/bash",
       "# Gerado pelo Framelab — Corte de Silêncios. Pode apagar.",
       `printf '\\033]0;Framelab — analisando áudio\\007'`,
+      // Nativo, custe o que custar: sob Rosetta o whisper e o ffmpeg rodam
+      // emulados e uma transcrição de minutos vira uma de dezenas.
+      'if [ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = "1" ] && command -v arch >/dev/null 2>&1; then exec arch -arm64 /bin/bash "$0" "$@"; fi',
       "set -u",
       `WORK=${shellQuote(folder)}`,
       `printf 1 > "$WORK/${STARTED_FILE$2}"`,
@@ -3784,7 +3806,11 @@
       'echo "Pronto. Pode voltar ao Premiere."',
       // Fecha só a própria janela, achada pelo título posto lá em cima.
       // Se o macOS negar a automação, a janela fica aberta e nada quebra.
-      `osascript -e 'tell application "Terminal" to close (every window whose name contains "Framelab")' >/dev/null 2>&1 &`,
+      // Só fecha janela se o Terminal JÁ estiver aberto. `tell application
+      // "Terminal"` LANÇA o Terminal quando ele não está rodando — era isto
+      // que fazia uma janela vazia aparecer no FIM de cada trabalho, mesmo
+      // com o agente silencioso funcionando.
+      `if pgrep -xq Terminal; then osascript -e 'tell application "Terminal" to close (every window whose name contains "Framelab")' >/dev/null 2>&1 & fi`,
       "exit 0"
     );
     return lines.join("\n") + "\n";
@@ -3852,7 +3878,11 @@
       'if [ -z "$FFMPEG" ]; then FFMPEG="$(command -v ffmpeg 2>/dev/null || true)"; fi',
       `printf '{"ffmpeg":"%s"}' "$FFMPEG" > ${shellQuote(join(folder, "probe.json"))}`,
       'echo "Teste concluído. ffmpeg: $FFMPEG"',
-      `osascript -e 'tell application "Terminal" to close (every window whose name contains "Framelab")' >/dev/null 2>&1 &`,
+      // Só fecha janela se o Terminal JÁ estiver aberto. `tell application
+      // "Terminal"` LANÇA o Terminal quando ele não está rodando — era isto
+      // que fazia uma janela vazia aparecer no FIM de cada trabalho, mesmo
+      // com o agente silencioso funcionando.
+      `if pgrep -xq Terminal; then osascript -e 'tell application "Terminal" to close (every window whose name contains "Framelab")' >/dev/null 2>&1 & fi`,
       "exit 0"
     ].join("\n") + "\n";
   }
@@ -7091,6 +7121,9 @@
       "#!/bin/bash",
       "# Gerado pelo Framelab — Baixar Vídeos. Pode apagar.",
       `printf '\\033]0;Framelab — baixando\\007'`,
+      // Nativo, custe o que custar: sob Rosetta o whisper e o ffmpeg rodam
+      // emulados e uma transcrição de minutos vira uma de dezenas.
+      'if [ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = "1" ] && command -v arch >/dev/null 2>&1; then exec arch -arm64 /bin/bash "$0" "$@"; fi',
       "set -u",
       `WORK=${q$1(folder)}`,
       'cd "$WORK" || exit 1',
@@ -7188,7 +7221,11 @@
     'echo "Pronto. Pode voltar ao Premiere."',
     // Fecha só a própria janela, achada pelo título posto no preâmbulo.
     // Se o macOS negar a automação, a janela fica aberta e nada quebra.
-    `osascript -e 'tell application "Terminal" to close (every window whose name contains "Framelab")' >/dev/null 2>&1 &`,
+    // Só fecha janela se o Terminal JÁ estiver aberto. `tell application
+    // "Terminal"` LANÇA o Terminal quando ele não está rodando — era isto
+    // que fazia uma janela vazia aparecer no FIM de cada trabalho, mesmo
+    // com o agente silencioso funcionando.
+    `if pgrep -xq Terminal; then osascript -e 'tell application "Terminal" to close (every window whose name contains "Framelab")' >/dev/null 2>&1 & fi`,
     "exit 0"
   ];
   function probeScriptUnix(urls, config, folder) {
@@ -9097,6 +9134,7 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
   const q = shellQuote;
   const RESULT_FILE = "cc-result.json";
   const STAGE_FILE = "cc-stage.txt";
+  const WHISPER_LOG = "cc-whisper.log";
   const STARTED_FILE = "cc-started.txt";
   const OUT_BASE = "cc-out";
   const SCRIPT_FILE = "captions.command";
@@ -9165,7 +9203,7 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
     const space = await workspace();
     const scriptPath = nativePath(space, scriptName());
     const outJson = `${OUT_BASE}.json`;
-    for (const name of [RESULT_FILE, STAGE_FILE, STARTED_FILE, outJson, "cc-audio.wav"]) {
+    for (const name of [RESULT_FILE, STAGE_FILE, STARTED_FILE, WHISPER_LOG, outJson, "cc-audio.wav"]) {
       await remove(space, name);
     }
     const script = isWindows() ? windowsScript(job, model, language, space.nativeBase, prompt) : unixScript(job, model, language, space.nativeBase, prompt);
@@ -9203,9 +9241,11 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
         }
       }
       const stage = readText(space, STAGE_FILE);
-      if (stage && stage !== lastStage) {
-        lastStage = stage;
-        onStage?.(stage);
+      const percent = stage?.startsWith("Transcrevendo") ? whisperProgress(space) : null;
+      const shown = percent === null ? stage : `${stage} ${percent}%`;
+      if (shown && shown !== lastStage) {
+        lastStage = shown;
+        onStage?.(shown);
       }
       const raw = readText(space, RESULT_FILE);
       if (raw) {
@@ -9237,6 +9277,14 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
       scriptPath
     };
   }
+  function whisperProgress(space) {
+    const log = readText(space, WHISPER_LOG);
+    if (!log) return null;
+    const hits = log.match(/progress\s*=\s*(\d+)%/g);
+    if (!hits) return null;
+    const last = /(\d+)%/.exec(hits[hits.length - 1]);
+    return last ? Number.parseInt(last[1], 10) : null;
+  }
   function readJson(space, name) {
     const raw = readText(space, name);
     if (!raw) {
@@ -9253,6 +9301,9 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
       "#!/bin/bash",
       "# Gerado pelo Framelab — Legendas. Pode apagar.",
       `printf '\\033]0;Framelab — transcrevendo\\007'`,
+      // Nativo, custe o que custar: sob Rosetta o whisper e o ffmpeg rodam
+      // emulados e uma transcrição de minutos vira uma de dezenas.
+      'if [ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = "1" ] && command -v arch >/dev/null 2>&1; then exec arch -arm64 /bin/bash "$0" "$@"; fi',
       "set -u",
       `WORK=${q(folder)}`,
       'cd "$WORK" || exit 1',
@@ -9294,7 +9345,17 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
        *   -et/-lpt      recusa segmento com entropia alta, que é como o
        *                 whisper alucina texto no silêncio
        */
-      `"$WHISPER" -m "$MODEL" -f "$WORK/cc-audio.wav" -l ${q(language)} -bs 5 -bo 5 -sns -et 2.4 -lpt -1.0 ` + (prompt ? `--prompt ${q(prompt)} ` : "") + `-ojf -of "$WORK/${OUT_BASE}" -pp false >/dev/null 2>&1 || fail whisper-failed`,
+      // Núcleos de desempenho, não todos: num Apple Silicon os de
+      // eficiência atrasam o conjunto. Fora do macOS cai para o total.
+      "THREADS=$(sysctl -n hw.perflevel0.physicalcpu 2>/dev/null || sysctl -n hw.physicalcpu 2>/dev/null || echo 4)",
+      /*
+       * `-pp` é uma BANDEIRA. Escrito `-pp false`, o `false` virava um
+       * segundo arquivo de entrada ("input file not found 'false'") — o
+       * whisper reclamava e seguia, mas o progresso nunca chegou ao
+       * painel. O stderr vai para o log, não para o nada: é dele que
+       * saem o percentual e o diagnóstico de lentidão.
+       */
+      `"$WHISPER" -m "$MODEL" -f "$WORK/cc-audio.wav" -l ${q(language)} -t "$THREADS" -bs 5 -bo 5 -sns -et 2.4 -lpt -1.0 ` + (prompt ? `--prompt ${q(prompt)} ` : "") + `-ojf -of "$WORK/${OUT_BASE}" -pp >/dev/null 2>"$WORK/${WHISPER_LOG}" || fail whisper-failed`,
       `if [ ! -f "$WORK/${OUT_BASE}.json" ]; then fail no-output; fi`,
       // O WAV de 16 kHz de uma hora de fala são ~115 MB; some assim que
       // vira transcrição.
@@ -9302,7 +9363,11 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
       'stage "Pronto."',
       `printf '{"ok":true}' > "$WORK/${RESULT_FILE}.tmp"`,
       `mv "$WORK/${RESULT_FILE}.tmp" "$WORK/${RESULT_FILE}"`,
-      `osascript -e 'tell application "Terminal" to close (every window whose name contains "Framelab")' >/dev/null 2>&1 &`,
+      // Só fecha janela se o Terminal JÁ estiver aberto. `tell application
+      // "Terminal"` LANÇA o Terminal quando ele não está rodando — era isto
+      // que fazia uma janela vazia aparecer no FIM de cada trabalho, mesmo
+      // com o agente silencioso funcionando.
+      `if pgrep -xq Terminal; then osascript -e 'tell application "Terminal" to close (every window whose name contains "Framelab")' >/dev/null 2>&1 & fi`,
       "exit 0"
     ];
     return lines.join("\n") + "\n";
@@ -9341,7 +9406,7 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
       "  exit /b 1",
       ")",
       `>"%WORK%\\${STAGE_FILE}" echo Transcrevendo...`,
-      `"%WHISPER%" -m "%MODEL%" -f "%WORK%\\cc-audio.wav" -l ${bat(language)} -bs 5 -bo 5 -sns -et 2.4 -lpt -1.0 ` + (prompt ? `--prompt "${bat(prompt)}" ` : "") + `-ojf -of "%WORK%\\${OUT_BASE}" -pp false >nul 2>&1`,
+      `"%WHISPER%" -m "%MODEL%" -f "%WORK%\\cc-audio.wav" -l ${bat(language)} -bs 5 -bo 5 -sns -et 2.4 -lpt -1.0 ` + (prompt ? `--prompt "${bat(prompt)}" ` : "") + `-ojf -of "%WORK%\\${OUT_BASE}" -pp >nul 2>"%WORK%\\${WHISPER_LOG}"`,
       "if errorlevel 1 (",
       `  >"%WORK%\\${RESULT_FILE}" echo {"ok":false,"error":"whisper-failed"}`,
       "  exit /b 1",
@@ -11181,7 +11246,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
   }
   const PRODUCT_NAME = "Framelab";
   const PRODUCT_TAGLINE = "Premiere";
-  const VERSION = "0.3.2";
+  const VERSION = "0.3.3";
   class ProductShell {
     constructor(root) {
       this.updateBadgeEl = null;

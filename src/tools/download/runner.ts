@@ -75,7 +75,7 @@ import {
  * porque um agente da versão anterior pode estar de pé quando o plugin
  * é atualizado — o painel manda esse sair antes de lançar o novo.
  */
-const AGENT_VERSION = "2";
+const AGENT_VERSION = "3";
 
 const ALIVE_FILE = "agent-alive.txt";
 const PANEL_FILE = "agent-panel.txt";
@@ -157,12 +157,15 @@ function agentState(space: Workspace): AgentState {
   return version === AGENT_VERSION ? "live" : "old";
 }
 
-/** Só para o diagnóstico do painel. */
-export async function agentIsUp(): Promise<boolean> {
+/** Só para o diagnóstico do painel: de pé, e em que arquitetura. */
+export async function agentStatus(): Promise<{ up: boolean; arch: string }> {
   try {
-    return agentState(await workspace()) === "live";
+    const space = await workspace();
+    const raw = readText(space, ALIVE_FILE) ?? "";
+    const arch = raw.split(/\s+/)[2] ?? "?";
+    return { up: agentState(space) === "live", arch };
   } catch {
-    return false;
+    return { up: false, arch: "?" };
   }
 }
 
@@ -319,6 +322,14 @@ export function infoPlist(): string {
     `  <key>CFBundleShortVersionString</key><string>${AGENT_VERSION}.0</string>`,
     "  <key>LSUIElement</key><true/>",
     "  <key>LSBackgroundOnly</key><true/>",
+    // Sem isto o LaunchServices abre o bundle sob ROSETTA: o executável
+    // é um script, e sem uma fatia arm64 para inspecionar ele assume o
+    // pior. O bash então roda x86_64, e todo filho — ffmpeg, whisper,
+    // yt-dlp, todos universais — herda a emulação. Foi assim que uma
+    // transcrição de 7 minutos passou de 12: o Metal funcionava, mas a
+    // metade em CPU do whisper rodava traduzida a 300% de CPU.
+    "  <key>LSArchitecturePriority</key><array><string>arm64</string></array>",
+    "  <key>LSRequiresNativeExecution</key><true/>",
     "</dict>",
     "</plist>",
     "",
@@ -336,6 +347,11 @@ export function agentBash(): string {
   return [
     "#!/bin/bash",
     "# Gerado pelo Framelab — agente residente. Pode apagar.",
+    "# Se o LaunchServices nos abriu sob Rosetta, relança nativo: tudo",
+    "# que este laço executar herdaria a emulação.",
+    'if [ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = "1" ] && command -v arch >/dev/null 2>&1; then',
+    '  exec arch -arm64 /bin/bash "$0" "$@"',
+    "fi",
     'DIR="$(cd "$(dirname "$0")/../../.." && pwd)"',
     'cd "$DIR" || exit 1',
     `LOCK="$DIR/agent-lock"`,
@@ -345,8 +361,11 @@ export function agentBash(): string {
     "",
     "# O carimbo vai por arquivo temporário: o painel nunca deve ler",
     "# um carimbo pela metade e concluir que o agente morreu.",
+    "# Terceiro campo: native ou rosetta. É o que deixa o diagnóstico do",
+    "# painel dizer 'o agente está emulado' em vez de 'está lento'.",
+    'ARCH="native"; [ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = "1" ] && ARCH="rosetta"',
     "stamp() {",
-    `  printf '%s ${AGENT_VERSION}' "$(date +%s)" > "$ALIVE.tmp" 2>/dev/null &&`,
+    `  printf '%s ${AGENT_VERSION} %s' "$(date +%s)" "$ARCH" > "$ALIVE.tmp" 2>/dev/null &&`,
     '    mv -f "$ALIVE.tmp" "$ALIVE" 2>/dev/null',
     "}",
     "",

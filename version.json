@@ -1,8 +1,8 @@
 {
-  "version": "0.3.2",
+  "version": "0.3.3",
   "releaseDate": "2026-09-03",
   "minPremiereVersion": "25.0.0",
-  "changelog": "INSTALADOR COMPLETO COM MOTORES INTEGRADOS (FFMPEG, WHISPER IA, DOWNLOADER). O instalador agora é 100% autocontido: inclui FFmpeg universal, Whisper IA com aceleração GPU Apple Metal e Downloader integrados. Elimina qualquer necessidade de Homebrew ou comandos no Terminal. Instalação em 2 cliques pronta para uso imediato.",
+  "changelog": "LEGENDAS ATÉ 10x MAIS RÁPIDAS. O assistente que roda os motores estava sendo aberto pelo macOS sob Rosetta (emulação Intel) — e whisper, ffmpeg e yt-dlp, todos universais, herdavam a emulação. Medido no mesmo vídeo de 7 minutos: emulado, mais de 20 minutos sem terminar; nativo, 1 minuto e 46 segundos. Corrigido no próprio assistente, que agora se declara arm64 e se relança nativo se for aberto errado. O TERMINAL PAROU DE APARECER NO FIM: cada trabalho, ao terminar, pedia ao Terminal para fechar janelas — e esse pedido abria o Terminal quando ele estava fechado. Agora só fala com ele se já estiver aberto. PROGRESSO REAL: a transcrição mostra a porcentagem (\"Transcrevendo… 37%\") em vez de ficar minutos parada em \"Transcrevendo…\". Um `-pp false` na chamada do whisper passava a palavra false como segundo arquivo de entrada e engolia o progresso. DIAGNÓSTICO: o painel avisa se o assistente estiver emulado. Depois de atualizar, a primeira ação pede permissão uma vez (é o assistente novo subindo) e as seguintes não.",
   "downloadUrl": "https://github.com/SidyFurtado/framelab/releases/latest/download/Framelab-macOS.zip",
   "bundleFiles": {
     "manifest.json": "https://raw.githubusercontent.com/SidyFurtado/framelab/main/dist/manifest.json",

@@ -27,7 +27,7 @@
  * `workspace.ts`; a razão de existirem dois está lá.
  */
 import { EnvelopeBuilder, PCM_SAMPLE_RATE, type Envelope } from "./waveform";
-import { agentIsUp, dispatch, withdraw } from "../download/runner";
+import { agentStatus, dispatch, withdraw } from "../download/runner";
 import {
   describe,
   fsModule,
@@ -401,11 +401,15 @@ export async function diagnose(ffmpegPath: string): Promise<DiagnosticLine[]> {
   // Com o assistente de pé, nenhuma ação pede permissão; sem ele, a
   // próxima pede uma vez. É a primeira coisa a olhar quando o editor
   // reclama de diálogo repetido.
-  const up = await agentIsUp();
+  const agent = await agentStatus();
   add(
     "assistente residente",
-    up,
-    up ? "de pé — as ações não pedem permissão" : "parado — a próxima ação pede uma vez"
+    agent.up && agent.arch !== "rosetta",
+    !agent.up
+      ? "parado — a próxima ação pede uma vez"
+      : agent.arch === "rosetta"
+        ? "de pé, mas EMULADO (Rosetta): whisper e ffmpeg rodam até 10x mais devagar — recarregue o painel"
+        : `de pé, nativo (${agent.arch}) — as ações não pedem permissão`
   );
 
   try {
@@ -518,6 +522,9 @@ export function unixScript(
     "#!/bin/bash",
     "# Gerado pelo Framelab — Corte de Silêncios. Pode apagar.",
     `printf '\\033]0;Framelab — analisando áudio\\007'`,
+    // Nativo, custe o que custar: sob Rosetta o whisper e o ffmpeg rodam
+    // emulados e uma transcrição de minutos vira uma de dezenas.
+    'if [ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = "1" ] && command -v arch >/dev/null 2>&1; then exec arch -arm64 /bin/bash "$0" "$@"; fi',
     "set -u",
     `WORK=${shellQuote(folder)}`,
     `printf 1 > "$WORK/${STARTED_FILE}"`,
@@ -583,7 +590,11 @@ export function unixScript(
     'echo "Pronto. Pode voltar ao Premiere."',
     // Fecha só a própria janela, achada pelo título posto lá em cima.
     // Se o macOS negar a automação, a janela fica aberta e nada quebra.
-    `osascript -e 'tell application "Terminal" to close (every window whose name contains "Framelab")' >/dev/null 2>&1 &`,
+    // Só fecha janela se o Terminal JÁ estiver aberto. `tell application
+    // "Terminal"` LANÇA o Terminal quando ele não está rodando — era isto
+    // que fazia uma janela vazia aparecer no FIM de cada trabalho, mesmo
+    // com o agente silencioso funcionando.
+    `if pgrep -xq Terminal; then osascript -e 'tell application "Terminal" to close (every window whose name contains "Framelab")' >/dev/null 2>&1 & fi`,
     "exit 0"
   );
 
@@ -669,7 +680,11 @@ export function probeScript(folder: string, ffmpegPath: string): string {
     'if [ -z "$FFMPEG" ]; then FFMPEG="$(command -v ffmpeg 2>/dev/null || true)"; fi',
     `printf '{"ffmpeg":"%s"}' "$FFMPEG" > ${shellQuote(join(folder, "probe.json"))}`,
     'echo "Teste concluído. ffmpeg: $FFMPEG"',
-    `osascript -e 'tell application "Terminal" to close (every window whose name contains "Framelab")' >/dev/null 2>&1 &`,
+    // Só fecha janela se o Terminal JÁ estiver aberto. `tell application
+    // "Terminal"` LANÇA o Terminal quando ele não está rodando — era isto
+    // que fazia uma janela vazia aparecer no FIM de cada trabalho, mesmo
+    // com o agente silencioso funcionando.
+    `if pgrep -xq Terminal; then osascript -e 'tell application "Terminal" to close (every window whose name contains "Framelab")' >/dev/null 2>&1 & fi`,
     "exit 0",
   ].join("\n") + "\n";
 }

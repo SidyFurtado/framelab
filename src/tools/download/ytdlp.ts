@@ -897,6 +897,9 @@ function unixBase(folder: string): string[] {
     "#!/bin/bash",
     "# Gerado pelo Framelab — Baixar Vídeos. Pode apagar.",
     `printf '\\033]0;Framelab — baixando\\007'`,
+    // Nativo, custe o que custar: sob Rosetta o whisper e o ffmpeg rodam
+    // emulados e uma transcrição de minutos vira uma de dezenas.
+    'if [ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = "1" ] && command -v arch >/dev/null 2>&1; then exec arch -arm64 /bin/bash "$0" "$@"; fi',
     "set -u",
     `WORK=${q(folder)}`,
     'cd "$WORK" || exit 1',
@@ -1009,7 +1012,11 @@ const UNIX_CLOSE = [
   'echo "Pronto. Pode voltar ao Premiere."',
   // Fecha só a própria janela, achada pelo título posto no preâmbulo.
   // Se o macOS negar a automação, a janela fica aberta e nada quebra.
-  `osascript -e 'tell application "Terminal" to close (every window whose name contains "Framelab")' >/dev/null 2>&1 &`,
+  // Só fecha janela se o Terminal JÁ estiver aberto. `tell application
+    // "Terminal"` LANÇA o Terminal quando ele não está rodando — era isto
+    // que fazia uma janela vazia aparecer no FIM de cada trabalho, mesmo
+    // com o agente silencioso funcionando.
+    `if pgrep -xq Terminal; then osascript -e 'tell application "Terminal" to close (every window whose name contains "Framelab")' >/dev/null 2>&1 & fi`,
   "exit 0",
 ];
 

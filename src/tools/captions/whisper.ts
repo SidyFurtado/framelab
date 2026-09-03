@@ -45,6 +45,16 @@ const q = shellQuote;
 
 const RESULT_FILE = "cc-result.json";
 const STAGE_FILE = "cc-stage.txt";
+/**
+ * O stderr do whisper, guardado em vez de jogado fora.
+ *
+ * Nele vão o progresso (`progress = 37%`), os tempos por etapa e os
+ * "fallbacks" — as redecodificações a temperatura mais alta que
+ * multiplicam o tempo em áudio difícil. Sem isto, "está demorando"
+ * não tinha diagnóstico possível: cinco minutos de "Transcrevendo…"
+ * e nenhum número.
+ */
+const WHISPER_LOG = "cc-whisper.log";
 const STARTED_FILE = "cc-started.txt";
 const OUT_BASE = "cc-out";
 const SCRIPT_FILE = "captions.command";
@@ -199,7 +209,7 @@ export async function transcribe(
   const scriptPath = nativePath(space, scriptName());
   const outJson = `${OUT_BASE}.json`;
 
-  for (const name of [RESULT_FILE, STAGE_FILE, STARTED_FILE, outJson, "cc-audio.wav"]) {
+  for (const name of [RESULT_FILE, STAGE_FILE, STARTED_FILE, WHISPER_LOG, outJson, "cc-audio.wav"]) {
     await remove(space, name);
   }
 
@@ -248,9 +258,13 @@ export async function transcribe(
     }
 
     const stage = readText(space, STAGE_FILE);
-    if (stage && stage !== lastStage) {
-      lastStage = stage;
-      onStage?.(stage);
+    // "Transcrevendo…" por cinco minutos é o que faz parecer travado.
+    // O whisper sabe o percentual; ele só nunca chegava até aqui.
+    const percent = stage?.startsWith("Transcrevendo") ? whisperProgress(space) : null;
+    const shown = percent === null ? stage : `${stage} ${percent}%`;
+    if (shown && shown !== lastStage) {
+      lastStage = shown;
+      onStage?.(shown);
     }
 
     const raw = readText(space, RESULT_FILE);
@@ -291,6 +305,16 @@ export async function transcribe(
  * `readText` corta em branco e devolve null se vier vazio, então a
  * leitura passa por aqui só para deixar o motivo claro no log.
  */
+/** O último `progress = N%` que o whisper escreveu, ou null. */
+function whisperProgress(space: Workspace): number | null {
+  const log = readText(space, WHISPER_LOG);
+  if (!log) return null;
+  const hits = log.match(/progress\s*=\s*(\d+)%/g);
+  if (!hits) return null;
+  const last = /(\d+)%/.exec(hits[hits.length - 1]);
+  return last ? Number.parseInt(last[1], 10) : null;
+}
+
 function readJson(space: Workspace, name: string): string | null {
   const raw = readText(space, name);
   if (!raw) {
@@ -317,6 +341,9 @@ export function unixScript(
     "#!/bin/bash",
     "# Gerado pelo Framelab — Legendas. Pode apagar.",
     `printf '\\033]0;Framelab — transcrevendo\\007'`,
+    // Nativo, custe o que custar: sob Rosetta o whisper e o ffmpeg rodam
+    // emulados e uma transcrição de minutos vira uma de dezenas.
+    'if [ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = "1" ] && command -v arch >/dev/null 2>&1; then exec arch -arm64 /bin/bash "$0" "$@"; fi',
     "set -u",
     `WORK=${q(folder)}`,
     'cd "$WORK" || exit 1',
@@ -370,10 +397,20 @@ export function unixScript(
      *   -et/-lpt      recusa segmento com entropia alta, que é como o
      *                 whisper alucina texto no silêncio
      */
+    // Núcleos de desempenho, não todos: num Apple Silicon os de
+    // eficiência atrasam o conjunto. Fora do macOS cai para o total.
+    'THREADS=$(sysctl -n hw.perflevel0.physicalcpu 2>/dev/null || sysctl -n hw.physicalcpu 2>/dev/null || echo 4)',
+    /*
+     * `-pp` é uma BANDEIRA. Escrito `-pp false`, o `false` virava um
+     * segundo arquivo de entrada ("input file not found 'false'") — o
+     * whisper reclamava e seguia, mas o progresso nunca chegou ao
+     * painel. O stderr vai para o log, não para o nada: é dele que
+     * saem o percentual e o diagnóstico de lentidão.
+     */
     `"$WHISPER" -m "$MODEL" -f "$WORK/cc-audio.wav" -l ${q(language)} ` +
-      `-bs 5 -bo 5 -sns -et 2.4 -lpt -1.0 ` +
+      `-t "$THREADS" -bs 5 -bo 5 -sns -et 2.4 -lpt -1.0 ` +
       (prompt ? `--prompt ${q(prompt)} ` : "") +
-      `-ojf -of "$WORK/${OUT_BASE}" -pp false >/dev/null 2>&1 || fail whisper-failed`,
+      `-ojf -of "$WORK/${OUT_BASE}" -pp >/dev/null 2>"$WORK/${WHISPER_LOG}" || fail whisper-failed`,
     `if [ ! -f "$WORK/${OUT_BASE}.json" ]; then fail no-output; fi`,
 
     // O WAV de 16 kHz de uma hora de fala são ~115 MB; some assim que
@@ -382,7 +419,11 @@ export function unixScript(
     'stage "Pronto."',
     `printf '{"ok":true}' > "$WORK/${RESULT_FILE}.tmp"`,
     `mv "$WORK/${RESULT_FILE}.tmp" "$WORK/${RESULT_FILE}"`,
-    `osascript -e 'tell application "Terminal" to close (every window whose name contains "Framelab")' >/dev/null 2>&1 &`,
+    // Só fecha janela se o Terminal JÁ estiver aberto. `tell application
+    // "Terminal"` LANÇA o Terminal quando ele não está rodando — era isto
+    // que fazia uma janela vazia aparecer no FIM de cada trabalho, mesmo
+    // com o agente silencioso funcionando.
+    `if pgrep -xq Terminal; then osascript -e 'tell application "Terminal" to close (every window whose name contains "Framelab")' >/dev/null 2>&1 & fi`,
     "exit 0",
   ];
   return lines.join("\n") + "\n";
@@ -437,7 +478,7 @@ export function windowsScript(
     `"%WHISPER%" -m "%MODEL%" -f "%WORK%\\cc-audio.wav" -l ${bat(language)} ` +
       `-bs 5 -bo 5 -sns -et 2.4 -lpt -1.0 ` +
       (prompt ? `--prompt "${bat(prompt)}" ` : "") +
-      `-ojf -of "%WORK%\\${OUT_BASE}" -pp false >nul 2>&1`,
+      `-ojf -of "%WORK%\\${OUT_BASE}" -pp >nul 2>"%WORK%\\${WHISPER_LOG}"`,
     "if errorlevel 1 (",
     `  >"%WORK%\\${RESULT_FILE}" echo {"ok":false,"error":"whisper-failed"}`,
     "  exit /b 1",

@@ -56,6 +56,7 @@ const TIMEOUT_MS = 60 * 60 * 1000;
 
 /** Onde procurar o whisper-cli. A ordem é a mesma lógica do ffmpeg. */
 const WHISPER_CANDIDATES = [
+  "/Library/Application Support/Framelab/bin/whisper-cli",
   "/opt/homebrew/bin/whisper-cli",
   "/usr/local/bin/whisper-cli",
   "/opt/homebrew/bin/whisper-cpp",
@@ -326,16 +327,17 @@ export function unixScript(
 
     // ── ffmpeg: o mesmo que o resto do plugin provisiona ──
     "FFMPEG=''",
-    'for c in /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg /opt/local/bin/ffmpeg ' +
-      '/usr/bin/ffmpeg "$WORK/ffmpeg"; do',
+    'for c in "$HOME/Library/Application Support/Framelab/bin/ffmpeg" ' +
+      '"/Library/Application Support/Framelab/bin/ffmpeg" /opt/homebrew/bin/ffmpeg ' +
+      '/usr/local/bin/ffmpeg /opt/local/bin/ffmpeg /usr/bin/ffmpeg "$WORK/ffmpeg"; do',
     '  if [ -x "$c" ]; then FFMPEG="$c"; break; fi',
     "done",
     'if [ -z "$FFMPEG" ]; then FFMPEG="$(command -v ffmpeg 2>/dev/null || true)"; fi',
     'if [ -z "$FFMPEG" ]; then fail ffmpeg-not-found; fi',
 
-    // ── whisper: procurado, nunca provisionado (não há build macOS) ──
+    // ── whisper: procurado nas pastas integradas e no sistema ──
     "WHISPER=''",
-    `for c in ${WHISPER_CANDIDATES.map(q).join(" ")}; do`,
+    `for c in "$HOME/Library/Application Support/Framelab/bin/whisper-cli" ${WHISPER_CANDIDATES.map(q).join(" ")} "$WORK/whisper-cli"; do`,
     '  if [ -x "$c" ]; then WHISPER="$c"; break; fi',
     "done",
     'if [ -z "$WHISPER" ]; then WHISPER="$(command -v whisper-cli 2>/dev/null || true)"; fi',

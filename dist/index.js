@@ -3731,20 +3731,33 @@
       `WORK=${shellQuote(folder)}`,
       `printf 1 > "$WORK/${STARTED_FILE$2}"`,
       `CUSTOM=${shellQuote(ffmpegPath)}`,
-      "FFMPEG=''",
-      // A ordem procura primeiro o que o editor escolheu, depois os
-      // lugares onde Homebrew e MacPorts instalam, e só então o PATH —
-      // que num shell não interativo pode nem ter /opt/homebrew.
-      // "$WORK/ffmpeg" é o binário que o Baixar Vídeos provisiona na
-      // primeira vez: quem usou o downloader nunca vê "instale o ffmpeg".
-      'for candidate in "$CUSTOM" /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg /opt/local/bin/ffmpeg /usr/bin/ffmpeg "$WORK/ffmpeg"; do',
+      // A ordem procura primeiro o que o editor escolheu, depois o diretório
+      // integrado do Framelab, Homebrew, MacPorts, PATH e a pasta de trabalho.
+      'for candidate in "$CUSTOM" "$HOME/Library/Application Support/Framelab/bin/ffmpeg" "/Library/Application Support/Framelab/bin/ffmpeg" /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg /opt/local/bin/ffmpeg /usr/bin/ffmpeg "$WORK/ffmpeg"; do',
       '  if [ -n "$candidate" ] && [ -x "$candidate" ]; then FFMPEG="$candidate"; break; fi',
       "done",
       'if [ -z "$FFMPEG" ]; then FFMPEG="$(command -v ffmpeg 2>/dev/null || true)"; fi',
       'if [ -z "$FFMPEG" ]; then',
+      '  echo "Baixando FFmpeg para o Framelab (so na primeira vez)..."',
+      '  FFDIR="$HOME/Library/Application Support/Framelab/bin"',
+      '  mkdir -p "$FFDIR" 2>/dev/null || FFDIR="$WORK"',
+      '  if [ "$(uname -m)" = "arm64" ]; then',
+      '    FFURL="https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip"',
+      "  else",
+      '    FFURL="https://ffmpeg.martin-riedl.de/redirect/latest/macos/amd64/release/ffmpeg.zip"',
+      "  fi",
+      '  if curl -fsSL --retry 3 -o "$FFDIR/ffmpeg.zip" "$FFURL" 2>/dev/null || curl -fsSL --retry 2 -o "$FFDIR/ffmpeg.zip" "https://evermeet.cx/ffmpeg/getrelease/zip" 2>/dev/null; then',
+      '    unzip -o -q "$FFDIR/ffmpeg.zip" ffmpeg -d "$FFDIR" 2>/dev/null',
+      '    rm -f "$FFDIR/ffmpeg.zip"',
+      '    chmod +x "$FFDIR/ffmpeg" 2>/dev/null',
+      '    xattr -d com.apple.quarantine "$FFDIR/ffmpeg" >/dev/null 2>&1 || true',
+      '    if "$FFDIR/ffmpeg" -version >/dev/null 2>&1; then FFMPEG="$FFDIR/ffmpeg"; fi',
+      "  fi",
+      "fi",
+      'if [ -z "$FFMPEG" ]; then',
       `  printf '{"ok":false,"error":"ffmpeg-not-found"}' > "$WORK/${RESULT_FILE$2}.tmp"`,
       `  mv "$WORK/${RESULT_FILE$2}.tmp" "$WORK/${RESULT_FILE$2}"`,
-      '  echo "ffmpeg não encontrado. Instale (brew install ffmpeg) ou informe o caminho no painel."',
+      '  echo "ffmpeg não encontrado."',
       "  exit 1",
       "fi",
       'echo "ffmpeg: $FFMPEG"',
@@ -3833,8 +3846,7 @@
       `printf '\\033]0;Framelab — teste\\007'`,
       "set -u",
       `CUSTOM=${shellQuote(ffmpegPath)}`,
-      "FFMPEG=''",
-      'for candidate in "$CUSTOM" /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg /opt/local/bin/ffmpeg /usr/bin/ffmpeg ' + shellQuote(join(folder, "ffmpeg")) + "; do",
+      'for candidate in "$CUSTOM" "$HOME/Library/Application Support/Framelab/bin/ffmpeg" "/Library/Application Support/Framelab/bin/ffmpeg" /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg /opt/local/bin/ffmpeg /usr/bin/ffmpeg ' + shellQuote(join(folder, "ffmpeg")) + "; do",
       '  if [ -n "$candidate" ] && [ -x "$candidate" ]; then FFMPEG="$candidate"; break; fi',
       "done",
       'if [ -z "$FFMPEG" ]; then FFMPEG="$(command -v ffmpeg 2>/dev/null || true)"; fi',
@@ -7095,7 +7107,7 @@
       // binário que o botão "Instalar" deixa aqui, e só então os lugares
       // do Homebrew, do MacPorts e do pip — que num shell não interativo
       // podem nem estar no PATH.
-      'for candidate in "$CUSTOM" "$WORK/yt-dlp" /opt/homebrew/bin/yt-dlp /usr/local/bin/yt-dlp /opt/local/bin/yt-dlp "$HOME/.local/bin/yt-dlp"; do',
+      'for candidate in "$CUSTOM" "$HOME/Library/Application Support/Framelab/bin/yt-dlp" "/Library/Application Support/Framelab/bin/yt-dlp" "$WORK/yt-dlp" /opt/homebrew/bin/yt-dlp /usr/local/bin/yt-dlp /opt/local/bin/yt-dlp "$HOME/.local/bin/yt-dlp"; do',
       '  if [ -n "$candidate" ] && [ -x "$candidate" ]; then YTDLP="$candidate"; break; fi',
       "done",
       'if [ -z "$YTDLP" ]; then YTDLP="$(command -v yt-dlp 2>/dev/null || true)"; fi',
@@ -7148,7 +7160,7 @@
       // serve os dois.
       `FFCUSTOM=${q$1(customFfmpeg)}`,
       "FFMPEG=''",
-      'for candidate in "$FFCUSTOM" /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg /opt/local/bin/ffmpeg /usr/bin/ffmpeg "$WORK/ffmpeg"; do',
+      'for candidate in "$FFCUSTOM" "$HOME/Library/Application Support/Framelab/bin/ffmpeg" "/Library/Application Support/Framelab/bin/ffmpeg" /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg /opt/local/bin/ffmpeg /usr/bin/ffmpeg "$WORK/ffmpeg"; do',
       '  if [ -n "$candidate" ] && [ -x "$candidate" ]; then FFMPEG="$candidate"; break; fi',
       "done",
       'if [ -z "$FFMPEG" ]; then FFMPEG="$(command -v ffmpeg 2>/dev/null || true)"; fi',
@@ -9092,6 +9104,7 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
   const POLL_MS = 400;
   const TIMEOUT_MS = 60 * 60 * 1e3;
   const WHISPER_CANDIDATES = [
+    "/Library/Application Support/Framelab/bin/whisper-cli",
     "/opt/homebrew/bin/whisper-cli",
     "/usr/local/bin/whisper-cli",
     "/opt/homebrew/bin/whisper-cpp",
@@ -9248,14 +9261,14 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
       `fail() { printf '{"ok":false,"error":"%s"}' "$1" > "$WORK/${RESULT_FILE}.tmp"; mv "$WORK/${RESULT_FILE}.tmp" "$WORK/${RESULT_FILE}"; exit 1; }`,
       // ── ffmpeg: o mesmo que o resto do plugin provisiona ──
       "FFMPEG=''",
-      'for c in /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg /opt/local/bin/ffmpeg /usr/bin/ffmpeg "$WORK/ffmpeg"; do',
+      'for c in "$HOME/Library/Application Support/Framelab/bin/ffmpeg" "/Library/Application Support/Framelab/bin/ffmpeg" /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg /opt/local/bin/ffmpeg /usr/bin/ffmpeg "$WORK/ffmpeg"; do',
       '  if [ -x "$c" ]; then FFMPEG="$c"; break; fi',
       "done",
       'if [ -z "$FFMPEG" ]; then FFMPEG="$(command -v ffmpeg 2>/dev/null || true)"; fi',
       'if [ -z "$FFMPEG" ]; then fail ffmpeg-not-found; fi',
-      // ── whisper: procurado, nunca provisionado (não há build macOS) ──
+      // ── whisper: procurado nas pastas integradas e no sistema ──
       "WHISPER=''",
-      `for c in ${WHISPER_CANDIDATES.map(q).join(" ")}; do`,
+      `for c in "$HOME/Library/Application Support/Framelab/bin/whisper-cli" ${WHISPER_CANDIDATES.map(q).join(" ")} "$WORK/whisper-cli"; do`,
       '  if [ -x "$c" ]; then WHISPER="$c"; break; fi',
       "done",
       'if [ -z "$WHISPER" ]; then WHISPER="$(command -v whisper-cli 2>/dev/null || true)"; fi',
@@ -11168,7 +11181,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
   }
   const PRODUCT_NAME = "Framelab";
   const PRODUCT_TAGLINE = "Premiere";
-  const VERSION = "0.3.1";
+  const VERSION = "0.3.2";
   class ProductShell {
     constructor(root) {
       this.updateBadgeEl = null;

@@ -5,3 +5,5 @@ dist/*.zip
 dist/*.ccx
 *.log
 site-anterior/
+installer/bin/
+.bin_cache/

@@ -522,20 +522,36 @@ export function unixScript(
     `WORK=${shellQuote(folder)}`,
     `printf 1 > "$WORK/${STARTED_FILE}"`,
     `CUSTOM=${shellQuote(ffmpegPath)}`,
-    "FFMPEG=''",
-    // A ordem procura primeiro o que o editor escolheu, depois os
-    // lugares onde Homebrew e MacPorts instalam, e só então o PATH —
-    // que num shell não interativo pode nem ter /opt/homebrew.
-    // "$WORK/ffmpeg" é o binário que o Baixar Vídeos provisiona na
-    // primeira vez: quem usou o downloader nunca vê "instale o ffmpeg".
-    'for candidate in "$CUSTOM" /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg /opt/local/bin/ffmpeg /usr/bin/ffmpeg "$WORK/ffmpeg"; do',
+    // A ordem procura primeiro o que o editor escolheu, depois o diretório
+    // integrado do Framelab, Homebrew, MacPorts, PATH e a pasta de trabalho.
+    'for candidate in "$CUSTOM" "$HOME/Library/Application Support/Framelab/bin/ffmpeg" ' +
+      '"/Library/Application Support/Framelab/bin/ffmpeg" /opt/homebrew/bin/ffmpeg ' +
+      '/usr/local/bin/ffmpeg /opt/local/bin/ffmpeg /usr/bin/ffmpeg "$WORK/ffmpeg"; do',
     '  if [ -n "$candidate" ] && [ -x "$candidate" ]; then FFMPEG="$candidate"; break; fi',
     "done",
     'if [ -z "$FFMPEG" ]; then FFMPEG="$(command -v ffmpeg 2>/dev/null || true)"; fi',
     'if [ -z "$FFMPEG" ]; then',
+    '  echo "Baixando FFmpeg para o Framelab (so na primeira vez)..."',
+    '  FFDIR="$HOME/Library/Application Support/Framelab/bin"',
+    '  mkdir -p "$FFDIR" 2>/dev/null || FFDIR="$WORK"',
+    '  if [ "$(uname -m)" = "arm64" ]; then',
+    '    FFURL="https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip"',
+    '  else',
+    '    FFURL="https://ffmpeg.martin-riedl.de/redirect/latest/macos/amd64/release/ffmpeg.zip"',
+    '  fi',
+    '  if curl -fsSL --retry 3 -o "$FFDIR/ffmpeg.zip" "$FFURL" 2>/dev/null || ' +
+      'curl -fsSL --retry 2 -o "$FFDIR/ffmpeg.zip" "https://evermeet.cx/ffmpeg/getrelease/zip" 2>/dev/null; then',
+    '    unzip -o -q "$FFDIR/ffmpeg.zip" ffmpeg -d "$FFDIR" 2>/dev/null',
+    '    rm -f "$FFDIR/ffmpeg.zip"',
+    '    chmod +x "$FFDIR/ffmpeg" 2>/dev/null',
+    '    xattr -d com.apple.quarantine "$FFDIR/ffmpeg" >/dev/null 2>&1 || true',
+    '    if "$FFDIR/ffmpeg" -version >/dev/null 2>&1; then FFMPEG="$FFDIR/ffmpeg"; fi',
+    '  fi',
+    'fi',
+    'if [ -z "$FFMPEG" ]; then',
     `  printf '{"ok":false,"error":"ffmpeg-not-found"}' > "$WORK/${RESULT_FILE}.tmp"`,
     `  mv "$WORK/${RESULT_FILE}.tmp" "$WORK/${RESULT_FILE}"`,
-    '  echo "ffmpeg não encontrado. Instale (brew install ffmpeg) ou informe o caminho no painel."',
+    '  echo "ffmpeg não encontrado."',
     "  exit 1",
     "fi",
     'echo "ffmpeg: $FFMPEG"',
@@ -645,8 +661,8 @@ export function probeScript(folder: string, ffmpegPath: string): string {
     `printf '\\033]0;Framelab — teste\\007'`,
     "set -u",
     `CUSTOM=${shellQuote(ffmpegPath)}`,
-    "FFMPEG=''",
-    'for candidate in "$CUSTOM" /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg /opt/local/bin/ffmpeg /usr/bin/ffmpeg ' +
+    'for candidate in "$CUSTOM" "$HOME/Library/Application Support/Framelab/bin/ffmpeg" ' +
+      '"/Library/Application Support/Framelab/bin/ffmpeg" /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg /opt/local/bin/ffmpeg /usr/bin/ffmpeg ' +
       shellQuote(join(folder, "ffmpeg")) + "; do",
     '  if [ -n "$candidate" ] && [ -x "$candidate" ]; then FFMPEG="$candidate"; break; fi',
     "done",

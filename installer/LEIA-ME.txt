@@ -2,19 +2,26 @@
                  FRAMELAB — INSTALAÇÃO NO MAC (BETA)
 ========================================================================
 
-COMO INSTALAR (Escolha a mais fácil para você):
+COMO INSTALAR (TUDO INCLUSO):
 
-Opção 1 (Recomendada):
-👉 Dê 2 cliques em "Framelab.pkg" (Instalador nativo Apple - 2 cliques)
+👉 Dê 2 cliques em "Instalar_Framelab.command"
+   Ele instala o plugin no Premiere Pro e configura todos os motores
+   (FFmpeg, Whisper IA, Downloader) automaticamente em 5 segundos!
+   Zero complicação: você não precisa instalar Homebrew nem usar comandos.
 
-Opção 2:
-👉 Dê 2 cliques em "Framelab.ccx" (Instalador Adobe Creative Cloud)
+------------------------------------------------------------------------
+DEPOIS DE INSTALAR:
+1. Feche o Premiere Pro por completo (se estiver aberto).
+2. Abra o Premiere Pro.
+3. No menu superior, acesse:
+   Janela (Window) > Extensões (Extensions) > Framelab
 
-Opção 3:
-👉 Dê 2 cliques em "Instalar_Framelab.command" (Script Terminal)
-
-Depois abra o Adobe Premiere Pro e acesse:
-Janela (Window) > Extensões (Extensions) > Framelab
+------------------------------------------------------------------------
+O QUE VEM INCLUSO NESTE PACOTE:
+✓ Plugin Framelab para Adobe Premiere Pro
+✓ FFmpeg Integrado (para o Corte de Silêncios e extração de áudio)
+✓ Whisper IA nativo com aceleração Apple Metal (para Legendas automáticas)
+✓ Downloader Integrado (para baixar do YouTube e TikTok)
 
 ------------------------------------------------------------------------
 ATUALIZAÇÕES AUTOMÁTICAS:

@@ -169,6 +169,24 @@ function main() {
     }
   }
 
+  // Copia os motores nativos (FFmpeg, Whisper IA, yt-dlp)
+  const binSrcDir = path.join(INSTALLER_DIR, "bin");
+  if (fs.existsSync(binSrcDir)) {
+    const binDstDir = path.join(bundleFolder, "bin");
+    fs.mkdirSync(binDstDir, { recursive: true });
+    for (const item of fs.readdirSync(binSrcDir)) {
+      const srcPath = path.join(binSrcDir, item);
+      const dstPath = path.join(binDstDir, item);
+      if (fs.statSync(srcPath).isFile()) {
+        fs.copyFileSync(srcPath, dstPath);
+        fs.chmodSync(dstPath, 0o755);
+        console.log(`  ✓ Motor empacotado: bin/${item}`);
+      }
+    }
+  } else {
+    console.warn("  ⚠ Pasta installer/bin não encontrada — o zip sairá sem motores embutidos!");
+  }
+
   // Garante permissão de execução nos scripts
   fs.chmodSync(path.join(bundleFolder, "Instalar_Framelab.command"), 0o755);
   fs.chmodSync(path.join(bundleFolder, "Desinstalar_Framelab.command"), 0o755);

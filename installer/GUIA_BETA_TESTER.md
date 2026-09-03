@@ -4,20 +4,16 @@ Bem-vindo ao programa de Beta Testing do **Framelab**, o painel de ferramentas d
 
 ---
 
-## ⚡ Instalação em 2 Cliques (Zero Terminal)
+## ⚡ Instalação em 2 Cliques (Tudo Incluso)
 
-### Opção 1: Instalador Nativo do Mac (Recomendado)
-1. Dê **dois cliques** no arquivo `Framelab.pkg`.
-2. Siga o assistente de instalação padrão do macOS (*Continuar → Instalar*).
-3. Pronto! O Framelab já está instalado para todos os usuários do Premiere.
+### Método Recomendado (Instalação Completa):
+1. Dê **dois cliques** no arquivo `Instalar_Framelab.command`.
+2. O instalador registrará o plugin no Premiere Pro e configurará automaticamente todos os motores de alta performance (**FFmpeg**, **Whisper IA** e **Downloader**).
+3. Pressione Enter ao final e pronto! Nenhum comando ou configuração técnica necessária.
 
-### Opção 2: Pacote Adobe Creative Cloud (.ccx)
-1. Dê **dois cliques** no arquivo `Framelab.ccx`.
-2. O aplicativo Adobe Creative Cloud abrirá automaticamente com o botão **Instalar**.
-3. Clique em **Instalar** e pronto!
-
-### Opção 3: Script de Instalação Alternativo
-1. Dê dois cliques em `Instalar_Framelab.command`, confirme com Enter no Terminal.
+### Outras Opções:
+- **Framelab.pkg**: Instalador padrão Apple (copia o plugin para os usuários do sistema).
+- **Framelab.ccx**: Pacote oficial Adobe Creative Cloud (2 cliques para instalar pelo app da Adobe).
 
 ---
 
@@ -41,15 +37,14 @@ Sempre que uma nova funcionalidade ou correção for lançada:
 
 ## 🛠 Ferramentas Disponíveis na Versão Beta
 
-São cinco, em três categorias — as mesmas que aparecem na lista do painel.
-
 **Edição**
-- **Zoom In / Out**: punch-in animado nos clipes selecionados. Os keyframes entram num efeito Transform novo, sem tocar no Motion original.
-- **Corte de Silêncios**: detecta as pausas pela onda do áudio, corta e encosta os trechos com fala. Precisa do ffmpeg instalado.
-- **Curvas de velocidade**: assa easing entre keyframes que já existem, por trecho.
+- **Corte de Silêncios**: detecta as pausas pela onda do áudio, corta e encosta os trechos com fala. Já vem com o **FFmpeg integrado** (sem precisar de Homebrew).
+- **Legendas Automáticas**: transcrição de altíssima precisão com o motor Whisper IA integrado e aceleração gráfica Apple Metal.
+- **Zoom In / Out**: punch-in animado nos clipes selecionados com efeito Transform.
+- **Curvas de velocidade**: aplica easing entre keyframes existentes.
 
 **Mídia**
-- **Baixar Vídeos**: baixa do YouTube e do TikTok, escolhendo a qualidade. O TikTok vem sempre sem marca d'água, e o arquivo pode entrar direto no projeto aberto.
+- **Baixar Vídeos**: baixa do YouTube e do TikTok (sempre sem marca d'água), podendo importar direto para a linha do tempo. Downloader integrado.
 
 **Projeto**
 - **Organizar Pastas**: separa por tipo os arquivos e sequências soltos na raiz. Suas pastas e as de outros plugins não são tocadas.

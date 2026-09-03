@@ -39,6 +39,12 @@ for id in com.framelab.premiere com.edittoolbox.premiere; do
   done
 done
 
+FRAMELAB_DIR="$HOME/Library/Application Support/Framelab"
+if [ -d "$FRAMELAB_DIR" ]; then
+  rm -rf "$FRAMELAB_DIR" && REMOVIDO=1
+  echo -e "\033[38;2;154;159;154m     Motores nativos (Framelab/bin)\033[0m"
+fi
+
 echo ""
 if [ "$REMOVIDO" -eq 1 ]; then
   echo -e "\033[32m   ✓ Framelab removido. Reinicie o Premiere Pro.\033[0m"

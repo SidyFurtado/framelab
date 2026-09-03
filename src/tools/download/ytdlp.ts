@@ -914,7 +914,8 @@ function unixYtdlpSetup(config: DownloadConfig): string[] {
     // binário que o botão "Instalar" deixa aqui, e só então os lugares
     // do Homebrew, do MacPorts e do pip — que num shell não interativo
     // podem nem estar no PATH.
-    'for candidate in "$CUSTOM" "$WORK/yt-dlp" /opt/homebrew/bin/yt-dlp ' +
+    'for candidate in "$CUSTOM" "$HOME/Library/Application Support/Framelab/bin/yt-dlp" ' +
+      '"/Library/Application Support/Framelab/bin/yt-dlp" "$WORK/yt-dlp" /opt/homebrew/bin/yt-dlp ' +
       '/usr/local/bin/yt-dlp /opt/local/bin/yt-dlp "$HOME/.local/bin/yt-dlp"; do',
     '  if [ -n "$candidate" ] && [ -x "$candidate" ]; then YTDLP="$candidate"; break; fi',
     "done",
@@ -975,7 +976,8 @@ function unixFfmpeg(customFfmpeg: string): string[] {
     // serve os dois.
     `FFCUSTOM=${q(customFfmpeg)}`,
     "FFMPEG=''",
-    'for candidate in "$FFCUSTOM" /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg ' +
+    'for candidate in "$FFCUSTOM" "$HOME/Library/Application Support/Framelab/bin/ffmpeg" ' +
+      '"/Library/Application Support/Framelab/bin/ffmpeg" /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg ' +
       '/opt/local/bin/ffmpeg /usr/bin/ffmpeg "$WORK/ffmpeg"; do',
     '  if [ -n "$candidate" ] && [ -x "$candidate" ]; then FFMPEG="$candidate"; break; fi',
     "done",

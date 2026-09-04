@@ -28,6 +28,7 @@ import type {
   FolderItem,
   ClipProjectItem,
   Project,
+  Sequence,
 } from "@adobe/premierepro";
 import { getPremiere, describeError } from "../../bridge/premiere";
 
@@ -62,6 +63,7 @@ export type ItemCategory =
   | "audio"
   | "image"
   | "graphics"
+  | "caption"
   | "sequence"
   | "sequence-nested"
   | "premiere"
@@ -73,6 +75,7 @@ export type TopCategory =
   | "audio"
   | "image"
   | "graphics"
+  | "caption"
   | "premiere"
   | "other";
 
@@ -145,6 +148,10 @@ const GRAPHICS_EXTS = new Set([
   "mogrt", "prproj", "aep", "ai", "eps", "pdf",
 ]);
 
+const CAPTION_EXTS = new Set([
+  "srt", "vtt", "sbv", "sub", "ass", "ssa", "dfxp", "scc", "mcc", "stl",
+]);
+
 // Known synthetic Premiere item name patterns (case-insensitive substring match)
 const PREMIERE_SYNTHETIC_NAMES = [
   "adjustment layer",
@@ -184,6 +191,7 @@ function categoryFromExtension(ext: string): ItemCategory {
   if (AUDIO_EXTS.has(ext)) return "audio";
   if (IMAGE_EXTS.has(ext)) return "image";
   if (GRAPHICS_EXTS.has(ext)) return "graphics";
+  if (CAPTION_EXTS.has(ext)) return "caption";
   return "other";
 }
 
@@ -313,6 +321,7 @@ export const TOP_CATEGORY_LABELS: Record<TopCategory, string> = {
   audio: "Audio",
   image: "Imagens",
   graphics: "Graficos & Motion",
+  caption: "Legendas",
   premiere: "Itens do Premiere",
   other: "Outros",
 };
@@ -323,6 +332,7 @@ export const TOP_CATEGORY_ORDER: readonly TopCategory[] = [
   "audio",
   "image",
   "graphics",
+  "caption",
   "premiere",
   "other",
 ];
@@ -340,6 +350,78 @@ function sequenceBaseName(name: string): string {
     }
   }
   return trimmed;
+}
+
+/**
+ * Detects whether a sequence name indicates it is a nested or sub-sequence.
+ *
+ * Catches Premiere Pro's default naming in multiple languages:
+ * - English: "Nested Sequence 01", "Nested Sequence 1", etc.
+ * - Portuguese: "Sequência aninhada 01", "Sequencia aninhada 01", "Seq aninhada", etc.
+ * - Spanish: "Secuencia anidada 01", etc.
+ * - French: "Séquence imbriquée 01", etc.
+ * - German: "Gefaltete Sequenz 01", etc.
+ * - Italian: "Sequenza nidificata 01", etc.
+ *
+ * Also recognizes common editor naming conventions:
+ * - Substring cues: "nested", "aninhad", "anidad", "imbriqu", "nidificat"
+ * - Delimited tokens: "nest", "nests", "subseq", "subsequence", "subsequencia", "subsequência"
+ *   (using token boundary checks so words like "honest", "earnest", "nestle" don't match).
+ */
+export function isNestedSequenceName(name: string): boolean {
+  if (!name) return false;
+  const lower = name.toLowerCase().trim();
+
+  // Explicit keywords that unambiguously denote a nested sequence in video editing
+  if (
+    lower.includes("nested") ||
+    lower.includes("aninhad") ||
+    lower.includes("anidad") ||
+    lower.includes("imbriqu") ||
+    lower.includes("nidificat") ||
+    lower.includes("gefaltet")
+  ) {
+    return true;
+  }
+
+  // Tokenize by non-alphanumeric delimiters (spaces, _, -, ., [], (), etc.)
+  // Preserve accented characters (\u00C0-\u017F) so e.g. "subsequência" doesn't split
+  const tokens = lower.split(/[^a-z0-9\u00C0-\u017F]+/);
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (
+      token === "nest" ||
+      token === "nests" ||
+      token === "subseq" ||
+      token === "subseqs" ||
+      token === "subsequence" ||
+      token === "subsequences" ||
+      token === "subsequencia" ||
+      token === "subsequencias" ||
+      token === "subsequência" ||
+      token === "subsequências"
+    ) {
+      return true;
+    }
+
+    // Also match hyphenated/separated "sub-sequence", "sub-seq", "sub-sequencia"
+    if (
+      token === "sub" &&
+      i + 1 < tokens.length &&
+      (tokens[i + 1] === "seq" ||
+        tokens[i + 1] === "seqs" ||
+        tokens[i + 1] === "sequence" ||
+        tokens[i + 1] === "sequences" ||
+        tokens[i + 1] === "sequencia" ||
+        tokens[i + 1] === "sequencias" ||
+        tokens[i + 1] === "sequência" ||
+        tokens[i + 1] === "sequências")
+    ) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 // ── scan ───────────────────────────────────────────────────────────
@@ -365,9 +447,6 @@ export async function scanProject(): Promise<ScanResult> {
   const rootFolder = await project.getRootItem();
   const rootLooseItems = await collectRootLooseItems(ppro, rootFolder);
 
-  // 2. Identify sequences and detect nesting across project
-  const nestedIds = await detectNestedSequenceIds(ppro, project);
-
   /*
    * The project's own list of sequences.
    *
@@ -378,10 +457,12 @@ export async function scanProject(): Promise<ScanResult> {
    */
   const projectSequenceGuids = new Set<string>();
   const projectSequenceNames = new Set<string>();
+  let projectSequences: Sequence[] = [];
   try {
-    for (const seq of await project.getSequences()) {
+    projectSequences = await project.getSequences();
+    for (const seq of projectSequences) {
       try {
-        projectSequenceGuids.add(String(seq.guid));
+        if (seq.guid) projectSequenceGuids.add(String(seq.guid));
       } catch { /* sem guid legível */ }
       try {
         if (seq.name) projectSequenceNames.add(seq.name);
@@ -392,6 +473,13 @@ export async function scanProject(): Promise<ScanResult> {
   }
   const hasProjectSequenceList =
     projectSequenceGuids.size > 0 || projectSequenceNames.size > 0;
+
+  // 2. Identify sequences and detect nesting across project
+  const nestedDetection = await detectNestedSequences(
+    ppro,
+    projectSequences,
+    projectSequenceNames
+  );
 
   // 3. Classify each loose item
   const classified: ClassifiedItem[] = [];
@@ -435,7 +523,8 @@ export async function scanProject(): Promise<ScanResult> {
       (VIDEO_EXTS.has(ext) ||
         AUDIO_EXTS.has(ext) ||
         IMAGE_EXTS.has(ext) ||
-        GRAPHICS_EXTS.has(ext));
+        GRAPHICS_EXTS.has(ext) ||
+        CAPTION_EXTS.has(ext));
 
     /*
      * Three signals, because one was not enough: a video was being filed
@@ -491,7 +580,13 @@ export async function scanProject(): Promise<ScanResult> {
     let mediaPathForKind = "";
 
     if (isSeq) {
-      const isNested = nestedIds.has(id);
+      const isNestedByName = isNestedSequenceName(name);
+      const isNestedByTimeline =
+        nestedDetection.ids.has(id) ||
+        nestedDetection.names.has(name.trim().toLowerCase()) ||
+        (ownGuid !== null && nestedDetection.guids.has(ownGuid));
+      const isNested = isNestedByName || isNestedByTimeline;
+
       category = isNested ? "sequence-nested" : "sequence";
       seqBase = sequenceBaseName(name);
     } else {
@@ -518,7 +613,9 @@ export async function scanProject(): Promise<ScanResult> {
         ` contentType=${String(contentTypeRaw)}` +
         ` guid=${ownGuid ?? "—"}` +
         ` noProjeto=${ownGuid !== null && projectSequenceGuids.has(ownGuid)}` +
-        ` nomeNaLista=${projectSequenceNames.has(name)}\n` +
+        ` nomeNaLista=${projectSequenceNames.has(name)}` +
+        ` isNestedByName=${isNestedSequenceName(name)}` +
+        ` isNestedByTimeline=${nestedDetection.ids.has(id) || nestedDetection.names.has(name.trim().toLowerCase())}\n` +
         `      ext="${ext}" mídia="${mediaPath}"`
     );
 
@@ -529,7 +626,7 @@ export async function scanProject(): Promise<ScanResult> {
 
   // 4. Count per category
   const counts: Record<ItemCategory, number> = {
-    video: 0, audio: 0, image: 0, graphics: 0,
+    video: 0, audio: 0, image: 0, graphics: 0, caption: 0,
     sequence: 0, "sequence-nested": 0, premiere: 0, other: 0,
   };
   const audioKindCounts: Record<AudioKind, number> = { sfx: 0, music: 0 };
@@ -572,7 +669,9 @@ export async function scanProject(): Promise<ScanResult> {
   const standaloneNested: ClassifiedItem[] = [];
 
   for (const [base, members] of seqMap) {
-    if (members.length >= 2) {
+    // Se a base for um identificador genérico de sequência aninhada (ex: "Nested", "Nested Sequence", "Sequência aninhada"),
+    // vai para a pasta dedicada "Nested" em vez de criar uma subpasta de grupo ad-hoc redundante.
+    if (members.length >= 2 && !isNestedSequenceName(base)) {
       sequenceGroups.push({ base, items: members });
     } else {
       for (const member of members) {
@@ -661,11 +760,20 @@ async function collectRootLooseItems(
 
 // ── detect nested sequences ────────────────────────────────────────
 
-async function detectNestedSequenceIds(
+export interface NestedSequenceDetection {
+  ids: Set<string>;
+  names: Set<string>;
+  guids: Set<string>;
+}
+
+async function detectNestedSequences(
   ppro: premierepro,
-  project: Project
-): Promise<Set<string>> {
-  const nestedIds = new Set<string>();
+  sequences: Sequence[],
+  projectSequenceNames: Set<string>
+): Promise<NestedSequenceDetection> {
+  const ids = new Set<string>();
+  const names = new Set<string>();
+  const guids = new Set<string>();
   /*
    * O veredito "é sequência?" depende só do project item, mas a
    * varredura pergunta por OCORRÊNCIA na timeline: cinco sequências de
@@ -680,33 +788,77 @@ async function detectNestedSequenceIds(
     getTrackItems(kind: unknown, all: boolean): unknown;
   } | null): Promise<void> => {
     if (!track) return;
-    const items = track.getTrackItems(
-      ppro.Constants.TrackItemType.CLIP,
-      false
-    ) as Array<{ getProjectItem(): Promise<ProjectItem | null> }>;
-    for (const ti of items) {
-      try {
-        const pi = await ti.getProjectItem();
-        if (!pi) continue;
-        const id = pi.getId();
-        let isSub = verdicts.get(id);
-        if (isSub === undefined) {
-          const clip = ppro.ClipProjectItem.cast(pi);
-          isSub = await clip.isSequence();
-          verdicts.set(id, isSub);
+    try {
+      const items = track.getTrackItems(
+        ppro.Constants.TrackItemType.CLIP,
+        false
+      ) as Array<{
+        getProjectItem(): Promise<ProjectItem | null>;
+        getName?(): Promise<string> | string;
+      }>;
+
+      for (const ti of items) {
+        try {
+          // 1. Check track item name directly from the timeline
+          try {
+            const rawTiName = await Promise.resolve(ti.getName?.()).catch(() => "");
+            const tiName = (rawTiName ?? "").trim();
+            if (tiName && projectSequenceNames.has(tiName)) {
+              names.add(tiName.toLowerCase());
+            }
+          } catch {
+            // ignore
+          }
+
+          // 2. Check projectItem of track item
+          const pi = await ti.getProjectItem();
+          if (!pi) continue;
+
+          const id = pi.getId();
+          const piName = (pi.name ?? "").trim();
+          if (piName && projectSequenceNames.has(piName)) {
+            names.add(piName.toLowerCase());
+          }
+
+          let isSub = verdicts.get(id);
+          if (isSub === undefined) {
+            let claimsSeq = false;
+            try {
+              const clip = ppro.ClipProjectItem.cast(pi);
+              claimsSeq = await clip.isSequence();
+            } catch {
+              claimsSeq = false;
+            }
+            isSub = claimsSeq || (piName !== "" && projectSequenceNames.has(piName));
+            verdicts.set(id, isSub);
+          }
+
+          if (isSub) {
+            ids.add(id);
+            if (piName) {
+              names.add(piName.toLowerCase());
+            }
+            try {
+              const clip = ppro.ClipProjectItem.cast(pi);
+              const own = await clip.getSequence();
+              if (own && own.guid) {
+                guids.add(String(own.guid));
+              }
+            } catch {
+              // sem sequence handle
+            }
+          }
+        } catch {
+          // not a sequence clip
         }
-        if (isSub) {
-          nestedIds.add(id);
-        }
-      } catch {
-        // not a sequence clip
       }
+    } catch {
+      // track error
     }
   };
 
-  try {
-    const sequences = await project.getSequences();
-    for (const seq of sequences) {
+  for (const seq of sequences) {
+    try {
       const videoTrackCount = await seq.getVideoTrackCount();
       for (let t = 0; t < videoTrackCount; t++) {
         await scanTrack(await seq.getVideoTrack(t));
@@ -715,13 +867,12 @@ async function detectNestedSequenceIds(
       for (let t = 0; t < audioTrackCount; t++) {
         await scanTrack(await seq.getAudioTrack(t));
       }
+    } catch {
+      // Host não respondeu nesta sequência; segue para as próximas
     }
-  } catch {
-    // Host não respondeu; sem lista de nested, a classificação por
-    // item assume.
   }
 
-  return nestedIds;
+  return { ids, names, guids };
 }
 
 // ── organize ───────────────────────────────────────────────────────
@@ -771,6 +922,7 @@ export async function organizeProject(scan: ScanResult): Promise<OrganizeResult>
       ["audio", scan.counts.audio],
       ["image", scan.counts.image],
       ["graphics", scan.counts.graphics],
+      ["caption", scan.counts.caption],
       ["premiere", scan.counts.premiere],
       ["other", scan.counts.other],
     ];

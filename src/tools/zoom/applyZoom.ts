@@ -347,7 +347,19 @@ export async function applyZoom(options: ZoomOptions): Promise<ZoomResult> {
         for (const item of readyScaleItems) {
           const { scaleParam, startTicks, endTicks } = item;
 
-          // Enable animation (stopwatch) first
+          // 1. Explicitly set the initial static value to baseFrom BEFORE
+          // enabling animation. In Premiere Pro UXP, when setTimeVarying(true) runs
+          // without an initialized value, the host defaults to 0 and creates an
+          // anchor keyframe with 0% scale. Setting the static value first guarantees
+          // that any anchor keyframe or pre-animation state holds baseFrom (e.g. 100%), never 0.
+          try {
+            const initialKf = scaleParam.createKeyframe(baseFrom);
+            compoundAction.addAction(scaleParam.createSetValueAction(initialKf));
+          } catch (cause) {
+            console.warn("[Zoom] createSetValueAction warning:", cause);
+          }
+
+          // 2. Enable animation (stopwatch)
           compoundAction.addAction(
             scaleParam.createSetTimeVaryingAction(true)
           );
@@ -368,6 +380,13 @@ export async function applyZoom(options: ZoomOptions): Promise<ZoomResult> {
             // and two that round onto one frame become one keyframe with
             // an arbitrary value.
             const placed = new Map<string, number>();
+
+            // Always guarantee the head of the clip holds baseFrom exactly,
+            // both at raw startTicks and snapped first frame.
+            placed.set(startTicks, baseFrom);
+            const firstSnapped = snapTicksToFrame(startTicks, ticksPerFrame);
+            placed.set(firstSnapped, baseFrom);
+
             for (let step = 0; step <= CURVE_KEYS; step++) {
               const t = step / CURVE_KEYS;
               const ticks = snapTicksToFrame(
@@ -376,12 +395,10 @@ export async function applyZoom(options: ZoomOptions): Promise<ZoomResult> {
               );
               placed.set(ticks, baseFrom + delta * options.ease(t));
             }
-            // Whichever frame the last sample rounded onto, it holds the
-            // target exactly.
-            const lastTicks = snapTicksToFrame(
-              ppro.TickTime.createWithSeconds(startSec + duration).ticks,
-              ticksPerFrame
-            );
+
+            // Always guarantee the final frame holds baseTo exactly
+            placed.set(endTicks, baseTo);
+            const lastTicks = snapTicksToFrame(endTicks, ticksPerFrame);
             placed.set(lastTicks, baseTo);
 
             for (const [ticks, value] of placed) {
@@ -423,6 +440,14 @@ export async function applyZoom(options: ZoomOptions): Promise<ZoomResult> {
         const kfTimes = await Promise.resolve(item.scaleParam.getKeyframeListAsTickTimes());
         const count = Array.isArray(kfTimes) ? kfTimes.length : 0;
         console.log(`[Zoom] Scale keyframe count after commit: ${count}`);
+        if (count > 0 && Array.isArray(kfTimes) && kfTimes[0]) {
+          try {
+            const firstVal = await item.scaleParam.getValueAtTime(kfTimes[0]);
+            console.log(`[Zoom] First keyframe at ${kfTimes[0].seconds}s has value:`, firstVal);
+          } catch {
+            // non-fatal diagnostic
+          }
+        }
         if (count >= 2) {
           verifiedCount += 1;
         }

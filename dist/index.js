@@ -397,6 +397,12 @@
         animCommitted = project2.executeTransaction((compoundAction) => {
           for (const item of readyScaleItems) {
             const { scaleParam, startTicks, endTicks } = item;
+            try {
+              const initialKf = scaleParam.createKeyframe(baseFrom);
+              compoundAction.addAction(scaleParam.createSetValueAction(initialKf));
+            } catch (cause) {
+              console.warn("[Zoom] createSetValueAction warning:", cause);
+            }
             compoundAction.addAction(
               scaleParam.createSetTimeVaryingAction(true)
             );
@@ -406,6 +412,9 @@
             if (duration > 0) {
               const delta = baseTo - baseFrom;
               const placed = /* @__PURE__ */ new Map();
+              placed.set(startTicks, baseFrom);
+              const firstSnapped = snapTicksToFrame(startTicks, ticksPerFrame);
+              placed.set(firstSnapped, baseFrom);
               for (let step2 = 0; step2 <= CURVE_KEYS; step2++) {
                 const t = step2 / CURVE_KEYS;
                 const ticks = snapTicksToFrame(
@@ -414,10 +423,8 @@
                 );
                 placed.set(ticks, baseFrom + delta * options.ease(t));
               }
-              const lastTicks = snapTicksToFrame(
-                ppro.TickTime.createWithSeconds(startSec + duration).ticks,
-                ticksPerFrame
-              );
+              placed.set(endTicks, baseTo);
+              const lastTicks = snapTicksToFrame(endTicks, ticksPerFrame);
               placed.set(lastTicks, baseTo);
               for (const [ticks, value] of placed) {
                 const kf = scaleParam.createKeyframe(value);
@@ -447,6 +454,13 @@
           const kfTimes = await Promise.resolve(item.scaleParam.getKeyframeListAsTickTimes());
           const count = Array.isArray(kfTimes) ? kfTimes.length : 0;
           console.log(`[Zoom] Scale keyframe count after commit: ${count}`);
+          if (count > 0 && Array.isArray(kfTimes) && kfTimes[0]) {
+            try {
+              const firstVal = await item.scaleParam.getValueAtTime(kfTimes[0]);
+              console.log(`[Zoom] First keyframe at ${kfTimes[0].seconds}s has value:`, firstVal);
+            } catch {
+            }
+          }
           if (count >= 2) {
             verifiedCount += 1;
           }
@@ -890,7 +904,7 @@
     let points = clampPoints(options.points);
     let box = curveBox(NOMINAL_WIDTH, NOMINAL_HEIGHT, PAD_X, PAD_Y);
     let dragging = null;
-    container.innerHTML = markup$6();
+    container.innerHTML = markup$7();
     const svg = container.querySelector(".ce-canvas");
     const curveLine = container.querySelector(".ce-curve");
     const grips = /* @__PURE__ */ new Map();
@@ -1084,7 +1098,7 @@
   function setAttr(node, name, value) {
     node?.setAttribute(name, value);
   }
-  function markup$6() {
+  function markup$7() {
     return `<svg class="ce-canvas" viewBox="0 0 ${NOMINAL_WIDTH} ${NOMINAL_HEIGHT}" preserveAspectRatio="none" aria-hidden="true"><path class="ce-floor" d=""/><path class="ce-ceiling" d=""/><path class="ce-linear" d=""/><path class="ce-tether" data-tether="1" d=""/><path class="ce-tether" data-tether="2" d=""/><path class="ce-curve" d=""/></svg><div class="ce-grip" ${CONTROL} data-handle="1" aria-label="Ponto de controle da saída"></div><div class="ce-grip" ${CONTROL} data-handle="2" aria-label="Ponto de controle da chegada"></div>`;
   }
   let drawnPoints = { ...CUSTOM_DEFAULT };
@@ -1094,7 +1108,7 @@
     const initialCurveId = options.curveId ?? CURVES[0].id;
     let curveId = initialCurveId;
     let editor = null;
-    container.innerHTML = markup$5(curveId);
+    container.innerHTML = markup$6(curveId);
     const tag = container.querySelector("[data-curve-name]");
     const slot = container.querySelector("[data-curve-slot]");
     const meta = container.querySelector("[data-curve-meta]");
@@ -1182,7 +1196,7 @@
   function renderCurvePreview(slot, curve) {
     slot.innerHTML = `<svg viewBox="0 0 ${PREVIEW_WIDTH$1} ${PREVIEW_HEIGHT$1}" preserveAspectRatio="none" aria-hidden="true"><path class="preview-grid" d="M0,${PREVIEW_HEIGHT$1 - 8} L${PREVIEW_WIDTH$1},${PREVIEW_HEIGHT$1 - 8}"/><path class="preview-curve" d="${curvePath(curve, PREVIEW_WIDTH$1, PREVIEW_HEIGHT$1, 8)}"/></svg>`;
   }
-  function markup$5(curveId) {
+  function markup$6(curveId) {
     const cell2 = (curve, perRow) => `<div class="curve-cell" ${CONTROL} data-curve="${curve.id}" style="width:${(100 / perRow).toFixed(3)}%" aria-pressed="${curve.id === curveId}" title="${escapeHtml(curve.name)}"><svg viewBox="0 0 60 34" preserveAspectRatio="none" aria-hidden="true"><path class="curve-track" d="M4,30 L56,30"/><path class="curve-line" d="${curvePath(curve, 60, 34, 4)}"/></svg><span class="curve-cell-name">${escapeHtml(curve.name)}</span></div>`;
     const rows = [];
     for (let index = 0; index < CURVES.length; index += 3) {
@@ -1410,7 +1424,7 @@
       let scalePercent = SCALE_DEFAULTS.punch;
       let punchDuration = PUNCH_DURATION_DEFAULT;
       let scaleTouched = false;
-      container.innerHTML = markup$4(direction, style, scalePercent, punchDuration);
+      container.innerHTML = markup$5(direction, style, scalePercent, punchDuration);
       const directionSeg = container.querySelector("[data-direction-seg]");
       const styleSeg = container.querySelector("[data-style-seg]");
       const presetButtons = Array.from(
@@ -1591,7 +1605,7 @@
       livePicker$1 = null;
     }
   };
-  function markup$4(direction, style, scalePercent, punchDuration) {
+  function markup$5(direction, style, scalePercent, punchDuration) {
     const presetButtonsHtml = PUNCH_DURATION_PRESETS.map(
       (preset) => `<div class="preset-pill${Math.abs(preset - punchDuration) < 0.05 ? " is-active" : ""}" ${CONTROL} data-preset-dur="${preset}">${preset.toFixed(1)}s</div>`
     ).join("");
@@ -5119,7 +5133,7 @@
       let snapshot = null;
       let scanning = false;
       let cancelRequested = false;
-      container.innerHTML = markup$3(params);
+      container.innerHTML = markup$4(params);
       const modeSeg = container.querySelector("[data-mode-seg]");
       const presetRail = container.querySelector("[data-preset-rail]");
       const sliders = /* @__PURE__ */ new Map();
@@ -5505,7 +5519,7 @@
       releaseSliders$1 = null;
     }
   };
-  function markup$3(params) {
+  function markup$4(params) {
     const presets = SILENCE_PRESETS.map(
       (preset) => `<div class="preset-pill" ${CONTROL} data-preset="${preset.id}">${preset.name}</div>`
     ).join("");
@@ -5659,6 +5673,18 @@
     "eps",
     "pdf"
   ]);
+  const CAPTION_EXTS = /* @__PURE__ */ new Set([
+    "srt",
+    "vtt",
+    "sbv",
+    "sub",
+    "ass",
+    "ssa",
+    "dfxp",
+    "scc",
+    "mcc",
+    "stl"
+  ]);
   const PREMIERE_SYNTHETIC_NAMES = [
     "adjustment layer",
     "camada de ajuste",
@@ -5694,6 +5720,7 @@
     if (AUDIO_EXTS.has(ext)) return "audio";
     if (IMAGE_EXTS.has(ext)) return "image";
     if (GRAPHICS_EXTS.has(ext)) return "graphics";
+    if (CAPTION_EXTS.has(ext)) return "caption";
     return "other";
   }
   const SFX_HINTS = /(^|[^a-z])(sfx|fx|efeito|efeitos|effects?|foley|whoosh|swoosh|impact|riser|braam|stinger|transition|ambien(ce|te)|hit)([^a-z]|$)/i;
@@ -5758,6 +5785,7 @@
     audio: "Audio",
     image: "Imagens",
     graphics: "Graficos & Motion",
+    caption: "Legendas",
     premiere: "Itens do Premiere",
     other: "Outros"
   };
@@ -5767,6 +5795,7 @@
     "audio",
     "image",
     "graphics",
+    "caption",
     "premiere",
     "other"
   ];
@@ -5781,6 +5810,24 @@
     }
     return trimmed;
   }
+  function isNestedSequenceName(name) {
+    if (!name) return false;
+    const lower = name.toLowerCase().trim();
+    if (lower.includes("nested") || lower.includes("aninhad") || lower.includes("anidad") || lower.includes("imbriqu") || lower.includes("nidificat") || lower.includes("gefaltet")) {
+      return true;
+    }
+    const tokens = lower.split(/[^a-z0-9\u00C0-\u017F]+/);
+    for (let i = 0; i < tokens.length; i++) {
+      const token = tokens[i];
+      if (token === "nest" || token === "nests" || token === "subseq" || token === "subseqs" || token === "subsequence" || token === "subsequences" || token === "subsequencia" || token === "subsequencias" || token === "subsequência" || token === "subsequências") {
+        return true;
+      }
+      if (token === "sub" && i + 1 < tokens.length && (tokens[i + 1] === "seq" || tokens[i + 1] === "seqs" || tokens[i + 1] === "sequence" || tokens[i + 1] === "sequences" || tokens[i + 1] === "sequencia" || tokens[i + 1] === "sequencias" || tokens[i + 1] === "sequência" || tokens[i + 1] === "sequências")) {
+        return true;
+      }
+    }
+    return false;
+  }
   async function scanProject() {
     const ppro = getPremiere();
     if (!ppro) {
@@ -5792,13 +5839,14 @@
     }
     const rootFolder = await project2.getRootItem();
     const rootLooseItems = await collectRootLooseItems(ppro, rootFolder);
-    const nestedIds = await detectNestedSequenceIds(ppro, project2);
     const projectSequenceGuids = /* @__PURE__ */ new Set();
     const projectSequenceNames = /* @__PURE__ */ new Set();
+    let projectSequences = [];
     try {
-      for (const seq of await project2.getSequences()) {
+      projectSequences = await project2.getSequences();
+      for (const seq of projectSequences) {
         try {
-          projectSequenceGuids.add(String(seq.guid));
+          if (seq.guid) projectSequenceGuids.add(String(seq.guid));
         } catch {
         }
         try {
@@ -5809,6 +5857,11 @@
     } catch {
     }
     const hasProjectSequenceList = projectSequenceGuids.size > 0 || projectSequenceNames.size > 0;
+    const nestedDetection = await detectNestedSequences(
+      ppro,
+      projectSequences,
+      projectSequenceNames
+    );
     const classified = [];
     const diagnostics = [];
     for (const { item, parentId } of rootLooseItems) {
@@ -5838,7 +5891,7 @@
         }
       }
       const ext = extensionOf(mediaPath || name);
-      const hasRealMedia = mediaPath !== "" && (VIDEO_EXTS.has(ext) || AUDIO_EXTS.has(ext) || IMAGE_EXTS.has(ext) || GRAPHICS_EXTS.has(ext));
+      const hasRealMedia = mediaPath !== "" && (VIDEO_EXTS.has(ext) || AUDIO_EXTS.has(ext) || IMAGE_EXTS.has(ext) || GRAPHICS_EXTS.has(ext) || CAPTION_EXTS.has(ext));
       let claimsSequence = false;
       let contentTypeRaw = void 0;
       let ownGuid = null;
@@ -5873,7 +5926,9 @@
       let audioKind = null;
       let mediaPathForKind = "";
       if (isSeq) {
-        const isNested = nestedIds.has(id);
+        const isNestedByName = isNestedSequenceName(name);
+        const isNestedByTimeline = nestedDetection.ids.has(id) || nestedDetection.names.has(name.trim().toLowerCase()) || ownGuid !== null && nestedDetection.guids.has(ownGuid);
+        const isNested = isNestedByName || isNestedByTimeline;
         category = isNested ? "sequence-nested" : "sequence";
         seqBase = sequenceBaseName(name);
       } else {
@@ -5889,7 +5944,7 @@
       }
       diagnostics.push(
         `  ${category.padEnd(16)} ${name}
-      isSequence=${claimsSequence} contentType=${String(contentTypeRaw)} guid=${ownGuid ?? "—"} noProjeto=${ownGuid !== null && projectSequenceGuids.has(ownGuid)} nomeNaLista=${projectSequenceNames.has(name)}
+      isSequence=${claimsSequence} contentType=${String(contentTypeRaw)} guid=${ownGuid ?? "—"} noProjeto=${ownGuid !== null && projectSequenceGuids.has(ownGuid)} nomeNaLista=${projectSequenceNames.has(name)} isNestedByName=${isNestedSequenceName(name)} isNestedByTimeline=${nestedDetection.ids.has(id) || nestedDetection.names.has(name.trim().toLowerCase())}
       ext="${ext}" mídia="${mediaPath}"`
       );
       classified.push({
@@ -5908,6 +5963,7 @@
       audio: 0,
       image: 0,
       graphics: 0,
+      caption: 0,
       sequence: 0,
       "sequence-nested": 0,
       premiere: 0,
@@ -5943,7 +5999,7 @@
     const standalonePrincipal = [];
     const standaloneNested = [];
     for (const [base, members] of seqMap) {
-      if (members.length >= 2) {
+      if (members.length >= 2 && !isNestedSequenceName(base)) {
         sequenceGroups.push({ base, items: members });
       } else {
         for (const member of members) {
@@ -5994,36 +6050,69 @@
     }
     return result;
   }
-  async function detectNestedSequenceIds(ppro, project2) {
-    const nestedIds = /* @__PURE__ */ new Set();
+  async function detectNestedSequences(ppro, sequences, projectSequenceNames) {
+    const ids = /* @__PURE__ */ new Set();
+    const names = /* @__PURE__ */ new Set();
+    const guids = /* @__PURE__ */ new Set();
     const verdicts = /* @__PURE__ */ new Map();
     const scanTrack = async (track) => {
       if (!track) return;
-      const items = track.getTrackItems(
-        ppro.Constants.TrackItemType.CLIP,
-        false
-      );
-      for (const ti of items) {
-        try {
-          const pi = await ti.getProjectItem();
-          if (!pi) continue;
-          const id = pi.getId();
-          let isSub = verdicts.get(id);
-          if (isSub === void 0) {
-            const clip = ppro.ClipProjectItem.cast(pi);
-            isSub = await clip.isSequence();
-            verdicts.set(id, isSub);
+      try {
+        const items = track.getTrackItems(
+          ppro.Constants.TrackItemType.CLIP,
+          false
+        );
+        for (const ti of items) {
+          try {
+            try {
+              const rawTiName = await Promise.resolve(ti.getName?.()).catch(() => "");
+              const tiName = (rawTiName ?? "").trim();
+              if (tiName && projectSequenceNames.has(tiName)) {
+                names.add(tiName.toLowerCase());
+              }
+            } catch {
+            }
+            const pi = await ti.getProjectItem();
+            if (!pi) continue;
+            const id = pi.getId();
+            const piName = (pi.name ?? "").trim();
+            if (piName && projectSequenceNames.has(piName)) {
+              names.add(piName.toLowerCase());
+            }
+            let isSub = verdicts.get(id);
+            if (isSub === void 0) {
+              let claimsSeq = false;
+              try {
+                const clip = ppro.ClipProjectItem.cast(pi);
+                claimsSeq = await clip.isSequence();
+              } catch {
+                claimsSeq = false;
+              }
+              isSub = claimsSeq || piName !== "" && projectSequenceNames.has(piName);
+              verdicts.set(id, isSub);
+            }
+            if (isSub) {
+              ids.add(id);
+              if (piName) {
+                names.add(piName.toLowerCase());
+              }
+              try {
+                const clip = ppro.ClipProjectItem.cast(pi);
+                const own = await clip.getSequence();
+                if (own && own.guid) {
+                  guids.add(String(own.guid));
+                }
+              } catch {
+              }
+            }
+          } catch {
           }
-          if (isSub) {
-            nestedIds.add(id);
-          }
-        } catch {
         }
+      } catch {
       }
     };
-    try {
-      const sequences = await project2.getSequences();
-      for (const seq of sequences) {
+    for (const seq of sequences) {
+      try {
         const videoTrackCount = await seq.getVideoTrackCount();
         for (let t = 0; t < videoTrackCount; t++) {
           await scanTrack(await seq.getVideoTrack(t));
@@ -6032,10 +6121,10 @@
         for (let t = 0; t < audioTrackCount; t++) {
           await scanTrack(await seq.getAudioTrack(t));
         }
+      } catch {
       }
-    } catch {
     }
-    return nestedIds;
+    return { ids, names, guids };
   }
   async function organizeProject(scan) {
     const ppro = getPremiere();
@@ -6064,6 +6153,7 @@
         ["audio", scan.counts.audio],
         ["image", scan.counts.image],
         ["graphics", scan.counts.graphics],
+        ["caption", scan.counts.caption],
         ["premiere", scan.counts.premiere],
         ["other", scan.counts.other]
       ];
@@ -6446,6 +6536,7 @@
     audio: "🔊",
     image: "🖼",
     graphics: "📐",
+    caption: "💬",
     premiere: "🎛",
     other: "📦"
   };
@@ -6620,6 +6711,7 @@
         if (scan.counts.audio > 0) catStats.push({ label: "Áudios", count: scan.counts.audio });
         if (scan.counts.image > 0) catStats.push({ label: "Imagens", count: scan.counts.image });
         if (scan.counts.graphics > 0) catStats.push({ label: "Gráficos", count: scan.counts.graphics });
+        if (scan.counts.caption > 0) catStats.push({ label: "Legendas", count: scan.counts.caption });
         if (scan.counts.premiere > 0) catStats.push({ label: "Itens Premiere", count: scan.counts.premiere });
         if (scan.counts.other > 0) catStats.push({ label: "Outros", count: scan.counts.other });
         let html = '<div class="org-stat-row">';
@@ -7869,7 +7961,7 @@
     edge: "Edge",
     brave: "Brave"
   };
-  let releaseDocument$1 = null;
+  let releaseDocument$2 = null;
   const downloadTool = {
     id: "download",
     name: "Baixar Vídeos",
@@ -7891,7 +7983,7 @@
       let probes = [];
       let busy = false;
       let cancelled = false;
-      container.innerHTML = markup$2();
+      container.innerHTML = markup$3();
       const urlsEl = container.querySelector("[data-urls]");
       const scanEl = container.querySelector("[data-scan]");
       const listEl = container.querySelector("[data-list]");
@@ -7953,7 +8045,7 @@
       };
       document.addEventListener("click", onDocumentPointer, true);
       document.addEventListener("keydown", onDocumentKey, true);
-      releaseDocument$1 = () => {
+      releaseDocument$2 = () => {
         document.removeEventListener("click", onDocumentPointer, true);
         document.removeEventListener("keydown", onDocumentKey, true);
       };
@@ -8368,8 +8460,8 @@
       context.setRefreshHandler(null);
     },
     unmount() {
-      releaseDocument$1?.();
-      releaseDocument$1 = null;
+      releaseDocument$2?.();
+      releaseDocument$2 = null;
     }
   };
   function fastProbe(url, info) {
@@ -8462,7 +8554,7 @@
     const parts = path.split(/[\\/]/);
     return parts[parts.length - 1] || path;
   }
-  function markup$2() {
+  function markup$3() {
     return `<div class="zones"><div class="zone"><div class="field"><div class="field-head"><span class="t-label">Links</span></div><textarea class="dl-urls" data-urls spellcheck="false" rows="3" placeholder="Cole os links do YouTube ou do TikTok — um por linha"></textarea><div class="sil-scan-row"><div class="org-scan" ${CONTROL} data-scan>Analisar links</div></div><div class="sil-manual" data-manual hidden></div><div class="dl-list" data-list></div><div class="dl-progress" data-progress hidden></div><pre class="dl-log" data-log hidden></pre></div></div><div class="zone"><div class="field"><span class="t-label">Qualidade</span><div data-quality-pick></div></div></div><div class="zone"><div class="field"><div class="field-head"><span class="t-label">Destino</span><span class="field-action" ${CONTROL} data-pick>Escolher…</span></div><p class="dl-dest" data-dest></p></div><div class="field"><span class="t-label">Importar para o projeto</span><div class="seg" data-import-seg><div class="seg-item" ${CONTROL} data-import="on">Sim</div><div class="seg-item" ${CONTROL} data-import="off">Não</div></div></div></div><div class="sil-advanced"><div class="sil-advanced-summary" ${CONTROL} data-adv-toggle><span class="sil-advanced-title">⚙️ Ajustes Avançados</span><span class="sil-advanced-icon" data-adv-icon>▾</span></div><div class="sil-advanced-content" data-adv-content hidden><div class="field"><span class="t-label">Cookies do navegador</span><div data-cookies-pick></div><p class="field-note">Para vídeo com restrição de idade ou quando o site pede login. Use o navegador onde você já está logado.</p></div><div class="field"><div class="field-head"><span class="t-label">Caminho do yt-dlp</span><span class="field-action" ${CONTROL} data-open-folder>Abrir pasta</span></div><div class="sil-ffmpeg-group"><input type="text" class="sil-path" data-ytdlp-path spellcheck="false" placeholder="deixe vazio para procurar sozinho"><div class="org-scan" ${CONTROL} data-install>Reinstalar yt-dlp</div></div><p class="field-note">Não precisa instalar nada: na primeira vez o painel baixa sozinho o yt-dlp e o ffmpeg oficiais para a pasta do plugin. Este botão só força uma reinstalação, se algum dia precisar atualizar.</p></div></div></div></div>`;
   }
   const FILLER_DEFAULTS = {
@@ -8642,7 +8734,7 @@
       let plans = /* @__PURE__ */ new Map();
       let snapshot = null;
       let scanning = false;
-      container.innerHTML = markup$1(params);
+      container.innerHTML = markup$2(params);
       const scanBtn = container.querySelector("[data-scan]");
       const emptyEl = container.querySelector("[data-empty]");
       const reportEl = container.querySelector("[data-report]");
@@ -8883,7 +8975,7 @@
       stretchSlider = null;
     }
   };
-  function markup$1(params) {
+  function markup$2(params) {
     return `<div class="zones"><div class="zone"><div class="field"><div class="field-head"><span class="t-label">Margem ao redor</span><span class="field-val" data-out-pad>${params.padSeconds.toFixed(2)}s</span></div><div class="slider-row"><div data-pad></div></div><p class="field-note">Quanto de ar cai junto com cada muleta. A margem avança pelo silêncio vizinho e para na palavra ao lado — nunca morde fala.</p></div><div class="field"><div class="field-head"><span class="t-label">Esticado a partir de</span><span class="field-val" data-out-stretch>${params.stretchedSeconds.toFixed(2)}s</span></div><div class="slider-row"><div data-stretch></div></div><p class="field-note">Um "é" ou "ah" mais longo que isso é hesitação, não palavra. Zero desliga — aí só sons inequívocos (ééé, hum) e a tag cortam.</p></div><div class="field"><span class="t-label">Tag da transcrição (né, tipo…)</span><div class="seg" data-tag-seg><div class="seg-item" ${CONTROL} data-tag="on">Cortar</div><div class="seg-item" ${CONTROL} data-tag="off">Manter</div></div><p class="field-note">O que o próprio Premiere marcou como muleta. Desligue se o "né" faz parte do jeito de falar do vídeo.</p></div></div><div class="zone is-wide"><div class="sil-empty" data-empty><p class="sil-empty-title">Pronto para analisar</p><p class="sil-empty-desc">Selecione os clipes falados na timeline. É preciso que estejam transcritos (janela Texto → Transcrever sequência).</p></div><div class="sil-scan-row"><div class="org-scan" ${CONTROL} data-scan>Analisar Seleção</div></div><div class="sil-report" data-report></div></div></div>`;
   }
   function isMarker(text2) {
@@ -9152,7 +9244,7 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
     {
       id: "small",
       label: "Rápido",
-      note: "181 MB · bom para rascunho",
+      note: "181 MB · o mais rápido, erra mais em nome próprio",
       file: "ggml-small-q5_1.bin",
       url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin",
       megabytes: 181
@@ -9160,7 +9252,7 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
     {
       id: "turbo",
       label: "Equilibrado",
-      note: "547 MB · o recomendado",
+      note: "547 MB · o recomendado — 10 min de vídeo em ~3 min",
       file: "ggml-large-v3-turbo-q5_0.bin",
       url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
       megabytes: 547
@@ -9168,7 +9260,7 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
     {
       id: "large",
       label: "Máxima",
-      note: "1 GB · mais lento",
+      note: "1 GB · 2,4x mais lento, mesma precisão nos testes",
       file: "ggml-large-v3-q5_0.bin",
       url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-q5_0.bin",
       megabytes: 1031
@@ -9255,6 +9347,7 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
             return {
               ok: false,
               error: parsed.error ?? "failed",
+              detected: parsed.detected,
               json: null,
               scriptPath
             };
@@ -9334,6 +9427,39 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
       // ── áudio: a faixa inteira montada em tempo de sequência ──
       'stage "Montando o áudio da faixa…"',
       `"$FFMPEG" -v error -y ` + job.inputs.map((args) => args.map(q).join(" ")).join(" ") + ` -filter_complex ${q(job.filter)} -map "[out]" -t ${job.durationSeconds.toFixed(6)} -vn -ac 1 -ar 16000 -c:a pcm_s16le "$WORK/cc-audio.wav" || fail audio-extract`,
+      /*
+       * O IDIOMA É CONFERIDO ANTES.
+       *
+       * Forçar `-l fr` num áudio em português não dá erro: o whisper
+       * obedece e devolve francês fluente, inventado, com pontuação
+       * perfeita. Foi o que aconteceu — dois minutos de motor para
+       * produzir uma tradução alucinada que ninguém pediu, sem um aviso.
+       *
+       * Detectar custa ~4s (só o encoder nos primeiros 30s) contra os
+       * minutos da transcrição inteira, e acerta com folga: 99,9% neste
+       * áudio. Barato demais para não fazer.
+       *
+       * Só barra quando a detecção está CONFIANTE e discorda — sotaque
+       * carregado e áudio ruim baixam a certeza, e nesses casos quem
+       * manda é a escolha do editor.
+       */
+      ...language === "auto" ? [] : [
+        'stage "Conferindo o idioma…"',
+        `DET=$("$WHISPER" -m "$MODEL" -f "$WORK/cc-audio.wav" -dl 2>&1 || true)`,
+        `DETLANG=$(printf '%s' "$DET" | sed -n 's/.*auto-detected language: \\([a-z][a-z]*\\).*/\\1/p' | head -1)`,
+        `DETP=$(printf '%s' "$DET" | sed -n 's/.*p = \\([0-9.]*\\).*/\\1/p' | head -1)`,
+        // A probabilidade entra como VARIÁVEL do awk. Escrita como
+        // `$DETP` dentro do programa, o awk a lê como número de
+        // campo — e em BEGIN não há campo nenhum, então a comparação
+        // dava sempre falso e a checagem inteira era decorativa.
+        // `p+0` cobre o caso de a detecção não ter dito nada.
+        `if [ -n "$DETLANG" ] && [ "$DETLANG" != ${q(language)} ] && awk -v p="$DETP" 'BEGIN{exit !(p+0 > 0.70)}' 2>/dev/null; then`,
+        `  printf '{"ok":false,"error":"language-mismatch","detected":"%s","p":"%s"}' "$DETLANG" "$DETP" > "$WORK/${RESULT_FILE}.tmp"`,
+        `  mv "$WORK/${RESULT_FILE}.tmp" "$WORK/${RESULT_FILE}"`,
+        '  rm -f "$WORK/cc-audio.wav"',
+        "  exit 1",
+        "fi"
+      ],
       'stage "Transcrevendo…"',
       /*
        * As opções que separam uma legenda boa de uma sofrível, medidas
@@ -9417,7 +9543,12 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
     ];
     return lines.join("\r\n") + "\r\n";
   }
-  function describeError(code) {
+  function describeError(code, detected) {
+    if (code === "language-mismatch") {
+      const conhecido = LANGUAGES.find((entry) => entry.id === detected);
+      const ouvido = conhecido?.label ?? (detected ? detected.toUpperCase() : "outro idioma");
+      return `O áudio parece estar em ${ouvido}, não no idioma escolhido. Troque o idioma acima (ou use Detectar) e transcreva de novo — forçar o idioma errado faz o motor inventar uma tradução.`;
+    }
     switch (code) {
       case "whisper-not-found":
         return 'O motor de transcrição não está instalado. No Terminal: "brew install whisper-cpp" — depois volte e analise de novo.';
@@ -9445,10 +9576,10 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
     maxLineChars: 42,
     maxLines: 2,
     gapSeconds: 0.7,
-    minCueSeconds: 1,
+    minCueSeconds: 1.2,
     maxCueSeconds: 6,
     readingCps: 17,
-    gapFrames: 2
+    gapFrames: 0
   };
   const SRT_PRESETS = [
     {
@@ -9462,7 +9593,7 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
         minCueSeconds: 0.7,
         maxCueSeconds: 3,
         readingCps: 20,
-        gapFrames: 1
+        gapFrames: 0
       }
     },
     {
@@ -9478,11 +9609,11 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
       options: {
         maxLineChars: 50,
         maxLines: 2,
-        gapSeconds: 1.2,
-        minCueSeconds: 0.85,
+        gapSeconds: 1,
+        minCueSeconds: 1.5,
         maxCueSeconds: 7,
         readingCps: 20,
-        gapFrames: 2
+        gapFrames: 0
       }
     }
   ];
@@ -9534,7 +9665,8 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
       cues.push({
         start,
         end: Math.max(spoken, start + options.minCueSeconds, start + toRead),
-        lines
+        lines,
+        spokenEnd: spoken
       });
       current = [];
     };
@@ -9573,12 +9705,25 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
     for (const cue of cues) {
       cue.start = snap(cue.start, fps);
       cue.end = snap(cue.end, fps);
+      if (cue.spokenEnd !== void 0) {
+        cue.spokenEnd = snap(cue.spokenEnd, fps);
+      }
     }
     const gap = frameSeconds(Math.max(0, options.gapFrames), fps);
     for (let index = 0; index < cues.length - 1; index += 1) {
-      const limit = cues[index + 1].start - gap;
-      if (cues[index].end > limit) {
-        cues[index].end = Math.max(cues[index].start + FLOOR_SECONDS, limit);
+      const currentCue = cues[index];
+      const nextCue = cues[index + 1];
+      const spokenEnd = currentCue.spokenEnd ?? currentCue.end;
+      const pauseToNext = nextCue.start - spokenEnd;
+      if (pauseToNext < options.gapSeconds) {
+        const targetEnd = nextCue.start - gap;
+        if (targetEnd > currentCue.start) {
+          currentCue.end = Math.max(currentCue.end, targetEnd);
+        }
+      }
+      const limit = nextCue.start - gap;
+      if (currentCue.end > limit) {
+        currentCue.end = Math.max(currentCue.start + FLOOR_SECONDS, limit);
       }
     }
     return cues;
@@ -9681,10 +9826,10 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
     }
   }
   const SRT_RANGE = {
-    maxLineChars: [16, 64],
+    maxLineChars: [16, 70],
     maxLines: [1, 3],
     gapSeconds: [0.2, 3],
-    minCueSeconds: [0.3, 4],
+    minCueSeconds: [0.3, 5],
     maxCueSeconds: [1.5, 12],
     readingCps: [0, 30],
     gapFrames: [0, 12]
@@ -10141,7 +10286,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       stages.push(`motor: ${result.error ?? "sem resposta"}`);
       return {
         ok: false,
-        message: describeError(result.error),
+        message: describeError(result.error, result.detected),
         imported: 0,
         stages,
         srtPath: null,
@@ -10477,13 +10622,28 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
     const warning = stats.rushed > 0 ? `<p class="cc-cap-warn">${stats.rushed} ${stats.rushed === 1 ? "legenda passa" : "legendas passam"} rápido demais para ${Math.round(options.readingCps)} car/s — aumente os caracteres por linha, ou baixe a velocidade de leitura.</p>` : "";
     return `<div class="cc-cap-preview" style="--cc-cap-size:${captionFontPx(widest)}px">` + screens + `<div class="cc-cap-stats"><span><b>${stats.cues}</b> ${stats.cues === 1 ? "legenda" : "legendas"}</span><span>linha máx <b>${stats.longestLine}</b></span><span>média <b>${seconds(stats.meanSeconds)}</b></span></div>` + warning + `<p class="cc-cap-source">${escapeHtml(source)}</p></div>`;
   }
-  const asSeconds = (value) => `${value.toFixed(2).replace(".", ",")}s`;
+  const asSeconds = (value) => `${value.toFixed(1).replace(".", ",")}s`;
   const CAP_SLIDERS = [
     {
       key: "maxLineChars",
-      label: "Caracteres por linha",
+      label: "Comprimento máximo",
       step: 1,
-      format: (value) => String(Math.round(value))
+      format: (value) => `${Math.round(value)} caracteres`
+    },
+    {
+      key: "minCueSeconds",
+      label: "Duração mínima",
+      step: 0.1,
+      format: asSeconds
+    },
+    {
+      key: "gapFrames",
+      label: "Intervalo entre legendas",
+      step: 1,
+      format: (value) => {
+        const v = Math.round(value);
+        return v === 0 ? "0 quadros (sem gap)" : `${v} ${v === 1 ? "quadro" : "quadros"}`;
+      }
     },
     {
       key: "readingCps",
@@ -10493,18 +10653,11 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       // mostrar "0 car/s" faria parecer defeito.
       format: (value) => value <= 0 ? "desligada" : `${Math.round(value)} car/s`
     },
-    { key: "minCueSeconds", label: "Duração mínima", step: 0.05, format: asSeconds },
     { key: "maxCueSeconds", label: "Duração máxima", step: 0.25, format: asSeconds },
-    { key: "gapSeconds", label: "Pausa que quebra", step: 0.05, format: asSeconds },
-    {
-      key: "gapFrames",
-      label: "Intervalo entre legendas",
-      step: 1,
-      format: (value) => `${Math.round(value)} ${Math.round(value) === 1 ? "quadro" : "quadros"}`
-    }
+    { key: "gapSeconds", label: "Pausa para silêncio", step: 0.05, format: asSeconds }
   ];
   let cancelActiveRun = null;
-  let releaseDocument = null;
+  let releaseDocument$1 = null;
   let releaseSliders = null;
   const captionsTool = {
     id: "captions",
@@ -10527,7 +10680,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       const capSliders = /* @__PURE__ */ new Map();
       let lastRun = null;
       let busy = false;
-      container.innerHTML = markup();
+      container.innerHTML = markup$1();
       const scanBtn = container.querySelector("[data-scan]");
       const learnBtn = container.querySelector("[data-learn]");
       const reportEl = container.querySelector("[data-report]");
@@ -10598,7 +10751,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       };
       document.addEventListener("click", onDocumentPointer, true);
       document.addEventListener("keydown", onDocumentKey, true);
-      releaseDocument = () => {
+      releaseDocument$1 = () => {
         document.removeEventListener("click", onDocumentPointer, true);
         document.removeEventListener("keydown", onDocumentKey, true);
       };
@@ -10972,13 +11125,13 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
     unmount() {
       cancelActiveRun?.();
       cancelActiveRun = null;
-      releaseDocument?.();
-      releaseDocument = null;
+      releaseDocument$1?.();
+      releaseDocument$1 = null;
       releaseSliders?.();
       releaseSliders = null;
     }
   };
-  function markup() {
+  function markup$1() {
     const models = MODELS.map(
       (model) => `<div class="seg-item" ${CONTROL} data-model="${model.id}" title="${escapeHtml(model.note)}">${escapeHtml(model.label)}</div>`
     ).join("");
@@ -10993,7 +11146,727 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       if (!spec) return "";
       return `<div class="field"><div class="field-head"><span class="t-label">${spec.label}</span><span class="field-val" data-cap-out="${key}">${spec.format(SRT_DEFAULTS[key])}</span></div><div class="slider-row"><div data-cap="${key}"></div></div></div>`;
     };
-    return `<div class="zones"><div class="zone"><div class="field"><span class="t-label">Faixa de áudio</span><div data-track-pick></div><p class="field-note">A faixa vai inteira para o motor, com os silêncios entre os clipes — é o que faz uma frase cortada no meio sair inteira.</p></div><div class="field"><span class="t-label">Idioma</span><div data-lang-pick></div></div><div class="field"><span class="t-label">Qualidade</span><div class="seg" data-model-seg>${models}</div><p class="field-note">O modelo baixa sozinho na primeira vez.</p></div></div><div class="zone"><div class="field"><span class="t-label">Formato da legenda</span><div class="preset-rail" data-srt-rail>${srtPresets}</div><p class="field-note" data-srt-note></p></div><div class="field"><span class="t-label">Linhas</span><div class="seg" data-lines-seg>${lineCounts}</div></div>` + capSlider("maxLineChars") + capSlider("readingCps") + `<p class="field-note">A legenda fica na tela pelo tempo de <b>ler</b>, não pelo de falar — 17 car/s é a régua de streaming, 20 é o teto.</p><div data-cap-preview></div><div class="cc-redo" ${CONTROL} data-redo hidden>Refazer o .srt com estes ajustes</div><div class="sil-advanced"><div class="sil-advanced-summary" ${CONTROL} data-cap-adv-toggle><span class="sil-advanced-title">Tempos e intervalos</span><span class="sil-advanced-icon" data-cap-adv-icon>▾</span></div><div class="sil-advanced-content" data-cap-adv-content hidden>` + capSlider("minCueSeconds") + capSlider("maxCueSeconds") + capSlider("gapSeconds") + capSlider("gapFrames") + `<p class="field-note"><b>Pausa que quebra</b> é o silêncio na fala que encerra uma legenda. <b>Intervalo</b> é o buraco entre uma legenda e a seguinte, em quadros da sua sequência — os tempos são encostados na grade de quadros, para nada entrar no meio de um.</p></div></div></div><div class="zone"><div class="field"><div class="field-head"><span class="t-label">Glossário do projeto</span></div><textarea class="dl-urls" data-glossary spellcheck="false" rows="4" placeholder="Framelab&#10;Sidy Furtado&#10;nome do cliente"></textarea><p class="field-note" data-glossary-note></p></div></div><div class="zone"><div class="cc-heads-up"><p class="cc-heads-up-title">Na primeira vez o macOS vai perguntar duas coisas</p><p class="cc-heads-up-body"><b>Pasta da sua mídia</b> (Google Drive, Documentos…): <b>permita</b> — é de onde o áudio é lido.<br><b>Microfone</b>: <b>pode negar</b>. O plugin nunca grava áudio; o pedido vem de uma biblioteca que o conversor de áudio carrega e não usa. Negando, tudo funciona igual.</p></div></div><div class="zone is-wide"><div class="sil-empty" data-empty><p class="sil-empty-title">Pronto para transcrever</p><p class="sil-empty-desc">Escolha a faixa acima e transcreva. O resultado vira um .srt no seu projeto, pronto para arrastar para a timeline.</p></div><div class="cc-actions"><div class="org-scan" ${CONTROL} data-scan>Reler a sequência</div><div class="cc-learn" ${CONTROL} data-learn title="Compara o que o plugin escreveu com o que você corrigiu à mão">Aprender com minhas correções</div></div><div class="sil-manual" data-manual hidden></div><div class="cc-progress" data-progress hidden></div><div class="sil-report" data-report></div></div></div>`;
+    return `<div class="zones"><div class="zone"><div class="field"><span class="t-label">Faixa de áudio</span><div data-track-pick></div><p class="field-note">A faixa vai inteira para o motor, com os silêncios entre os clipes — é o que faz uma frase cortada no meio sair inteira.</p></div><div class="field"><span class="t-label">Idioma</span><div data-lang-pick></div></div><div class="field"><span class="t-label">Qualidade</span><div class="seg" data-model-seg>${models}</div><p class="field-note">O modelo baixa sozinho na primeira vez.</p></div></div><div class="zone"><div class="field"><span class="t-label">Formato da legenda</span><div class="preset-rail" data-srt-rail>${srtPresets}</div><p class="field-note" data-srt-note></p></div><div class="field"><span class="t-label">Linhas</span><div class="seg" data-lines-seg>${lineCounts}</div></div>` + capSlider("maxLineChars") + capSlider("minCueSeconds") + capSlider("gapFrames") + `<p class="field-note">Com 0 quadros de intervalo, a legenda seguinte entra imediatamente sem piscar tela preta, exceto quando houver momento de silêncio na fala.</p><div data-cap-preview></div><div class="cc-redo" ${CONTROL} data-redo hidden>Refazer o .srt com estes ajustes</div><div class="sil-advanced"><div class="sil-advanced-summary" ${CONTROL} data-cap-adv-toggle><span class="sil-advanced-title">Ajustes adicionais</span><span class="sil-advanced-icon" data-cap-adv-icon>▾</span></div><div class="sil-advanced-content" data-cap-adv-content hidden>` + capSlider("readingCps") + capSlider("maxCueSeconds") + capSlider("gapSeconds") + `<p class="field-note"><b>Pausa para silêncio</b> é o tempo de silêncio na fala que encerra uma legenda em vez de emendar na próxima. <b>Velocidade de leitura</b> garante tempo de leitura aos olhos.</p></div></div></div><div class="zone"><div class="field"><div class="field-head"><span class="t-label">Glossário do projeto</span></div><textarea class="dl-urls" data-glossary spellcheck="false" rows="4" placeholder="Framelab&#10;Sidy Furtado&#10;nome do cliente"></textarea><p class="field-note" data-glossary-note></p></div></div><div class="zone"><div class="cc-heads-up"><p class="cc-heads-up-title">Na primeira vez o macOS vai perguntar duas coisas</p><p class="cc-heads-up-body"><b>Pasta da sua mídia</b> (Google Drive, Documentos…): <b>permita</b> — é de onde o áudio é lido.<br><b>Microfone</b>: <b>pode negar</b>. O plugin nunca grava áudio; o pedido vem de uma biblioteca que o conversor de áudio carrega e não usa. Negando, tudo funciona igual.</p></div></div><div class="zone is-wide"><div class="sil-empty" data-empty><p class="sil-empty-title">Pronto para transcrever</p><p class="sil-empty-desc">Escolha a faixa acima e transcreva. O resultado vira um .srt no seu projeto, pronto para arrastar para a timeline.</p></div><div class="cc-actions"><div class="org-scan" ${CONTROL} data-scan>Reler a sequência</div><div class="cc-learn" ${CONTROL} data-learn title="Compara o que o plugin escreveu com o que você corrigiu à mão">Aprender com minhas correções</div></div><div class="sil-manual" data-manual hidden></div><div class="cc-progress" data-progress hidden></div><div class="sil-report" data-report></div></div></div>`;
+  }
+  const TIMING = /^\s*(-?\d{1,3}:\d{2}:\d{2}[,.]\d{1,3}|\d{1,3}:\d{2}[,.]\d{1,3})\s*-->\s*/;
+  function measureStyle(doc) {
+    let widest = 0;
+    let mostLines = 1;
+    for (const cue of doc.cues) {
+      mostLines = Math.max(mostLines, cue.lines.length);
+      for (const line of cue.lines) {
+        widest = Math.max(widest, line.length);
+      }
+    }
+    return {
+      // Presos a uma faixa utilizável: um arquivo de uma linha só com
+      // 120 caracteres não vira régua, e um com duas palavras também não.
+      maxLineChars: Math.min(56, Math.max(24, widest || 42)),
+      maxLines: Math.min(3, Math.max(1, mostLines))
+    };
+  }
+  function parseSrt(raw) {
+    const text2 = raw.replace(/^﻿/, "");
+    const eol = text2.includes("\r\n") ? "\r\n" : "\n";
+    const linhas = text2.split(/\r\n|\r|\n/);
+    const cues = [];
+    const headerLines = [];
+    let i = 0;
+    while (i < linhas.length && !TIMING.test(linhas[i])) {
+      const olhaFrente = linhas[i + 1] !== void 0 && TIMING.test(linhas[i + 1]);
+      if (olhaFrente) break;
+      headerLines.push(linhas[i]);
+      i += 1;
+    }
+    const header = headerLines.join(eol).trim() ? headerLines.join(eol) : "";
+    if (!header) i = 0;
+    let seq = 0;
+    while (i < linhas.length) {
+      let index = 0;
+      if (!TIMING.test(linhas[i]) && /^\s*\d+\s*$/.test(linhas[i])) {
+        index = Number.parseInt(linhas[i].trim(), 10);
+        i += 1;
+      }
+      if (i >= linhas.length) break;
+      if (!TIMING.test(linhas[i])) {
+        i += 1;
+        continue;
+      }
+      const timing = linhas[i].trim();
+      i += 1;
+      const corpo = [];
+      while (i < linhas.length && linhas[i].trim() !== "" && !TIMING.test(linhas[i])) {
+        if (/^\s*\d+\s*$/.test(linhas[i]) && linhas[i + 1] && TIMING.test(linhas[i + 1])) {
+          break;
+        }
+        corpo.push(linhas[i]);
+        i += 1;
+      }
+      while (i < linhas.length && linhas[i].trim() === "") i += 1;
+      seq += 1;
+      cues.push({ index: index || seq, timing, lines: corpo });
+    }
+    return { cues, eol, header };
+  }
+  function serializeSrt(doc) {
+    const partes = doc.cues.map(
+      (cue, ordem) => `${ordem + 1}${doc.eol}${cue.timing}${doc.eol}${cue.lines.join(doc.eol)}`
+    );
+    const corpo = partes.join(doc.eol + doc.eol) + doc.eol;
+    const cabeca = doc.header ? doc.header.trimEnd() + doc.eol + doc.eol : "";
+    return cabeca + corpo;
+  }
+  const MAX_URL = 5500;
+  const MAX_POR_LOTE = 48;
+  const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36";
+  function semPalavras(texto) {
+    return !/\p{Letter}/u.test(texto);
+  }
+  function montarUrl(base, textos) {
+    return base + textos.map((t) => `&q=${encodeURIComponent(t)}`).join("");
+  }
+  function loteDe(textos, base, maxUrl = MAX_URL, maxItens = MAX_POR_LOTE) {
+    const lotes = [];
+    let atual = [];
+    for (const texto of textos) {
+      const tentativa = [...atual, texto];
+      if (atual.length > 0 && (tentativa.length > maxItens || montarUrl(base, tentativa).length > maxUrl)) {
+        lotes.push(atual);
+        atual = [texto];
+      } else {
+        atual = tentativa;
+      }
+    }
+    if (atual.length > 0) lotes.push(atual);
+    return lotes;
+  }
+  function lerResposta(bruto, esperados) {
+    let dados;
+    try {
+      dados = JSON.parse(bruto);
+    } catch {
+      return null;
+    }
+    if (!Array.isArray(dados) || dados.length !== esperados) {
+      return null;
+    }
+    const texts = [];
+    let detected = null;
+    for (const item of dados) {
+      if (typeof item === "string") {
+        texts.push(item);
+      } else if (Array.isArray(item) && typeof item[0] === "string") {
+        texts.push(item[0]);
+        if (!detected && typeof item[1] === "string") detected = item[1];
+      } else {
+        return null;
+      }
+    }
+    return { texts, detected };
+  }
+  async function pedirGoogle(textos, from, to) {
+    const base = `https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=${encodeURIComponent(from)}&tl=${encodeURIComponent(to)}`;
+    const resposta = await fetch(montarUrl(base, textos), {
+      headers: { "User-Agent": UA }
+    });
+    if (!resposta.ok) return null;
+    return lerResposta(await resposta.text(), textos.length);
+  }
+  async function pedirMyMemory(textos, from, to) {
+    const par = `${from === "auto" ? "autodetect" : from}|${to}`;
+    const saida = [];
+    for (const texto of textos) {
+      const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(texto)}&langpair=${encodeURIComponent(par)}`;
+      const resposta = await fetch(url);
+      if (!resposta.ok) return null;
+      const dados = await resposta.json();
+      const traduzido = dados?.responseData?.translatedText;
+      if (typeof traduzido !== "string") return null;
+      saida.push(traduzido);
+    }
+    return { texts: saida, detected: null };
+  }
+  async function translate(entradas, options) {
+    const traduzir = entradas.filter((t) => t.trim() !== "" && !semPalavras(t));
+    const mapa = /* @__PURE__ */ new Map();
+    const base = `https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=${options.from}&tl=${options.to}`;
+    const lotes = loteDe([...new Set(traduzir)], base);
+    const total = lotes.reduce((soma, lote) => soma + lote.length, 0);
+    let feitos = 0;
+    let detected = null;
+    let usouReserva = false;
+    for (const lote of lotes) {
+      if (options.cancelled?.()) {
+        return { ok: false, texts: [], detected, error: "cancelled" };
+      }
+      let resposta = null;
+      try {
+        resposta = await pedirGoogle(lote, options.from, options.to);
+      } catch {
+        resposta = null;
+      }
+      if (!resposta) {
+        try {
+          resposta = await pedirMyMemory(lote, options.from, options.to);
+          usouReserva = true;
+        } catch {
+          resposta = null;
+        }
+      }
+      if (!resposta) {
+        return {
+          ok: false,
+          texts: [],
+          detected,
+          error: usouReserva ? "both-engines-failed" : "engine-failed"
+        };
+      }
+      if (!detected) detected = resposta.detected;
+      lote.forEach((original, i) => mapa.set(original, resposta.texts[i]));
+      feitos += lote.length;
+      options.onProgress?.(feitos, total);
+    }
+    return {
+      ok: true,
+      texts: entradas.map((t) => mapa.get(t) ?? t),
+      detected,
+      error: null
+    };
+  }
+  const FIM_DE_FRASE = /[.!?…]["'”’)\]]?\s*$/;
+  const MAX_BLOCOS_POR_FRASE = 8;
+  function agruparFrases(textos) {
+    const grupos = [];
+    let atual = [];
+    textos.forEach((texto, i) => {
+      const limpo = texto.trim();
+      if (limpo === "" || !/\p{Letter}/u.test(limpo)) {
+        if (atual.length > 0) grupos.push(atual);
+        grupos.push([i]);
+        atual = [];
+        return;
+      }
+      atual.push(i);
+      if (FIM_DE_FRASE.test(limpo) || atual.length >= MAX_BLOCOS_POR_FRASE) {
+        grupos.push(atual);
+        atual = [];
+      }
+    });
+    if (atual.length > 0) grupos.push(atual);
+    return grupos;
+  }
+  function redistribuir(traduzido, pesos) {
+    const n = pesos.length;
+    if (n <= 1) return [traduzido.trim()];
+    const palavras = traduzido.trim().split(/\s+/).filter(Boolean);
+    if (palavras.length === 0) return pesos.map(() => "");
+    if (palavras.length <= n) {
+      return pesos.map((_, i) => palavras[i] ?? "");
+    }
+    const somaPesos = pesos.reduce((soma, p) => soma + p, 0) || n;
+    const partes = [];
+    let cursor = 0;
+    let restam = palavras.length;
+    for (let i = 0; i < n; i += 1) {
+      if (i === n - 1) {
+        partes.push(palavras.slice(cursor).join(" "));
+        break;
+      }
+      const blocosDepois = n - i - 1;
+      const cota = Math.round(pesos[i] / somaPesos * palavras.length);
+      const teto = restam - blocosDepois;
+      const levar = Math.max(1, Math.min(cota, teto));
+      partes.push(palavras.slice(cursor, cursor + levar).join(" "));
+      cursor += levar;
+      restam -= levar;
+    }
+    return partes;
+  }
+  function juntar(lines) {
+    return lines.join(" ").replace(/\s+/g, " ").trim();
+  }
+  async function translateSrt(raw, options) {
+    const doc = parseSrt(raw);
+    if (doc.cues.length === 0) {
+      return {
+        ok: false,
+        content: null,
+        translated: 0,
+        total: 0,
+        detected: null,
+        error: "empty"
+      };
+    }
+    const entradas = doc.cues.map((cue) => juntar(cue.lines));
+    const grupos = agruparFrases(entradas);
+    const frases = grupos.map((g) => g.map((i) => entradas[i]).join(" ").trim());
+    const resultado = await translate(frases, options);
+    if (!resultado.ok) {
+      return {
+        ok: false,
+        content: null,
+        translated: 0,
+        total: doc.cues.length,
+        detected: resultado.detected,
+        error: resultado.error
+      };
+    }
+    const estilo = measureStyle(doc);
+    const regra = {
+      ...SRT_DEFAULTS,
+      maxLineChars: estilo.maxLineChars,
+      maxLines: estilo.maxLines
+    };
+    function embrulhar(texto) {
+      const aperto = wrap(texto, regra);
+      const coube = aperto.every((linha) => linha.length <= regra.maxLineChars);
+      if (coube || regra.maxLines >= 3) {
+        return aperto;
+      }
+      return wrap(texto, { ...regra, maxLines: regra.maxLines + 1 });
+    }
+    const porBloco = /* @__PURE__ */ new Map();
+    grupos.forEach((grupo, g) => {
+      const traduzida = resultado.texts[g] ?? frases[g];
+      const pesos = grupo.map((i) => entradas[i].length || 1);
+      const partes = redistribuir(traduzida, pesos);
+      grupo.forEach((indice, k) => porBloco.set(indice, partes[k] ?? ""));
+    });
+    let traduzidos = 0;
+    const saida = {
+      ...doc,
+      cues: doc.cues.map((cue, i) => {
+        const antes = entradas[i];
+        const depois = porBloco.get(i) ?? antes;
+        if (antes && depois.trim() !== "" && depois !== antes) traduzidos += 1;
+        return {
+          ...cue,
+          // O relógio atravessa como string. É a invariante da ferramenta.
+          timing: cue.timing,
+          lines: depois.trim() === "" ? cue.lines : embrulhar(depois.trim())
+        };
+      })
+    };
+    return {
+      ok: true,
+      content: serializeSrt(saida),
+      translated: traduzidos,
+      total: doc.cues.length,
+      detected: resultado.detected,
+      error: null
+    };
+  }
+  function previewPairs(raw, content, quantos = 3) {
+    const a = parseSrt(raw).cues;
+    const b = parseSrt(content).cues;
+    const saida = [];
+    for (let i = 0; i < Math.min(quantos, a.length, b.length); i += 1) {
+      const antes = juntar(a[i].lines);
+      if (!antes) continue;
+      saida.push({ antes, depois: juntar(b[i].lines) });
+    }
+    return saida;
+  }
+  const TARGET_LANGUAGES = [
+    { id: "pt", label: "Português" },
+    { id: "en", label: "Inglês" },
+    { id: "es", label: "Espanhol" },
+    { id: "fr", label: "Francês" },
+    { id: "it", label: "Italiano" },
+    { id: "de", label: "Alemão" },
+    { id: "nl", label: "Holandês" },
+    { id: "pl", label: "Polonês" },
+    { id: "ru", label: "Russo" },
+    { id: "tr", label: "Turco" },
+    { id: "ar", label: "Árabe" },
+    { id: "hi", label: "Híndi" },
+    { id: "id", label: "Indonésio" },
+    { id: "ja", label: "Japonês" },
+    { id: "ko", label: "Coreano" },
+    { id: "zh", label: "Chinês" }
+  ];
+  const SOURCE_LANGUAGES = [
+    { id: "auto", label: "Detectar" },
+    ...TARGET_LANGUAGES
+  ];
+  function labelOf(id) {
+    if (!id) return "—";
+    const achado = SOURCE_LANGUAGES.find((l) => l.id === id);
+    return achado?.label ?? id.toUpperCase();
+  }
+  async function pickSrtFile() {
+    const storage = uxpModule("uxp")?.storage;
+    const lfs = storage?.localFileSystem;
+    if (!lfs?.getFileForOpening) {
+      throw new Error("Este build do Premiere não expõe o seletor de arquivos do UXP.");
+    }
+    const escolhido = await lfs.getFileForOpening({ types: ["srt", ".srt", "vtt", ".vtt"] });
+    const entrada = Array.isArray(escolhido) ? escolhido[0] : escolhido;
+    if (!entrada) {
+      return null;
+    }
+    return {
+      name: entrada.name,
+      nativePath: entrada.nativePath ?? null,
+      text: await entrada.read()
+    };
+  }
+  async function findSrtInProject() {
+    const ppro = getPremiere();
+    if (!ppro) return [];
+    const api = ppro;
+    const project2 = await api.Project.getActiveProject();
+    if (!project2) return [];
+    const achados = [];
+    const vistos = /* @__PURE__ */ new Set();
+    async function descer(pasta, profundidade) {
+      if (profundidade > 8) return;
+      let itens = [];
+      try {
+        itens = await pasta.getItems();
+      } catch {
+        return;
+      }
+      for (const item of itens) {
+        try {
+          const comoPasta = tentarPasta(api, item);
+          if (comoPasta) {
+            await descer(comoPasta, profundidade + 1);
+            continue;
+          }
+          const clipe = api.ClipProjectItem.cast(item);
+          const caminho = await clipe.getMediaFilePath().catch(() => "");
+          if (caminho && /\.(srt|vtt)$/i.test(caminho) && !vistos.has(caminho)) {
+            vistos.add(caminho);
+            const nome = item.name ?? caminho.split("/").pop() ?? caminho;
+            achados.push({ name: nome, path: caminho });
+          }
+        } catch {
+        }
+      }
+    }
+    try {
+      await descer(await project2.getRootItem(), 0);
+    } catch {
+      return achados;
+    }
+    return achados;
+  }
+  function tentarPasta(ppro, item) {
+    try {
+      const pasta = ppro.FolderItem.cast(item);
+      return pasta && typeof pasta.getItems === "function" ? pasta : null;
+    } catch {
+      return null;
+    }
+  }
+  const COPY_SCRIPT = "translate-copy.command";
+  const COPY_OUT = "tr-input.srt";
+  const COPY_DONE = "tr-copy-done.txt";
+  async function readAnyPath(nativePath2) {
+    const space = await workspace();
+    for (const nome of [COPY_OUT, COPY_DONE]) {
+      await remove(space, nome);
+    }
+    const script = [
+      "#!/bin/bash",
+      "# Gerado pelo Framelab — traz a legenda para dentro. Pode apagar.",
+      "set -u",
+      `WORK=${shellQuote(space.nativeBase)}`,
+      `if cp ${shellQuote(nativePath2)} "$WORK/${COPY_OUT}" 2>/dev/null; then`,
+      `  printf ok > "$WORK/${COPY_DONE}"`,
+      "else",
+      `  printf falhou > "$WORK/${COPY_DONE}"`,
+      "fi",
+      ""
+    ].join("\n");
+    await write(space, COPY_SCRIPT, script, true);
+    const enviado = await dispatch(COPY_SCRIPT);
+    if (enviado.mode === "denied") {
+      throw new Error("o assistente não pôde ser iniciado para ler o arquivo");
+    }
+    const limite = Date.now() + 15e3;
+    while (Date.now() < limite) {
+      const estado = readText(space, COPY_DONE);
+      if (estado === "ok") {
+        const texto = readText(space, COPY_OUT);
+        if (texto) return texto;
+        throw new Error("o arquivo foi copiado mas veio vazio");
+      }
+      if (estado === "falhou") {
+        throw new Error("não consegui ler esse arquivo — ele ainda está no lugar?");
+      }
+      await wait$1(200);
+    }
+    await withdraw(enviado.ticket);
+    throw new Error("a leitura do arquivo passou do tempo");
+  }
+  let releaseDocument = null;
+  let cancelActive = null;
+  const translateTool = {
+    id: "translate",
+    name: "Traduzir Legenda",
+    summary: "Traduz um .srt mantendo os tempos",
+    hint: "Traga um .srt do disco ou do projeto aberto. A frase é traduzida inteira, e os tempos saem idênticos aos que entraram.",
+    category: "texto",
+    glyph: "text",
+    available: true,
+    usesSelection: false,
+    mount(container, context) {
+      let carregada = null;
+      let from = "auto";
+      let to = "pt";
+      let busy = false;
+      let ultimoSrt = null;
+      container.innerHTML = markup();
+      const vazioEl = container.querySelector("[data-empty]");
+      const arquivoEl = container.querySelector("[data-file]");
+      const importarEl = container.querySelector("[data-import]");
+      const projetoEl = container.querySelector("[data-project]");
+      const listaEl = container.querySelector("[data-list]");
+      const fromEl = container.querySelector("[data-from]");
+      const toEl = container.querySelector("[data-to]");
+      const previaEl = container.querySelector("[data-preview]");
+      context.setApplyLabel("TRADUZIR");
+      context.setApplyEnabled(false);
+      context.setResetLabel("LIMPAR");
+      context.setResetHandler(null);
+      context.setRefreshHandler(null);
+      const fromPick = fromEl ? mountDropdown(fromEl, {
+        options: () => SOURCE_LANGUAGES.map((l) => ({ id: l.id, label: l.label })),
+        selected: () => from,
+        onPick: (id) => {
+          from = id;
+          fromPick?.render();
+        }
+      }) : null;
+      const toPick = toEl ? mountDropdown(toEl, {
+        options: () => TARGET_LANGUAGES.map((l) => ({ id: l.id, label: l.label })),
+        selected: () => to,
+        onPick: (id) => {
+          to = id;
+          toPick?.render();
+        }
+      }) : null;
+      const fechar = (alvo) => {
+        fromPick?.closeUnless(alvo);
+        toPick?.closeUnless(alvo);
+      };
+      const noPonteiro = (e) => fechar(e.target);
+      const naTecla = (e) => {
+        if (e.key === "Escape") fechar(null);
+      };
+      document.addEventListener("click", noPonteiro, true);
+      document.addEventListener("keydown", naTecla, true);
+      releaseDocument = () => {
+        document.removeEventListener("click", noPonteiro, true);
+        document.removeEventListener("keydown", naTecla, true);
+      };
+      function carregar(nome, texto) {
+        const doc = parseSrt(texto);
+        if (doc.cues.length === 0) {
+          context.setStatus(
+            `"${nome}" não parece uma legenda — não achei nenhum bloco com tempo.`,
+            "error"
+          );
+          return;
+        }
+        carregada = { name: nome, text: texto, cues: doc.cues.length };
+        ultimoSrt = null;
+        renderArquivo();
+        esconderLista();
+        renderPrevia([]);
+        context.setApplyEnabled(true);
+        context.setResetHandler(() => limpar());
+        context.setStatus(
+          `${doc.cues.length} ${doc.cues.length === 1 ? "bloco" : "blocos"} lidos de "${nome}".`,
+          "done"
+        );
+      }
+      importarEl?.addEventListener("click", () => {
+        void (async () => {
+          try {
+            const escolhido = await pickSrtFile();
+            if (escolhido) carregar(escolhido.name, escolhido.text);
+          } catch (cause) {
+            context.setStatus(describeError$1(cause), "error");
+          }
+        })();
+      });
+      projetoEl?.addEventListener("click", () => void listarProjeto());
+      async function listarProjeto() {
+        if (busy) return;
+        busy = true;
+        if (projetoEl) {
+          setDisabled(projetoEl, true);
+          projetoEl.textContent = "Procurando…";
+        }
+        try {
+          const achados = await findSrtInProject();
+          if (achados.length === 0) {
+            esconderLista();
+            context.setStatus(
+              "Nenhum .srt no projeto aberto. Use Importar para trazer do disco.",
+              "idle"
+            );
+            return;
+          }
+          if (listaEl) {
+            listaEl.hidden = false;
+            listaEl.innerHTML = '<p class="tr-list-title">No projeto</p>' + achados.map(
+              (a) => `<div class="tr-list-item" ${CONTROL} data-path="${escapeHtml(a.path)}" data-name="${escapeHtml(a.name)}">${escapeHtml(a.name)}</div>`
+            ).join("");
+          }
+          context.setStatus(
+            `${achados.length} ${achados.length === 1 ? "legenda" : "legendas"} no projeto.`,
+            "done"
+          );
+        } catch (cause) {
+          context.setStatus(describeError$1(cause), "error");
+        } finally {
+          busy = false;
+          if (projetoEl) {
+            setDisabled(projetoEl, false);
+            projetoEl.textContent = "Buscar no projeto";
+          }
+        }
+      }
+      listaEl?.addEventListener("click", (event) => {
+        const item = event.target?.closest("[data-path]");
+        const caminho = item?.dataset.path;
+        const nome = item?.dataset.name ?? "legenda.srt";
+        if (!caminho || busy) return;
+        void (async () => {
+          busy = true;
+          context.setStatus("Lendo a legenda…");
+          try {
+            carregar(nome, await readAnyPath(caminho));
+          } catch (cause) {
+            context.setStatus(describeError$1(cause), "error");
+          } finally {
+            busy = false;
+          }
+        })();
+      });
+      context.setApplyHandler(async () => {
+        if (!carregada || busy) return;
+        busy = true;
+        let cancelado = false;
+        cancelActive = () => {
+          cancelado = true;
+        };
+        context.setApplyEnabled(false);
+        context.setApplyLabel("TRADUZINDO…");
+        try {
+          const resultado = await translateSrt(carregada.text, {
+            from,
+            to,
+            cancelled: () => cancelado,
+            onProgress: (feitos, total) => context.setStatus(`Traduzindo… ${feitos} de ${total}`)
+          });
+          if (!resultado.ok || !resultado.content) {
+            context.setStatus(descreveFalha(resultado.error), "error");
+            return;
+          }
+          const nome = nomeTraduzido(carregada.name, to);
+          const espaco = await workspace();
+          await write(espaco, nome, resultado.content);
+          ultimoSrt = { nome, conteudo: resultado.content };
+          renderPrevia(previewPairs(carregada.text, resultado.content, 3));
+          const caminho = nativePath(espaco, nome);
+          let noProjeto = false;
+          try {
+            const ppro = getPremiere();
+            const project2 = ppro ? await ppro.Project.getActiveProject() : null;
+            if (project2) {
+              noProjeto = await project2.importFiles([caminho], true) === true;
+            }
+          } catch {
+          }
+          const origem = from === "auto" && resultado.detected ? `${labelOf(resultado.detected)} → ${labelOf(to)}` : `${labelOf(from)} → ${labelOf(to)}`;
+          context.setStatus(
+            `${resultado.translated} de ${resultado.total} blocos traduzidos · ${origem} · ` + (noProjeto ? "o .srt está no seu projeto" : `salvo em ${caminho}`),
+            "done"
+          );
+        } catch (cause) {
+          context.setStatus(describeError$1(cause), "error");
+        } finally {
+          busy = false;
+          cancelActive = null;
+          context.setApplyLabel("TRADUZIR");
+          context.setApplyEnabled(!!carregada);
+        }
+      });
+      function limpar() {
+        carregada = null;
+        ultimoSrt = null;
+        renderArquivo();
+        renderPrevia([]);
+        esconderLista();
+        context.setApplyEnabled(false);
+        context.setResetHandler(null);
+        context.setStatus("", "idle");
+      }
+      function renderArquivo() {
+        if (!arquivoEl) return;
+        if (!carregada) {
+          arquivoEl.hidden = true;
+          arquivoEl.innerHTML = "";
+          if (vazioEl) vazioEl.hidden = false;
+          return;
+        }
+        if (vazioEl) vazioEl.hidden = true;
+        arquivoEl.hidden = false;
+        arquivoEl.innerHTML = `<span class="tr-file-name">${escapeHtml(carregada.name)}</span><span class="tr-file-meta">${carregada.cues} blocos</span><span class="tr-file-swap" ${CONTROL} data-swap>trocar</span>`;
+        arquivoEl.querySelector("[data-swap]")?.addEventListener("click", () => limpar());
+      }
+      function renderPrevia(pares) {
+        if (!previaEl) return;
+        if (pares.length === 0) {
+          previaEl.hidden = true;
+          previaEl.innerHTML = "";
+          return;
+        }
+        previaEl.hidden = false;
+        previaEl.innerHTML = '<p class="tr-prev-title">Como ficou</p>' + pares.map(
+          (p) => `<div class="tr-prev-pair"><span class="tr-prev-a">${escapeHtml(p.antes)}</span><span class="tr-prev-b">${escapeHtml(p.depois)}</span></div>`
+        ).join("");
+      }
+      function esconderLista() {
+        if (listaEl) {
+          listaEl.hidden = true;
+          listaEl.innerHTML = "";
+        }
+      }
+    },
+    unmount() {
+      cancelActive?.();
+      cancelActive = null;
+      releaseDocument?.();
+      releaseDocument = null;
+    }
+  };
+  function nomeTraduzido(original, para) {
+    const semExt = original.replace(/\.(srt|vtt)$/i, "");
+    const limpo = semExt.replace(/^\[[A-Za-z]{2}(-[A-Za-z]{2,4})?\]\s*/, "").replace(/\.[a-z]{2}(-[A-Za-z]{2,4})?$/i, "");
+    return `[${para.toUpperCase()}] ${limpo}.srt`;
+  }
+  function descreveFalha(code) {
+    switch (code) {
+      case "empty":
+        return "Esse arquivo não tem nenhum bloco de legenda.";
+      case "cancelled":
+        return "Tradução cancelada.";
+      case "engine-failed":
+        return "O tradutor não respondeu. Confira a internet e tente de novo.";
+      case "both-engines-failed":
+        return "Os dois tradutores recusaram. Pode ser limite de uso — espere alguns minutos e tente de novo.";
+      default:
+        return "A tradução não terminou.";
+    }
+  }
+  function markup() {
+    return `<div class="zones"><div class="zone"><div class="field"><span class="t-label">A legenda</span><div class="tr-acts" data-empty><div class="tr-btn" ${CONTROL} data-import>Importar arquivo…</div><div class="tr-btn" ${CONTROL} data-project>Buscar no projeto</div></div><div class="tr-file" data-file hidden></div><div class="tr-list" data-list hidden></div></div></div><div class="zone"><div class="field"><span class="t-label">Traduzir de</span><div data-from></div></div><div class="field"><span class="t-label">Para</span><div data-to></div><p class="field-note">Os tempos de cada bloco saem idênticos aos que entraram — só o texto muda. O arquivo novo entra no seu projeto ao lado do original.</p></div></div><div class="zone is-wide"><div class="tr-prev" data-preview hidden></div></div></div>`;
   }
   const categories = [
     { id: "edicao", name: "Edição" },
@@ -11007,6 +11880,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
     fillersTool,
     flowTool,
     captionsTool,
+    translateTool,
     downloadTool,
     organizeTool
   ];
@@ -11246,7 +12120,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
   }
   const PRODUCT_NAME = "Framelab";
   const PRODUCT_TAGLINE = "Premiere";
-  const VERSION = "0.3.3";
+  const VERSION = "0.4.0";
   class ProductShell {
     constructor(root) {
       this.updateBadgeEl = null;

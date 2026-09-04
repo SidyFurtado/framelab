@@ -2338,3 +2338,114 @@ body {
 .cc-redo[aria-disabled="true"] { color: var(--leader-mute); border-color: var(--line); }
 .cc-redo:focus-visible { outline: 1px solid var(--tungsten); outline-offset: 1px; }
 .cc-redo[hidden] { display: none !important; }
+
+
+/* ── Traduzir Legenda ───────────────────────────────────────────────
+ *
+ * Sem zona de arrasto: o Premiere não entrega o evento de soltar
+ * arquivo num painel UXP. Ficaram os dois caminhos que funcionam,
+ * empilhados — num painel de 320px, lado a lado os rótulos quebravam
+ * em duas linhas cada.
+ */
+.tr-acts { display: flex; flex-direction: column; gap: 7px; }
+.tr-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 34px;
+  border: 1px solid var(--line-strong);
+  color: var(--leader-dim);
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 500;
+  transition: color 160ms var(--ease-out), border-color 160ms;
+}
+.tr-btn:hover:not([aria-disabled="true"]) { color: var(--leader); border-color: var(--tungsten); }
+.tr-btn[aria-disabled="true"] { color: var(--leader-mute); border-color: var(--line); }
+.tr-btn:focus-visible { outline: 1px solid var(--tungsten); outline-offset: 1px; }
+
+.tr-file {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.015);
+}
+.tr-file-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--leader);
+}
+.tr-file-meta {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--leader-faint);
+  font-variant-numeric: tabular-nums;
+}
+.tr-file-swap {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--leader-faint);
+  border-bottom: 1px solid var(--line);
+}
+.tr-file-swap:hover { color: var(--tungsten); border-bottom-color: var(--tungsten); }
+
+.tr-list { margin-top: 9px; border: 1px solid var(--line); }
+.tr-list-title {
+  margin: 0;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 8.5px;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--leader-mute);
+}
+.tr-list-item {
+  padding: 8px 10px;
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--leader-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tr-list-item + .tr-list-item { border-top: 1px solid rgba(237, 231, 217, 0.06); }
+.tr-list-item:hover { color: var(--leader); background: rgba(237, 231, 217, 0.035); }
+.tr-list-item:focus-visible { outline: 1px solid var(--tungsten); outline-offset: -2px; }
+
+/* antes e depois, um sobre o outro: a comparação é vertical porque a
+   frase traduzida quase nunca tem o comprimento da original */
+.tr-prev { border: 1px solid var(--line); }
+.tr-prev-title {
+  margin: 0;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 8.5px;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--leader-mute);
+}
+.tr-prev-pair { padding: 8px 10px; }
+.tr-prev-pair + .tr-prev-pair { border-top: 1px solid rgba(237, 231, 217, 0.06); }
+.tr-prev-a,
+.tr-prev-b {
+  display: block;
+  font-family: var(--sans);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+.tr-prev-a { color: var(--leader-mute); }
+.tr-prev-b { color: var(--leader); margin-top: 3px; }
+.tr-prev-b::before { content: "→ "; color: var(--tungsten); }

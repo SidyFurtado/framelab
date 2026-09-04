@@ -312,7 +312,7 @@ export async function transcribeTracks(
     stages.push(`motor: ${result.error ?? "sem resposta"}`);
     return {
       ok: false,
-      message: describeWhisperError(result.error),
+      message: describeWhisperError(result.error, result.detected),
       imported: 0,
       stages,
       srtPath: null,

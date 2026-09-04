@@ -23,7 +23,7 @@ import { startAgentHeartbeat } from "../tools/download/runner";
 
 const PRODUCT_NAME = "Framelab";
 const PRODUCT_TAGLINE = "Premiere";
-const VERSION = "0.3.3";
+const VERSION = "0.4.0";
 
 /**
  * Product Shell: top bar, navigator, active Tool workspace, action bar

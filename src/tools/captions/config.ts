@@ -61,10 +61,10 @@ export async function readConfig(): Promise<CaptionConfig> {
  * faltar cai no padrão.
  */
 export const SRT_RANGE: Record<keyof SrtOptions, [number, number]> = {
-  maxLineChars: [16, 64],
+  maxLineChars: [16, 70],
   maxLines: [1, 3],
   gapSeconds: [0.2, 3],
-  minCueSeconds: [0.3, 4],
+  minCueSeconds: [0.3, 5],
   maxCueSeconds: [1.5, 12],
   readingCps: [0, 30],
   gapFrames: [0, 12],

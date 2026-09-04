@@ -93,7 +93,7 @@ export const MODELS: readonly WhisperModel[] = [
   {
     id: "small",
     label: "Rápido",
-    note: "181 MB · bom para rascunho",
+    note: "181 MB · o mais rápido, erra mais em nome próprio",
     file: "ggml-small-q5_1.bin",
     url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin",
     megabytes: 181,
@@ -101,7 +101,7 @@ export const MODELS: readonly WhisperModel[] = [
   {
     id: "turbo",
     label: "Equilibrado",
-    note: "547 MB · o recomendado",
+    note: "547 MB · o recomendado — 10 min de vídeo em ~3 min",
     file: "ggml-large-v3-turbo-q5_0.bin",
     url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
     megabytes: 547,
@@ -109,7 +109,7 @@ export const MODELS: readonly WhisperModel[] = [
   {
     id: "large",
     label: "Máxima",
-    note: "1 GB · mais lento",
+    note: "1 GB · 2,4x mais lento, mesma precisão nos testes",
     file: "ggml-large-v3-q5_0.bin",
     url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-q5_0.bin",
     megabytes: 1031,
@@ -176,6 +176,8 @@ export interface TranscribeResult {
   ok: boolean;
   /** Código curto: "whisper-not-found", "ffmpeg-not-found", "failed"… */
   error: string | null;
+  /** No `language-mismatch`: o que o motor ouviu de verdade. */
+  detected?: string;
   /** O JSON cru do whisper, quando deu certo. */
   json: string | null;
   scriptPath: string | null;
@@ -270,11 +272,16 @@ export async function transcribe(
     const raw = readText(space, RESULT_FILE);
     if (raw) {
       try {
-        const parsed = JSON.parse(raw) as { ok?: boolean; error?: string };
+        const parsed = JSON.parse(raw) as {
+          ok?: boolean;
+          error?: string;
+          detected?: string;
+        };
         if (parsed.ok !== true) {
           return {
             ok: false,
             error: parsed.error ?? "failed",
+            detected: parsed.detected,
             json: null,
             scriptPath,
           };
@@ -386,6 +393,44 @@ export function unixScript(
       `-t ${job.durationSeconds.toFixed(6)} ` +
       `-vn -ac 1 -ar 16000 -c:a pcm_s16le "$WORK/cc-audio.wav" || fail audio-extract`,
 
+    /*
+     * O IDIOMA É CONFERIDO ANTES.
+     *
+     * Forçar `-l fr` num áudio em português não dá erro: o whisper
+     * obedece e devolve francês fluente, inventado, com pontuação
+     * perfeita. Foi o que aconteceu — dois minutos de motor para
+     * produzir uma tradução alucinada que ninguém pediu, sem um aviso.
+     *
+     * Detectar custa ~4s (só o encoder nos primeiros 30s) contra os
+     * minutos da transcrição inteira, e acerta com folga: 99,9% neste
+     * áudio. Barato demais para não fazer.
+     *
+     * Só barra quando a detecção está CONFIANTE e discorda — sotaque
+     * carregado e áudio ruim baixam a certeza, e nesses casos quem
+     * manda é a escolha do editor.
+     */
+    ...(language === "auto"
+      ? []
+      : [
+          'stage "Conferindo o idioma…"',
+          `DET=$("$WHISPER" -m "$MODEL" -f "$WORK/cc-audio.wav" -dl 2>&1 || true)`,
+          `DETLANG=$(printf '%s' "$DET" | sed -n 's/.*auto-detected language: \\([a-z][a-z]*\\).*/\\1/p' | head -1)`,
+          `DETP=$(printf '%s' "$DET" | sed -n 's/.*p = \\([0-9.]*\\).*/\\1/p' | head -1)`,
+          // A probabilidade entra como VARIÁVEL do awk. Escrita como
+          // `$DETP` dentro do programa, o awk a lê como número de
+          // campo — e em BEGIN não há campo nenhum, então a comparação
+          // dava sempre falso e a checagem inteira era decorativa.
+          // `p+0` cobre o caso de a detecção não ter dito nada.
+          `if [ -n "$DETLANG" ] && [ "$DETLANG" != ${q(language)} ] && ` +
+            `awk -v p="$DETP" 'BEGIN{exit !(p+0 > 0.70)}' 2>/dev/null; then`,
+          `  printf '{"ok":false,"error":"language-mismatch","detected":"%s","p":"%s"}' ` +
+            `"$DETLANG" "$DETP" > "$WORK/${RESULT_FILE}.tmp"`,
+          `  mv "$WORK/${RESULT_FILE}.tmp" "$WORK/${RESULT_FILE}"`,
+          '  rm -f "$WORK/cc-audio.wav"',
+          "  exit 1",
+          "fi",
+        ]),
+
     'stage "Transcrevendo…"',
     /*
      * As opções que separam uma legenda boa de uma sofrível, medidas
@@ -492,7 +537,19 @@ export function windowsScript(
 
 // ── mensagens ──────────────────────────────────────────────────────
 
-export function describeError(code: string | null): string {
+export function describeError(code: string | null, detected?: string): string {
+  if (code === "language-mismatch") {
+    // `findLanguage` cai no primeiro da lista quando não conhece o
+    // código — mostrar "Português" para um alemão detectado seria
+    // trocar um erro por outro. Melhor o código cru.
+    const conhecido = LANGUAGES.find((entry) => entry.id === detected);
+    const ouvido = conhecido?.label ?? (detected ? detected.toUpperCase() : "outro idioma");
+    return (
+      `O áudio parece estar em ${ouvido}, não no idioma escolhido. ` +
+      "Troque o idioma acima (ou use Detectar) e transcreva de novo — " +
+      "forçar o idioma errado faz o motor inventar uma tradução."
+    );
+  }
   switch (code) {
     case "whisper-not-found":
       return (

@@ -66,14 +66,29 @@ interface CapSlider {
   format: (value: number) => string;
 }
 
-const asSeconds = (value: number): string => `${value.toFixed(2).replace(".", ",")}s`;
+const asSeconds = (value: number): string => `${value.toFixed(1).replace(".", ",")}s`;
 
 const CAP_SLIDERS: readonly CapSlider[] = [
   {
     key: "maxLineChars",
-    label: "Caracteres por linha",
+    label: "Comprimento máximo",
     step: 1,
-    format: (value) => String(Math.round(value)),
+    format: (value) => `${Math.round(value)} caracteres`,
+  },
+  {
+    key: "minCueSeconds",
+    label: "Duração mínima",
+    step: 0.1,
+    format: asSeconds,
+  },
+  {
+    key: "gapFrames",
+    label: "Intervalo entre legendas",
+    step: 1,
+    format: (value) => {
+      const v = Math.round(value);
+      return v === 0 ? "0 quadros (sem gap)" : `${v} ${v === 1 ? "quadro" : "quadros"}`;
+    },
   },
   {
     key: "readingCps",
@@ -83,16 +98,8 @@ const CAP_SLIDERS: readonly CapSlider[] = [
     // mostrar "0 car/s" faria parecer defeito.
     format: (value) => (value <= 0 ? "desligada" : `${Math.round(value)} car/s`),
   },
-  { key: "minCueSeconds", label: "Duração mínima", step: 0.05, format: asSeconds },
   { key: "maxCueSeconds", label: "Duração máxima", step: 0.25, format: asSeconds },
-  { key: "gapSeconds", label: "Pausa que quebra", step: 0.05, format: asSeconds },
-  {
-    key: "gapFrames",
-    label: "Intervalo entre legendas",
-    step: 1,
-    format: (value) =>
-      `${Math.round(value)} ${Math.round(value) === 1 ? "quadro" : "quadros"}`,
-  },
+  { key: "gapSeconds", label: "Pausa para silêncio", step: 0.05, format: asSeconds },
 ];
 
 let cancelActiveRun: (() => void) | null = null;
@@ -826,11 +833,12 @@ export function markup(): string {
           `<div class="seg" data-lines-seg>${lineCounts}</div>` +
         "</div>" +
         capSlider("maxLineChars") +
-        capSlider("readingCps") +
-        '<p class="field-note">A legenda fica na tela pelo tempo de <b>ler</b>, ' +
-        "não pelo de falar — 17 car/s é a régua de streaming, 20 é o teto.</p>" +
+        capSlider("minCueSeconds") +
+        capSlider("gapFrames") +
+        '<p class="field-note">Com 0 quadros de intervalo, a legenda seguinte entra ' +
+        "imediatamente sem piscar tela preta, exceto quando houver momento de silêncio na fala.</p>" +
 
-        // A prévia fica ENCOSTADA nos dois controles principais. Mais
+        // A prévia fica ENCOSTADA nos controles principais. Mais
         // abaixo, num painel de 320px, ela sai da tela justamente
         // enquanto o deslizador está sendo arrastado — que é o único
         // momento em que ela serve para alguma coisa.
@@ -840,18 +848,16 @@ export function markup(): string {
 
         '<div class="sil-advanced">' +
           `<div class="sil-advanced-summary" ${CONTROL} data-cap-adv-toggle>` +
-            '<span class="sil-advanced-title">Tempos e intervalos</span>' +
+            '<span class="sil-advanced-title">Ajustes adicionais</span>' +
             '<span class="sil-advanced-icon" data-cap-adv-icon>▾</span>' +
           "</div>" +
           '<div class="sil-advanced-content" data-cap-adv-content hidden>' +
-            capSlider("minCueSeconds") +
+            capSlider("readingCps") +
             capSlider("maxCueSeconds") +
             capSlider("gapSeconds") +
-            capSlider("gapFrames") +
-            '<p class="field-note"><b>Pausa que quebra</b> é o silêncio na fala que ' +
-            "encerra uma legenda. <b>Intervalo</b> é o buraco entre uma legenda e a " +
-            "seguinte, em quadros da sua sequência — os tempos são encostados na " +
-            "grade de quadros, para nada entrar no meio de um.</p>" +
+            '<p class="field-note"><b>Pausa para silêncio</b> é o tempo de silêncio na fala que ' +
+            "encerra uma legenda em vez de emendar na próxima. " +
+            "<b>Velocidade de leitura</b> garante tempo de leitura aos olhos.</p>" +
           "</div>" +
         "</div>" +
       "</div>" +

@@ -29,6 +29,7 @@ const TOP_CAT_GLYPHS: Record<TopCategory, string> = {
   audio: "🔊",
   image: "🖼",
   graphics: "📐",
+  caption: "💬",
   premiere: "🎛",
   other: "📦",
 };
@@ -256,6 +257,7 @@ export const organizeTool: Tool = {
       if (scan.counts.audio > 0) catStats.push({ label: "Áudios", count: scan.counts.audio });
       if (scan.counts.image > 0) catStats.push({ label: "Imagens", count: scan.counts.image });
       if (scan.counts.graphics > 0) catStats.push({ label: "Gráficos", count: scan.counts.graphics });
+      if (scan.counts.caption > 0) catStats.push({ label: "Legendas", count: scan.counts.caption });
       if (scan.counts.premiere > 0) catStats.push({ label: "Itens Premiere", count: scan.counts.premiere });
       if (scan.counts.other > 0) catStats.push({ label: "Outros", count: scan.counts.other });
 

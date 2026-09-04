@@ -70,10 +70,10 @@ export const SRT_DEFAULTS: SrtOptions = {
   maxLineChars: 42,
   maxLines: 2,
   gapSeconds: 0.7,
-  minCueSeconds: 1.0,
+  minCueSeconds: 1.2,
   maxCueSeconds: 6.0,
   readingCps: 17,
-  gapFrames: 2,
+  gapFrames: 0,
 };
 
 export interface SrtPreset {
@@ -113,7 +113,7 @@ export const SRT_PRESETS: readonly SrtPreset[] = [
       minCueSeconds: 0.7,
       maxCueSeconds: 3.0,
       readingCps: 20,
-      gapFrames: 1,
+      gapFrames: 0,
     },
   },
   {
@@ -133,11 +133,11 @@ export const SRT_PRESETS: readonly SrtPreset[] = [
     options: {
       maxLineChars: 50,
       maxLines: 2,
-      gapSeconds: 1.2,
-      minCueSeconds: 0.85,
+      gapSeconds: 1.0,
+      minCueSeconds: 1.5,
       maxCueSeconds: 7.0,
       readingCps: 20,
-      gapFrames: 2,
+      gapFrames: 0,
     },
   },
 ];
@@ -169,6 +169,7 @@ export interface Cue {
   start: number;
   end: number;
   lines: string[];
+  spokenEnd?: number;
 }
 
 /** Termina frase — ponto de quebra preferido. */
@@ -243,6 +244,7 @@ export function buildCues(
       start,
       end: Math.max(spoken, start + options.minCueSeconds, start + toRead),
       lines,
+      spokenEnd: spoken,
     });
     current = [];
   };
@@ -304,15 +306,34 @@ export function buildCues(
   for (const cue of cues) {
     cue.start = snap(cue.start, fps);
     cue.end = snap(cue.end, fps);
+    if (cue.spokenEnd !== undefined) {
+      cue.spokenEnd = snap(cue.spokenEnd, fps);
+    }
   }
 
-  // Nenhuma legenda invade a seguinte: sobreposição faz o player
-  // mostrar as duas ou piscar.
+  // Emenda sem gap entre legendas consecutivas quando não houver silêncio na fala:
+  // Se a pausa entre a fala desta legenda e o início da próxima for menor que
+  // gapSeconds, a legenda atual é estendida até o início da seguinte (menos gapFrames).
+  // Com gapFrames = 0, a transição entre legendas fica 100% contínua sem piscar tela preta.
   const gap = frameSeconds(Math.max(0, options.gapFrames), fps);
   for (let index = 0; index < cues.length - 1; index += 1) {
-    const limit = cues[index + 1].start - gap;
-    if (cues[index].end > limit) {
-      cues[index].end = Math.max(cues[index].start + FLOOR_SECONDS, limit);
+    const currentCue = cues[index];
+    const nextCue = cues[index + 1];
+    const spokenEnd = currentCue.spokenEnd ?? currentCue.end;
+    const pauseToNext = nextCue.start - spokenEnd;
+
+    if (pauseToNext < options.gapSeconds) {
+      const targetEnd = nextCue.start - gap;
+      if (targetEnd > currentCue.start) {
+        currentCue.end = Math.max(currentCue.end, targetEnd);
+      }
+    }
+
+    // Nenhuma legenda invade a seguinte: sobreposição faz o player
+    // mostrar as duas ou piscar.
+    const limit = nextCue.start - gap;
+    if (currentCue.end > limit) {
+      currentCue.end = Math.max(currentCue.start + FLOOR_SECONDS, limit);
     }
   }
 

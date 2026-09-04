@@ -19,6 +19,7 @@ var GLYPHS = {
   download: '<path d="M7 2.4v6.4"/><path d="M4.2 6.2 7 9l2.8-2.8"/><path d="M2.6 11.4h8.8"/>',
   speech: '<path d="M2 3h10v6H8l-2.6 2.2V9H2z"/><path d="M4.2 6h.9M6.6 6h.9M9 6h.9"/>',
   caption: '<rect x="2" y="3.6" width="10" height="6.8"/><path d="M4.2 6.4h3.2M4.2 8.2h5.6"/>',
+  text: '<path d="M2.6 3.6h8.8M7 3.6v7.2M4.8 10.8h4.4"/>',
   folder: '<path d="M2 4.2h3.6l1 1.4H12v5.2H2z"/>'
 };
 
@@ -148,6 +149,22 @@ var TOOLS = [
       // de srt.ts, não números escolhidos por caberem bem.
       slider("Caracteres por linha", "42", 54) +
       slider("Velocidade de leitura", "17 car/s", 57)
+  },
+  {
+    id: "translate",
+    cat: "texto",
+    glyph: "text",
+    name: "Traduzir Legenda",
+    summary: "Traduz um .srt mantendo os tempos",
+    hint: "Traga um .srt do disco ou do projeto aberto. A frase é traduzida " +
+      "inteira, e os tempos saem idênticos aos que entraram.",
+    apply: "TRADUZIR",
+    body: field("A legenda",
+      '<span class="p-textarea">Importar arquivo… &nbsp;·&nbsp; Buscar no projeto</span>') +
+      field("Traduzir de",
+        '<span class="p-pick"><b>Detectar</b><i aria-hidden="true">▾</i></span>') +
+      field("Para",
+        '<span class="p-pick"><b>Português</b><i aria-hidden="true">▾</i></span>')
   },
   {
     id: "download",

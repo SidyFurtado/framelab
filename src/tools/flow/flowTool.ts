@@ -347,13 +347,11 @@ function shellMarkup(density: number): string {
         "</div>" +
         '<div class="field">' +
           '<div class="field-head">' +
-            '<span class="t-label">Densidade da assadura</span>' +
+            '<span class="t-label" title="Cada keyframe assado é um keyframe que você não retima mais. Use Linear para desfazer e reajustar o tempo.">Densidade da assadura</span>' +
             `<span class="field-val" data-out-density>${density} kf</span>` +
           "</div>" +
           `<div class="preset-rail">${presets}</div>` +
           '<div class="slider-row"><div data-density></div></div>' +
-          '<p class="field-note">Cada keyframe assado é um keyframe que você não retima ' +
-          "mais. Use Linear para desfazer e reajustar o tempo.</p>" +
         "</div>" +
       "</div>" +
       // The picker fills this zone: gallery, draw bar and preview box.

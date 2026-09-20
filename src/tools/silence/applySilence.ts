@@ -364,17 +364,33 @@ async function collectSelectedPairs(
   /** Áudio da mesma mídia e do mesmo lugar que NÃO está selecionado. */
   const loose = new Set<string>();
 
+  /*
+   * As perguntas ao host vão em lote, não em fila.
+   *
+   * `getIsSelected` e `itemIdentity` são independentes de item para
+   * item; perguntados um de cada vez, uma sequência longa custava uma
+   * ida e volta por clipe, em toda varredura. Em paralelo, cada faixa
+   * custa duas rodadas. A ordem sai preservada — `Promise.all`
+   * devolve na ordem de entrada — e a ordem importa aqui, porque é
+   * ela que decide qual vídeo casa com qual áudio.
+   */
   const videoCount = await sequence.getVideoTrackCount();
+  const videoTracks = await Promise.all(
+    Array.from({ length: videoCount }, (_, index) => sequence.getVideoTrack(index))
+  );
   for (let index = 0; index < videoCount; index++) {
-    const track = await sequence.getVideoTrack(index);
+    const track = videoTracks[index];
     if (!track) {
       continue;
     }
-    for (const item of track.getTrackItems(ppro.Constants.TrackItemType.CLIP, false)) {
-      if (!(await item.getIsSelected())) {
-        continue;
-      }
-      const key = await itemIdentity(item);
+    const itens = track.getTrackItems(ppro.Constants.TrackItemType.CLIP, false);
+    const marcados = await Promise.all(
+      itens.map((item) => Promise.resolve(item.getIsSelected()).catch(() => false))
+    );
+    const escolhidos = itens.filter((_, at) => marcados[at]);
+    const chaves = await Promise.all(escolhidos.map((item) => itemIdentity(item)));
+    escolhidos.forEach((item, at) => {
+      const key = chaves[at];
       const pair: SelectedPair = {
         videoItem: item,
         audioItem: null,
@@ -387,30 +403,48 @@ async function collectSelectedPairs(
       if (key) {
         byIdentity.set(key, pair);
       }
-    }
+    });
   }
 
   const audioCount = await sequence.getAudioTrackCount();
+  const audioTracks = await Promise.all(
+    Array.from({ length: audioCount }, (_, index) => sequence.getAudioTrack(index))
+  );
   for (let index = 0; index < audioCount; index++) {
-    const track = await sequence.getAudioTrack(index);
+    const track = audioTracks[index];
     if (!track) {
       continue;
     }
-    for (const item of track.getTrackItems(ppro.Constants.TrackItemType.CLIP, false)) {
-      if (!(await item.getIsSelected())) {
-        // Guardado, não ignorado: um áudio linkado fora da seleção é
-        // exatamente o que dessincroniza o clipe depois do corte. A
-        // identidade só é calculada quando há vídeo selecionado que
-        // possa ficar órfão — são três chamadas ao host por item.
-        if (byIdentity.size > 0) {
-          const orphan = await itemIdentity(item);
-          if (orphan) {
-            loose.add(orphan);
-          }
+    const itens = track.getTrackItems(ppro.Constants.TrackItemType.CLIP, false);
+    const marcados = await Promise.all(
+      itens.map((item) => Promise.resolve(item.getIsSelected()).catch(() => false))
+    );
+    /*
+     * A identidade de TODO item da faixa, de uma vez.
+     *
+     * Inclusive dos não selecionados: um áudio linkado fora da
+     * seleção é exatamente o que dessincroniza o clipe depois do
+     * corte, e precisa ser reconhecido. Antes isso custava três
+     * chamadas em série por item não selecionado — o comentário
+     * antigo reconhecia o preço e cobrava assim mesmo. Em lote, o
+     * preço some, e a guarda de "só quando há vídeo selecionado"
+     * deixa de ser necessária.
+     */
+    const precisaDosSoltos = byIdentity.size > 0;
+    const chaves = await Promise.all(
+      itens.map((item, at) =>
+        marcados[at] || precisaDosSoltos ? itemIdentity(item) : Promise.resolve(null)
+      )
+    );
+    for (let at = 0; at < itens.length; at++) {
+      const item = itens[at];
+      const key = chaves[at];
+      if (!marcados[at]) {
+        if (precisaDosSoltos && key) {
+          loose.add(key);
         }
         continue;
       }
-      const key = await itemIdentity(item);
       const linked = key ? byIdentity.get(key) : undefined;
       if (linked && linked.trackAudio === -1) {
         linked.audioItem = item;

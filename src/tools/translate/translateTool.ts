@@ -135,12 +135,24 @@ export const translateTool: Tool = {
     }
 
     importarEl?.addEventListener("click", () => {
+      if (busy) return;
       void (async () => {
+        busy = true;
+        // O botão sempre responde a alguma coisa. Antes, um seletor que
+        // não abrisse deixava o painel exatamente como estava — e "não
+        // acontece nada" é o pior relatório de erro que existe.
+        context.setStatus("Abrindo o seletor de arquivos…");
         try {
           const escolhido = await pickSrtFile();
-          if (escolhido) carregar(escolhido.name, escolhido.text);
+          if (escolhido) {
+            carregar(escolhido.name, escolhido.text);
+          } else {
+            context.setStatus("Nenhum arquivo escolhido.", "idle");
+          }
         } catch (cause) {
           context.setStatus(describeError(cause), "error");
+        } finally {
+          busy = false;
         }
       })();
     });
@@ -409,11 +421,8 @@ export function markup(): string {
           "<div data-from></div>" +
         "</div>" +
         '<div class="field">' +
-          '<span class="t-label">Para</span>' +
+          '<span class="t-label" title="Os tempos de cada bloco saem idênticos aos que entraram — só o texto muda. O arquivo novo entra no seu projeto ao lado do original.">Para</span>' +
           "<div data-to></div>" +
-          '<p class="field-note">Os tempos de cada bloco saem idênticos aos que ' +
-          "entraram — só o texto muda. O arquivo novo entra no seu projeto ao lado " +
-          "do original.</p>" +
         "</div>" +
       "</div>" +
 

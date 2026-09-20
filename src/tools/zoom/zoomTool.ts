@@ -72,9 +72,6 @@ export const zoomTool: Tool = {
     const durationField = container.querySelector<HTMLElement>("[data-duration-field]");
     const durationRail = container.querySelector<HTMLElement>("[data-duration]");
     const durationOut = container.querySelector<HTMLElement>("[data-out-duration]");
-    const metaRange = container.querySelector<HTMLElement>("[data-meta-range]");
-    const metaSpan = container.querySelector<HTMLElement>("[data-meta-span]");
-    const metaHold = container.querySelector<HTMLElement>("[data-meta-hold]");
     const curveZone = container.querySelector<HTMLElement>("[data-curve-zone]")!;
 
     livePicker?.destroy();
@@ -122,21 +119,6 @@ export const zoomTool: Tool = {
       // scale and duration off the closure.
       livePicker?.refresh();
 
-      const [from, to] =
-        direction === "in"
-          ? ["100%", `${scalePercent}%`]
-          : [`${scalePercent}%`, "100%"];
-      if (metaRange) {
-        metaRange.textContent = `${from} → ${to}`;
-      }
-      if (metaSpan) {
-        metaSpan.textContent =
-          style === "full" ? "clipe inteiro" : `${punchDuration.toFixed(1)}s`;
-      }
-      // Full Clip animates edge to edge; there is nothing held after it.
-      if (metaHold) {
-        metaHold.hidden = style === "full";
-      }
       if (durationField) {
         durationField.hidden = style === "full";
       }
@@ -336,15 +318,11 @@ function markup(
         // Scale target
         '<div class="field">' +
           '<div class="field-head">' +
-            '<span class="t-label">Intensidade (Escala Alvo)</span>' +
+            '<span class="t-label" title="100% mantém o enquadramento; valores acima aumentam o corte com Transform.">Intensidade (Escala Alvo)</span>' +
             `<span class="field-val" data-out-scale>${scalePercent}%</span>` +
           "</div>" +
           '<div class="slider-row"><div data-scale></div></div>' +
-          '<p class="field-note">100% mantém o enquadramento; valores acima aumentam o corte com Transform.</p>' +
         "</div>" +
-        '<div class="preview-meta"><b data-meta-range></b>' +
-        '<span class="preview-meta-gap"></span><b data-meta-span></b>' +
-        '<span data-meta-hold>segura até o fim</span></div>' +
       "</div>" +
 
       // The picker fills this zone: gallery, draw bar, and the ramp

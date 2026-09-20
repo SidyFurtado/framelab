@@ -30,7 +30,7 @@ export type StatusTone = "idle" | "done" | "error";
 export interface Tool {
   readonly id: string;
   readonly name: string;
-  /** One line, shown under the name in the navigator. */
+  /** Short description for search and the navigator tooltip. */
   readonly summary: string;
   /** Sentence shown in the workspace callout. */
   readonly hint: string;

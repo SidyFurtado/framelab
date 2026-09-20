@@ -21,8 +21,8 @@
  *    que existem de verdade — em vez de oferecer 4K num vídeo 720p.
  * 2. DOWNLOAD: outro script roda o yt-dlp com o seletor de formato da
  *    qualidade escolhida, escrevendo o log com `--newline` (de onde o
- *    painel tira a porcentagem) e o caminho final de cada arquivo em
- *    `dl-files.txt` (de onde sai a importação para o projeto).
+ *    painel tira a porcentagem) e um marcador JSON com o caminho final
+ *    de cada arquivo (de onde sai a importação para o projeto).
  *
  * ── Marca d'água ───────────────────────────────────────────────────
  * O TikTok serve o mesmo vídeo em versões com e sem marca; o yt-dlp
@@ -59,13 +59,17 @@ const RESULT_FILE = "dl-result.json";
 const PROGRESS_FILE = "dl-progress.txt";
 const LOG_FILE = "dl-log.txt";
 const FILES_FILE = "dl-files.txt";
+const FILE_MARKER = "FRAMELAB_FILE:";
+const FILE_PRINT = `after_move:${FILE_MARKER}%(filepath)j`;
 /** Escrito na primeira linha útil do script: prova que ele rodou. */
 const STARTED_FILE = "dl-started.txt";
 const CONFIG_FILE = "download-config.json";
 const SCRIPT_FILE = "download.command";
 const SCRIPT_FILE_WIN = "download.bat";
-/** O binário que o botão "Instalar" deixa na pasta de trabalho. */
-const LOCAL_BIN = "yt-dlp";
+/**
+ * O binário que o botão "Instalar" deixa na pasta de trabalho no
+ * Windows. No macOS ele deixa o onedir (ver ONEDIR_DIR).
+ */
 const LOCAL_BIN_WIN = "yt-dlp.exe";
 
 /** Prefixo dos JSON de sondagem: `dl-info-0.json`, `dl-info-1.json`… */
@@ -244,7 +248,7 @@ export function formatSelector(quality: Quality): string {
     return `bv*${NO_WATERMARK}+ba/b${NO_WATERMARK}/bv*+ba/b`;
   }
   const ceiling = quality.height * 2;
-  const cap = `[width<=${ceiling}][height<=${ceiling}]`;
+  const cap = `[width<=?${ceiling}][height<=?${ceiling}]`;
   return (
     `bv*${NO_WATERMARK}${cap}+ba/b${NO_WATERMARK}${cap}/` +
     `bv*${NO_WATERMARK}+ba/b${NO_WATERMARK}/b`
@@ -375,7 +379,9 @@ export function parseProbe(url: string, raw: string): Probe {
       hadWatermarked = true;
       continue;
     }
-    const hasVideo = text(format.vcodec) !== "none" && text(format.vcodec) !== "";
+    const hasDimensions = shortSide(format) !== null;
+    const hasVideo =
+      hasDimensions || (text(format.vcodec) !== "none" && text(format.vcodec) !== "");
     const bytes = estimateBytes(format, duration);
 
     if (!hasVideo) {
@@ -468,6 +474,24 @@ export interface RunResult {
   log: string;
   /** Onde ESTA execução listou o que entregou. */
   filesFile?: string;
+  /** Caminhos confirmados pelo evento after_move, separados do progresso. */
+  downloadedFiles?: string[];
+}
+
+export function parseDownloadedFiles(log: string): string[] {
+  const files: string[] = [];
+  for (const line of log.split(/\r?\n/)) {
+    if (!line.startsWith(FILE_MARKER)) continue;
+    try {
+      const path: unknown = JSON.parse(line.slice(FILE_MARKER.length));
+      if (typeof path === "string" && /^(?:\/|[a-z]:[\\/]|\\\\)/i.test(path)) {
+        files.push(path);
+      }
+    } catch {
+      // Uma linha incompleta não confirma um arquivo salvo.
+    }
+  }
+  return [...new Set(files)];
 }
 
 export interface RunProgress {
@@ -627,6 +651,9 @@ async function run(launch: Launch): Promise<RunResult> {
           failed: typeof parsed.failed === "number" ? parsed.failed : 0,
           log: tail(space, runFiles.log),
           filesFile: runFiles.files,
+          // Leia o log completo uma vez: num lote os primeiros arquivos
+          // podem ter saído há muito mais de 12 linhas.
+          downloadedFiles: parseDownloadedFiles(readText(space, runFiles.log) ?? ""),
         };
       } catch {
         // JSON pela metade: o `mv` do script torna isso raro, e uma
@@ -665,7 +692,7 @@ function tail(space: Workspace, name: string, lines = 12): string {
     return "";
   }
   const slice = raw.length > 4096 ? raw.slice(-4096) : raw;
-  return slice.split(/\r?\n/).slice(-lines).join("\n");
+  return slice.split(/\r?\n/).filter((line) => !line.startsWith(FILE_MARKER)).slice(-lines).join("\n");
 }
 
 /**
@@ -839,13 +866,17 @@ export async function downloadUrls(
 
   const space = await workspace();
   const listed = readText(space, result.filesFile ?? FILES_FILE);
-  const files = listed
+  const directFiles = listed
     ? listed
         .split(/\r?\n/)
         .map((line) => line.trim())
         .filter((line) => line.length > 0)
     : [];
+  const files = [...new Set([...directFiles, ...(result.downloadedFiles ?? [])])];
 
+  if (result.ok && files.length === 0) {
+    return { ...result, ok: false, error: "missing-files", files };
+  }
   return { ...result, files };
 }
 
@@ -923,6 +954,31 @@ function unixYtdlpSetup(config: DownloadConfig): string[] {
     '  if [ -n "$candidate" ] && [ -x "$candidate" ]; then YTDLP="$candidate"; break; fi',
     "done",
     'if [ -z "$YTDLP" ]; then YTDLP="$(command -v yt-dlp 2>/dev/null || true)"; fi',
+    // Binário de arquivo único (ou nenhum)? Troca pelo onedir — ver
+    // ONEDIR_DIR para o porquê. Um script Python (Homebrew, pip) começa
+    // com `#!` e não tem o problema; esse fica como está.
+    `ONEDIR="$WORK/${ONEDIR_DIR}"`,
+    'if [ -z "$YTDLP" ] || [ "$(head -c 2 "$YTDLP" 2>/dev/null)" != "#!" ]; then',
+    `  if [ ! -x "$ONEDIR/${ONEDIR_BIN}" ]; then`,
+    '    echo "Preparando o downloader rapido (so na primeira vez)..."',
+    `    echo "Preparando o downloader rapido (so na primeira vez)..." >> "$WORK/${LOG_FILE}"`,
+    '    rm -rf "$ONEDIR.tmp" "$ONEDIR.zip"',
+    `    if curl -fsSL --retry 3 -o "$ONEDIR.zip" ${q(RELEASE_MAC_ONEDIR)} 2>> "$WORK/${LOG_FILE}" &&`,
+    `      unzip -q -o "$ONEDIR.zip" -d "$ONEDIR.tmp" >> "$WORK/${LOG_FILE}" 2>&1; then`,
+    '      xattr -dr com.apple.quarantine "$ONEDIR.tmp" >/dev/null 2>&1 || true',
+    // Esta primeira execução é a que o XProtect escaneia, e o `mv`
+    // depois não a desfaz (medido). É também a prova de que o build
+    // roda antes de ele vencer a busca de todo script futuro.
+    `      if "$ONEDIR.tmp/${ONEDIR_BIN}" --version >/dev/null 2>&1; then`,
+    '        rm -rf "$ONEDIR"',
+    '        mv "$ONEDIR.tmp" "$ONEDIR"',
+    "      fi",
+    "    fi",
+    '    rm -rf "$ONEDIR.tmp" "$ONEDIR.zip"',
+    "  fi",
+    // Falhou? Segue com o de arquivo único: lento, mas funciona.
+    `  if [ -x "$ONEDIR/${ONEDIR_BIN}" ]; then YTDLP="$ONEDIR/${ONEDIR_BIN}"; fi`,
+    "fi",
     // Não achou? Baixa e segue na MESMA execução. O usuário final não
     // instala ferramenta: o painel se prepara sozinho na primeira vez.
     'if [ -z "$YTDLP" ]; then',
@@ -1030,13 +1086,14 @@ export function probeScriptUnix(
 
   urls.forEach((url, index) => {
     const target = `"$WORK/${infoFile(index)}"`;
+    const extra = extraSiteArgs(url);
     lines.push(
       `echo "[${index + 1}/${urls.length}] consultando…"`,
       `printf '%s/%s' ${index + 1} ${urls.length} > "$WORK/${PROGRESS_FILE}"`,
       `if "$YTDLP" --no-warnings --no-playlist --ignore-config ` +
         `--extractor-retries 5 --retry-sleep extractor:3 ` +
         `\${DENO:+--js-runtimes "deno:$DENO"} ` +
-        `${cookiesArg(config)}-J ${q(url)} > ${target}.tmp 2>> "$WORK/${LOG_FILE}"; then`,
+        `${cookiesArg(config)}${extra}-J ${q(url)} > ${target}.tmp 2>> "$WORK/${LOG_FILE}"; then`,
       `  mv ${target}.tmp ${target}`,
       "else",
       "  FAILED=$((FAILED+1))",
@@ -1094,10 +1151,10 @@ export function downloadScriptUnix(
     `--extractor-retries 5 --retry-sleep extractor:3 ` +
     `\${DENO:+--js-runtimes "deno:$DENO"} ` +
     `-o ${q("%(title)s [%(id)s].%(ext)s")} ` +
-    // Relativo de propósito: o argumento do --print-to-file passa pelo
-    // sanitizador de template do yt-dlp, e um caminho absoluto longo
-    // saía truncado — o download funcionava e o painel via lista vazia.
-    `--print-to-file after_move:filepath ${q(FILES_FILE)} ` +
+    // after_move confirma o caminho final mesmo quando o vídeo já existe.
+    // Um marcador + JSON separa caminhos de progresso em qualquer versão
+    // do yt-dlp, sem recolher um arquivo de controle na pasta de destino.
+    `--print ${q(FILE_PRINT)} --no-simulate --no-quiet --progress ` +
     cookiesArg(config);
 
   const sort = sortArg(quality);
@@ -1110,29 +1167,21 @@ export function downloadScriptUnix(
 
   urls.forEach((url, index) => {
     const step = direct.length + index + 1;
+    const extra = extraSiteArgs(url);
     lines.push(
       `echo "[${step}/${total}] ${escapeEcho(url)}"`,
+      `printf '%s\\n' ${q(`[${step}/${total}] ${url}`)} >> "$WORK/${LOG_FILE}"`,
       `printf '%s/%s' ${step} ${total} > "$WORK/${PROGRESS_FILE}"`,
       // `${FFDIR:+…}` some inteiro quando não há ffmpeg, em vez de
       // passar uma flag com valor vazio — que o yt-dlp recusa.
-      `"$YTDLP" ${shared} ${media} -P "$DEST" ` +
+      `"$YTDLP" ${shared} ${media} ${extra}-P "$DEST" ` +
         `\${FFDIR:+--ffmpeg-location "$FFDIR"} ${q(url)} 2>&1 | ` +
         `tee -a "$WORK/${LOG_FILE}"`,
-      // `tee` sempre devolve 0; quem falhou foi o yt-dlp, e é o status
-      // dele que o PIPESTATUS guarda.
       'if [ "${PIPESTATUS[0]}" -ne 0 ]; then FAILED=$((FAILED+1)); fi'
     );
   });
 
   lines.push(
-    // O caminho relativo do --print-to-file é à prova do sanitizador,
-    // mas o yt-dlp o resolve contra a pasta de destino (-P), não
-    // contra o cwd — medido num download real. A colheita cobre os
-    // dois comportamentos e não deixa arquivo de controle no destino.
-    `if [ -f "$DEST/${FILES_FILE}" ]; then`,
-    `  cat "$DEST/${FILES_FILE}" >> "$WORK/${FILES_FILE}"`,
-    `  rm -f "$DEST/${FILES_FILE}"`,
-    "fi",
     'if [ "$FAILED" -eq 0 ]; then',
     `  printf '{"ok":true,"ytdlp":"%s","failed":0}' "$YTDLP" > "$WORK/${RESULT_FILE}.tmp"`,
     "else",
@@ -1147,6 +1196,21 @@ export function downloadScriptUnix(
 
 const RELEASE_MAC =
   "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos";
+/**
+ * O mesmo yt-dlp, em pasta em vez de arquivo único.
+ *
+ * O `yt-dlp_macos` de arquivo único descompacta 72 MB (128 bibliotecas)
+ * numa pasta temporária NOVA a cada execução, e o XProtect escaneia
+ * tudo de novo, porque para ele são arquivos que nunca viu. Medido num
+ * M4: ~20s só para abrir, com menos de 1s de CPU — a análise de um link
+ * do YouTube levava 22s, mais que o próprio download. O onedir paga
+ * esse escaneamento uma vez, na instalação, e depois abre em 0,5s; a
+ * mesma análise caiu para 3,5s.
+ */
+const RELEASE_MAC_ONEDIR =
+  "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos.zip";
+const ONEDIR_DIR = "yt-dlp-onedir";
+const ONEDIR_BIN = "yt-dlp_macos";
 const RELEASE_WIN =
   "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
 
@@ -1190,28 +1254,31 @@ export function installScriptUnix(folder: string): string {
       // install no Terminal, os dois curl brigando pelo mesmo .tmp.
       ...unixBase(folder),
       `echo "Baixando o yt-dlp oficial…"`,
-      // Sem tee: o `if` precisa medir o CURL, e `curl | tee` mede o
-      // tee, que nunca falha — um download pela metade seguia o
-      // caminho feliz e instalava um binário truncado.
-      `if curl -fSL --retry 3 -o "$WORK/${LOCAL_BIN}.tmp" ${q(RELEASE_MAC)} 2>> "$WORK/${LOG_FILE}"; then`,
-      `  chmod +x "$WORK/${LOCAL_BIN}.tmp"`,
-      `  mv "$WORK/${LOCAL_BIN}.tmp" "$WORK/${LOCAL_BIN}"`,
+      // O onedir, não o arquivo único: ver ONEDIR_DIR. Sem tee: o `if`
+      // precisa medir o CURL, e `curl | tee` mede o tee, que nunca
+      // falha — um download pela metade seguia o caminho feliz e
+      // instalava um binário truncado.
+      `ONEDIR="$WORK/${ONEDIR_DIR}"`,
+      'rm -rf "$ONEDIR.tmp" "$ONEDIR.zip"',
+      `if curl -fSL --retry 3 -o "$ONEDIR.zip" ${q(RELEASE_MAC_ONEDIR)} 2>> "$WORK/${LOG_FILE}" &&`,
+      `  unzip -q -o "$ONEDIR.zip" -d "$ONEDIR.tmp" >> "$WORK/${LOG_FILE}" 2>&1; then`,
       // O binário do macOS vem sem assinatura reconhecida pelo
       // Gatekeeper; sem tirar a quarentena, a primeira execução morre
       // num diálogo que o painel nunca veria.
-      `  xattr -d com.apple.quarantine "$WORK/${LOCAL_BIN}" >/dev/null 2>&1 || true`,
-      `  if "$WORK/${LOCAL_BIN}" --version >/dev/null 2>&1; then`,
-      `    printf '{"ok":true,"ytdlp":"%s"}' "$WORK/${LOCAL_BIN}" > "$WORK/${RESULT_FILE}.tmp"`,
+      '  xattr -dr com.apple.quarantine "$ONEDIR.tmp" >/dev/null 2>&1 || true',
+      `  if "$ONEDIR.tmp/${ONEDIR_BIN}" --version >/dev/null 2>&1; then`,
+      '    rm -rf "$ONEDIR"',
+      '    mv "$ONEDIR.tmp" "$ONEDIR"',
+      `    printf '{"ok":true,"ytdlp":"%s"}' "$ONEDIR/${ONEDIR_BIN}" > "$WORK/${RESULT_FILE}.tmp"`,
       "  else",
       // O que não executa não pode ficar: um yt-dlp quebrado em
       // $WORK vence a busca de TODO script futuro.
-      `    rm -f "$WORK/${LOCAL_BIN}"`,
       `    printf '{"ok":false,"error":"install-unusable"}' > "$WORK/${RESULT_FILE}.tmp"`,
       "  fi",
       "else",
-      `  rm -f "$WORK/${LOCAL_BIN}.tmp"`,
       `  printf '{"ok":false,"error":"install-failed"}' > "$WORK/${RESULT_FILE}.tmp"`,
       "fi",
+      'rm -rf "$ONEDIR.tmp" "$ONEDIR.zip"',
       `mv "$WORK/${RESULT_FILE}.tmp" "$WORK/${RESULT_FILE}"`,
       ...UNIX_CLOSE,
     ].join("\n") + "\n"
@@ -1220,6 +1287,14 @@ export function installScriptUnix(folder: string): string {
 
 function cookiesArg(config: DownloadConfig): string {
   return config.cookies === "none" ? "" : `--cookies-from-browser ${config.cookies} `;
+}
+
+/** Argumentos extras para sites específicos que exigem bypass de age gate ou referer. */
+function extraSiteArgs(url: string, _isWin = false): string {
+  if (/pornhub\.com/i.test(url)) {
+    return '--add-header "Cookie:age_verified=1" --referer "https://www.pornhub.com/" ';
+  }
+  return "";
 }
 
 /** Um valor seguro dentro de um `echo` de diagnóstico. */
@@ -1291,12 +1366,13 @@ export function probeScriptWin(
 
   urls.forEach((url, index) => {
     const target = `"%WORK%\\${infoFile(index)}"`;
+    const extra = extraSiteArgs(url, true);
     lines.push(
       `echo [${index + 1}/${urls.length}] consultando...`,
       `>"%WORK%\\${PROGRESS_FILE}" echo ${index + 1}/${urls.length}`,
       `"%YTDLP%" --no-warnings --no-playlist --ignore-config ` +
         `--extractor-retries 5 --retry-sleep extractor:3 %JSARGS% ` +
-        `${cookiesArg(config)}-J ${bq(url)} > ${target} 2>>"%WORK%\\${LOG_FILE}"`,
+        `${cookiesArg(config)}${extra}-J ${bq(url)} > ${target} 2>>"%WORK%\\${LOG_FILE}"`,
       "if errorlevel 1 set /a FAILED+=1"
     );
   });
@@ -1374,7 +1450,7 @@ export function downloadScriptWin(
     `--newline --no-mtime --no-playlist --ignore-config --windows-filenames ` +
     `--trim-filenames 120 --retries 5 --fragment-retries 10 ` +
     `-o ${bq("%(title)s [%(id)s].%(ext)s")} ` +
-    `--print-to-file after_move:filepath ${bq(FILES_FILE)} ` +
+    `--print ${bq(FILE_PRINT)} --no-simulate --no-quiet --progress ` +
     cookiesArg(config);
 
   const sort = sortArg(quality);
@@ -1385,19 +1461,16 @@ export function downloadScriptWin(
 
   urls.forEach((url, index) => {
     const step = direct.length + index + 1;
+    const extra = extraSiteArgs(url, true);
     lines.push(
       `echo [${step}/${total}]`,
       `>"%WORK%\\${PROGRESS_FILE}" echo ${step}/${total}`,
-      `"%YTDLP%" ${shared} ${media} -P "%DEST%" %FFARGS% %JSARGS% ${bq(url)} >>"%WORK%\\${LOG_FILE}" 2>&1`,
+      `"%YTDLP%" ${shared} ${media} ${extra}-P "%DEST%" %FFARGS% %JSARGS% ${bq(url)} >>"%WORK%\\${LOG_FILE}" 2>&1`,
       "if errorlevel 1 set /a FAILED+=1"
     );
   });
 
   lines.push(
-    `if exist "%DEST%\\${FILES_FILE}" (`,
-    `  type "%DEST%\\${FILES_FILE}" >> "%WORK%\\${FILES_FILE}"`,
-    `  del /q "%DEST%\\${FILES_FILE}"`,
-    ")",
     'if "%FAILED%"=="0" (',
     `  >"%WORK%\\${RESULT_FILE}.tmp" echo {"ok":true,"ytdlp":"%YTDLP%","failed":0}`,
     ") else (",
@@ -1451,6 +1524,8 @@ export function describeRunError(code: string | null, log: string): string {
       );
     case "ytdlp-failed":
       return diagnoseLog(log);
+    case "missing-files":
+      return "O yt-dlp terminou, mas não informou o arquivo salvo. Confira a pasta de destino e tente novamente.";
     case "install-failed":
       return "Não foi possível baixar o yt-dlp. Verifique a conexão e tente de novo.";
     case "install-unusable":

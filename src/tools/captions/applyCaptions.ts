@@ -38,8 +38,7 @@ import { diffCorrections, worthLearning, type Candidate } from "./learn";
 import { readTranscript } from "../silence/transcript";
 import { shapesToTry, rememberShape } from "./schemas";
 import { buildCues, cuesToSrt, SRT_DEFAULTS, type SrtOptions } from "./srt";
-import { nativePath } from "../silence/workspace";
-import { workspace, write } from "../silence/workspace";
+import { nativePath, uxpModule, workspace, write } from "../silence/workspace";
 import {
   assembleArgs,
   splitByClip,
@@ -212,6 +211,20 @@ async function readClip(
   }
 }
 
+/**
+ * "3 min para 12 min de áudio · 4.0x tempo real".
+ *
+ * O múltiplo é o que importa: ele não muda com a duração do vídeo, e
+ * é por ele que dá para dizer se uma transcrição saiu do normal.
+ */
+function describeTiming(t: { elapsedSeconds: number; audioSeconds: number }): string {
+  const min = (sec: number): string =>
+    sec >= 60 ? `${Math.round(sec / 60)} min` : `${Math.round(sec)}s`;
+  const fator = t.elapsedSeconds > 0 ? t.audioSeconds / t.elapsedSeconds : 0;
+  const ritmo = fator > 0 ? ` · ${fator.toFixed(1)}x tempo real` : "";
+  return `${min(t.elapsedSeconds)} para ${min(t.audioSeconds)} de áudio${ritmo}`;
+}
+
 export interface RunOptions {
   model: WhisperModel;
   language: string;
@@ -220,6 +233,10 @@ export interface RunOptions {
   track: number | "all";
   /** A régua da legenda. Ausente = a de fábrica. */
   srt?: SrtOptions;
+  /** Pasta onde o .srt é salvo. Vazio = pasta de trabalho padrão do plugin. */
+  destination?: string;
+  /** Token persistente do storage UXP para a pasta escolhida. */
+  destinationToken?: string;
   onStage?: (text: string) => void;
   cancelled?: () => boolean;
   onManual?: (scriptPath: string, reason: string) => void;
@@ -343,7 +360,9 @@ export async function transcribeTracks(
     sequenceWide,
     options.srt ?? SRT_DEFAULTS,
     scan.fps,
-    stages
+    stages,
+    options.destination,
+    options.destinationToken
   );
   const { srtPath, cues } = emitted;
   const srtInProject = emitted.inProject;
@@ -466,14 +485,20 @@ export async function transcribeTracks(
   }
 
   const head = `${imported} ${imported === 1 ? "clipe transcrito" : "clipes transcritos"}`;
+  // O tempo do motor entra na frase final. Sem ele, "demorou" é
+  // impressão; com ele, é um número que o editor pode comparar entre
+  // modelos, entre máquinas e entre uma versão do plugin e a seguinte.
+  const quanto = result.timing ? ` · ${describeTiming(result.timing)}` : "";
   const comoAplicar = srtInProject
-    ? ` · ${cues} legendas no .srt dentro do projeto — arraste para a timeline`
+    ? (options.destination
+        ? ` · ${cues} legendas salvas em ${srtPath} e no projeto`
+        : ` · ${cues} legendas no .srt dentro do projeto — arraste para a timeline`)
     : cues > 0
       ? ` · .srt salvo em ${srtPath}`
       : "";
   return {
     ok: failures.length === 0,
-    message: `${head}${comoAplicar}`,
+    message: `${head}${comoAplicar}${quanto}`,
     imported,
     stages,
     srtPath,
@@ -493,12 +518,92 @@ export async function transcribeTracks(
  * Entrar no projeto é a parte que pode falhar sem ser fatal: o arquivo
  * está no disco, e o painel mostra o caminho.
  */
+interface UxpFile {
+  nativePath?: string;
+  write(data: string | ArrayBuffer, options?: { format?: unknown }): Promise<void>;
+}
+
+interface UxpFolder {
+  nativePath?: string;
+  createFile(name: string, options?: { overwrite?: boolean }): Promise<UxpFile>;
+}
+
+interface UxpLfs {
+  getEntryForPersistentToken?(token: string): Promise<UxpFolder>;
+  getEntryWithUrl?(url: string): Promise<UxpFolder>;
+}
+
+function fileUrl(nativePathValue: string): string {
+  return (
+    "file://" +
+    nativePathValue
+      .replace(/\\/g, "/")
+      .split("/")
+      .map((part) => encodeURIComponent(part))
+      .join("/")
+  );
+}
+
+async function writeSrtToDestination(
+  destination: string,
+  token: string | undefined,
+  fileName: string,
+  content: string
+): Promise<string> {
+  const storage = uxpModule<{
+    storage?: { localFileSystem?: UxpLfs };
+  }>("uxp")?.storage;
+  const lfs = storage?.localFileSystem;
+  if (!lfs) {
+    throw new Error("storage do UXP indisponível");
+  }
+
+  let folder: UxpFolder | null = null;
+  if (token && typeof lfs.getEntryForPersistentToken === "function") {
+    try {
+      folder = await lfs.getEntryForPersistentToken(token);
+    } catch (cause) {
+      console.warn("[Legendas] token persistente da pasta expirou ou falhou:", cause);
+    }
+  }
+
+  if (!folder && typeof lfs.getEntryWithUrl === "function") {
+    try {
+      folder = await lfs.getEntryWithUrl(fileUrl(destination));
+    } catch (cause) {
+      console.warn("[Legendas] getEntryWithUrl falhou:", cause);
+    }
+  }
+
+  if (!folder) {
+    throw new Error(`não foi possível acessar a pasta "${destination}"`);
+  }
+
+  const file = await folder.createFile(fileName, { overwrite: true });
+  await file.write(content);
+  return file.nativePath ?? `${destination.replace(/[\\/]+$/, "")}/${fileName}`;
+}
+
+/**
+ * Escreve o .srt e o coloca no projeto.
+ *
+ * O .srt sai da transcrição em tempo de SEQUÊNCIA, antes do recorte
+ * por clipe — é a linha do tempo inteira, que é o que uma faixa de
+ * legenda precisa. Gerado sempre, mesmo que a importação da
+ * transcrição falhe: é o caminho que não depende do host aceitar nada,
+ * já que a API do Premiere não permite criar faixa de legenda.
+ *
+ * Se uma pasta de destino foi escolhida, grava nela; se falhar ou se
+ * nenhuma foi definida, usa a pasta de trabalho padrão do plugin.
+ */
 async function emitSrt(
   project: Project,
   transcript: AdobeTranscript,
   options: SrtOptions,
   fps: number,
-  stages: string[]
+  stages: string[],
+  destination?: string,
+  destinationToken?: string
 ): Promise<{ srtPath: string | null; cues: number; inProject: boolean }> {
   let srtPath: string | null = null;
   let cues = 0;
@@ -506,11 +611,36 @@ async function emitSrt(
     const built = buildCues(transcript, options, fps);
     cues = built.length;
     if (cues > 0) {
-      const space = await workspace();
-      const name = `legendas-${new Date().toISOString().slice(0, 10)}-${Date.now().toString(36)}.srt`;
-      await write(space, name, cuesToSrt(built));
-      srtPath = nativePath(space, name);
-      stages.push(`legendas no .srt: ${cues}`);
+      let seqName = "";
+      try {
+        const activeSeq = await project.getActiveSequence();
+        if (activeSeq?.name) {
+          seqName = activeSeq.name.replace(/[/\\?%*:|"<>]/g, "-").trim();
+        }
+      } catch {
+        // sequência ativa sem nome ou indisponível
+      }
+      const prefix = seqName ? `${seqName}-` : "";
+      const name = `${prefix}legendas-${new Date().toISOString().slice(0, 10)}-${Date.now().toString(36)}.srt`;
+      const srtContent = cuesToSrt(built);
+
+      if (destination) {
+        try {
+          srtPath = await writeSrtToDestination(destination, destinationToken, name, srtContent);
+          stages.push(`legendas salvas no destino escolhido: ${srtPath}`);
+        } catch (destErr) {
+          stages.push(
+            `falha ao salvar no destino escolhido (${describeError(destErr)}), usando pasta padrão`
+          );
+        }
+      }
+
+      if (!srtPath) {
+        const space = await workspace();
+        await write(space, name, srtContent);
+        srtPath = nativePath(space, name);
+        stages.push(`legendas no .srt: ${cues}`);
+      }
     }
   } catch (cause) {
     stages.push(`falha ao gerar o .srt: ${describeError(cause)}`);
@@ -543,7 +673,11 @@ export interface RebuildResult {
  * motor outra vez para responder "e se fossem 32 caracteres?" custaria
  * minutos e ninguém experimentaria — aqui custa um segundo.
  */
-export async function rebuildSrt(options: SrtOptions): Promise<RebuildResult> {
+export async function rebuildSrt(
+  options: SrtOptions,
+  destination?: string,
+  destinationToken?: string
+): Promise<RebuildResult> {
   const last = await readLastRun();
   if (!last) {
     return {
@@ -565,7 +699,9 @@ export async function rebuildSrt(options: SrtOptions): Promise<RebuildResult> {
     last.transcript,
     options,
     last.fps,
-    stages
+    stages,
+    destination,
+    destinationToken
   );
   if (cues === 0) {
     return {
@@ -580,7 +716,9 @@ export async function rebuildSrt(options: SrtOptions): Promise<RebuildResult> {
     message:
       `${cues} legendas refeitas de ${last.label}. ` +
       (inProject
-        ? "O .srt novo está no seu projeto — arraste para a timeline."
+        ? (destination
+            ? `Salvo em ${srtPath} e no seu projeto.`
+            : "O .srt novo está no seu projeto — arraste para a timeline.")
         : `Arquivo salvo: ${srtPath}`),
     srtPath,
     cues,

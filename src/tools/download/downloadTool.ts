@@ -962,7 +962,7 @@ function markup(): string {
   return (
     '<div class="zones">' +
       // Links
-      '<div class="zone">' +
+      '<div class="zone is-wide">' +
         '<div class="field">' +
           '<div class="field-head"><span class="t-label">Links</span></div>' +
           '<textarea class="dl-urls" data-urls spellcheck="false" rows="3" ' +
@@ -1004,19 +1004,17 @@ function markup(): string {
       // Avançado
       '<div class="sil-advanced">' +
         `<div class="sil-advanced-summary" ${CONTROL} data-adv-toggle>` +
-          '<span class="sil-advanced-title">⚙️ Ajustes Avançados</span>' +
+          '<span class="sil-advanced-title">Ajustes avançados</span>' +
           '<span class="sil-advanced-icon" data-adv-icon>▾</span>' +
         "</div>" +
         '<div class="sil-advanced-content" data-adv-content hidden>' +
           '<div class="field">' +
-            '<span class="t-label">Cookies do navegador</span>' +
+            '<span class="t-label" title="Para vídeo com restrição de idade ou quando o site pede login. Use o navegador onde você já está logado.">Cookies do navegador</span>' +
             '<div data-cookies-pick></div>' +
-            '<p class="field-note">Para vídeo com restrição de idade ou quando o ' +
-            "site pede login. Use o navegador onde você já está logado.</p>" +
           "</div>" +
           '<div class="field">' +
             '<div class="field-head">' +
-              '<span class="t-label">Caminho do yt-dlp</span>' +
+              '<span class="t-label" title="Não precisa instalar nada: na primeira vez o painel baixa sozinho o yt-dlp e o ffmpeg oficiais para a pasta do plugin.">Caminho do yt-dlp</span>' +
               `<span class="field-action" ${CONTROL} data-open-folder>Abrir pasta</span>` +
             "</div>" +
             '<div class="sil-ffmpeg-group">' +
@@ -1024,13 +1022,9 @@ function markup(): string {
               'placeholder="deixe vazio para procurar sozinho">' +
               `<div class="org-scan" ${CONTROL} data-install>Reinstalar yt-dlp</div>` +
             "</div>" +
-            '<p class="field-note">Não precisa instalar nada: na primeira vez o painel ' +
-            "baixa sozinho o yt-dlp e o ffmpeg oficiais para a pasta do plugin. Este " +
-            "botão só força uma reinstalação, se algum dia precisar atualizar.</p>" +
           "</div>" +
         "</div>" +
       "</div>" +
     "</div>"
   );
 }
-

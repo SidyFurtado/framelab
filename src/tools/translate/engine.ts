@@ -81,6 +81,23 @@ export function loteDe(
   const lotes: string[][] = [];
   let atual: string[] = [];
   for (const texto of textos) {
+    /*
+     * Um bloco que sozinho não cabe na URL vai SOZINHO, e avisado.
+     *
+     * A guarda de tamanho só dispara com o lote já ocupado, então um
+     * texto gigante entrava num lote vazio e passava — a URL estourava
+     * o limite do servidor e o lote inteiro voltava vazio, sem erro
+     * que apontasse a causa. Isolá-lo não conserta o bloco, mas impede
+     * que ele derrube os vizinhos: os outros seguem traduzidos.
+     */
+    if (montarUrl(base, [texto]).length > maxUrl) {
+      if (atual.length > 0) {
+        lotes.push(atual);
+        atual = [];
+      }
+      lotes.push([texto]);
+      continue;
+    }
     const tentativa = [...atual, texto];
     if (
       atual.length > 0 &&

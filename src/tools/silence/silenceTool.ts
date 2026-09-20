@@ -566,23 +566,19 @@ export const silenceTool: Tool = {
 function markup(params: SilenceParams): string {
   const presets = SILENCE_PRESETS.map(
     (preset) =>
-      `<div class="preset-pill" ${CONTROL} data-preset="${preset.id}">${preset.name}</div>`
+      `<div class="preset-pill" ${CONTROL} data-preset="${preset.id}" title="${escapeHtml(preset.note)}">${preset.name}</div>`
   ).join("");
 
   const sliderFor = (spec: SliderSpec): string =>
     `<div class="field" data-field="${spec.key}" hidden>` +
     '<div class="field-head">' +
-    `<span class="t-label">${spec.label}</span>` +
+    `<span class="t-label" title="${escapeHtml(spec.note)}">${spec.label}</span>` +
     `<span class="field-val" data-out="${spec.key}">${formatParam(
       spec,
       params[spec.key]
     )}</span>` +
     "</div>" +
     `<div class="slider-row"><div data-slider="${spec.key}"></div></div>` +
-    // The notes were written, typed and shipped, and never rendered — the
-    // whole explanation of the Tool's hardest controls sat unreachable in
-    // presets.ts.
-    `<p class="field-note">${escapeHtml(spec.note)}</p>` +
     "</div>";
 
   const coreSliders = ["minSilence", "padIn", "padOut"]
@@ -603,8 +599,7 @@ function markup(params: SilenceParams): string {
       '<div class="zone">' +
         '<div class="field">' +
           '<span class="t-label">Ritmo de Corte</span>' +
-          `<div class="preset-rail" data-preset-rail>${presets}</div>` +
-          '<p class="field-note" data-preset-note></p>' +
+          `<div class="preset-rail preset-rail--2x2" data-preset-rail>${presets}</div>` +
         "</div>" +
       "</div>" +
 
@@ -625,7 +620,7 @@ function markup(params: SilenceParams): string {
       // Ajustes Avançados (Colapsável)
       '<div class="sil-advanced">' +
         `<div class="sil-advanced-summary" ${CONTROL} data-adv-toggle>` +
-          '<span class="sil-advanced-title">⚙️ Ajustes Avançados</span>' +
+          '<span class="sil-advanced-title">Ajustes avançados</span>' +
           '<span class="sil-advanced-icon" data-adv-icon>▾</span>' +
         "</div>" +
         '<div class="sil-advanced-content" data-adv-content hidden>' +
@@ -786,5 +781,4 @@ function doneMarkup(message: string): string {
     "</div>"
   );
 }
-
 

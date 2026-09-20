@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Framelab — Conceito 02</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Instrument+Sans:wght@400;500;600;700&display=swap">
+<script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+</head>
+<body>
+<div id="fl-responsive" aria-label="Framelab — proposta visual Clean">
+  <div class="fl-window">
+    <header class="fl-top">
+      <button class="fl-nav-toggle cursor-interaction" id="fl-nav-toggle" aria-label="Recolher nomes das ferramentas" aria-expanded="true" aria-controls="fl-tool-navigation" data-tooltip="Recolher nomes das ferramentas"><span class="fl-toggle-collapse"><i data-lucide="panel-left-close" aria-hidden="true"></i></span><span class="fl-toggle-expand"><i data-lucide="panel-left-open" aria-hidden="true"></i></span></button>
+      <div class="fl-brand">framelab<span class="fl-brand-dot">/</span></div>
+      <label class="fl-search"><i data-lucide="search" aria-hidden="true"></i><input aria-label="Buscar ferramenta" placeholder="Buscar ferramenta" autocomplete="off"></label>
+      <span class="fl-prototype">Conceito 02</span>
+    </header>
+    <div class="fl-layout">
+      <button class="fl-nav-scrim cursor-interaction" aria-label="Fechar nomes das ferramentas" hidden></button>
+      <nav class="fl-sidebar" id="fl-tool-navigation" aria-label="Ferramentas">
+        <div class="fl-nav-group"><span class="fl-eyebrow">Edição</span>
+          <button class="fl-nav cursor-interaction" data-tool="zoom" aria-pressed="true"><i data-lucide="maximize" aria-hidden="true"></i><span>Zoom In / Out</span></button>
+          <button class="fl-nav cursor-interaction" data-tool="silence" aria-pressed="false"><i data-lucide="audio-lines" aria-hidden="true"></i><span>Corte de Silêncios</span></button>
+          <button class="fl-nav cursor-interaction" data-tool="fillers" aria-pressed="false"><i data-lucide="scissors" aria-hidden="true"></i><span>Cortar Muletas</span></button>
+          <button class="fl-nav cursor-interaction" data-tool="flow" aria-pressed="false"><i data-lucide="spline" aria-hidden="true"></i><span>Curvas de velocidade</span></button>
+        </div>
+        <div class="fl-nav-group"><span class="fl-eyebrow">Texto</span>
+          <button class="fl-nav cursor-interaction" data-tool="captions" aria-pressed="false"><i data-lucide="captions" aria-hidden="true"></i><span>Legendas</span></button>
+          <button class="fl-nav cursor-interaction" data-tool="translate" aria-pressed="false"><i data-lucide="languages" aria-hidden="true"></i><span>Traduzir Legenda</span></button>
+        </div>
+        <div class="fl-nav-group"><span class="fl-eyebrow">Mídia & projeto</span>
+          <button class="fl-nav cursor-interaction" data-tool="download" aria-pressed="false"><i data-lucide="download" aria-hidden="true"></i><span>Baixar Vídeos</span></button>
+          <button class="fl-nav cursor-interaction" data-tool="organize" aria-pressed="false"><i data-lucide="folder-tree" aria-hidden="true"></i><span>Organizar Pastas</span></button>
+        </div>
+        <div class="fl-no-results" hidden>Nenhuma ferramenta.</div>
+        <div class="fl-sidebar-foot"><i data-lucide="panel-left" aria-hidden="true"></i><span>Premiere Pro</span><span class="fl-version">0.4.1</span></div>
+      </nav>
+      <main class="fl-work">
+        <div class="fl-work-heading"><div><div class="fl-eyebrow" id="fl-category">Edição</div><h2 id="fl-title">Zoom In / Out</h2><p id="fl-subtitle">Defina escala, duração e suavidade.</p></div><button class="fl-icon-button cursor-interaction" id="fl-help" aria-label="Ajuda da ferramenta" aria-expanded="false"><i data-lucide="circle-help" aria-hidden="true"></i></button></div>
+        <div class="fl-help" hidden>Prévia visual com dados de exemplo. Os controles e as ações são simulados e não alteram a timeline.</div>
+        <div class="fl-context"><i data-lucide="film" aria-hidden="true"></i><strong>Entrevista · Câmera A</strong><span>V1</span><span class="fl-time">00:00:08:12</span><span class="fl-context-status">1 clipe</span></div>
+        <div class="fl-screen" id="fl-zoom-screen">
+          <div class="fl-control-grid">
+            <section class="fl-curve-panel" aria-label="Curva de movimento">
+              <div class="fl-section-head"><h3>Curva de movimento</h3><span class="fl-accent-label" id="fl-curve-label">Ease In / Out</span></div>
+              <div class="fl-curve-gallery" aria-label="Escolha visual da curva">
+                <button class="cursor-interaction" data-curve="punch" aria-pressed="false" aria-label="Punch — arranque rápido e desaceleração gradual"><svg viewBox="0 0 96 46" aria-hidden="true"><path class="fl-mini-grid" d="M6 6V40H90"/><path class="fl-mini-curve"/></svg><span>Punch</span></button>
+                <button class="cursor-interaction" data-curve="linear" aria-pressed="false" aria-label="Linear — velocidade constante"><svg viewBox="0 0 96 46" aria-hidden="true"><path class="fl-mini-grid" d="M6 6V40H90"/><path class="fl-mini-curve"/></svg><span>Linear</span></button>
+                <button class="cursor-interaction" data-curve="ease-out" aria-pressed="false" aria-label="Ease Out — desacelera até parar"><svg viewBox="0 0 96 46" aria-hidden="true"><path class="fl-mini-grid" d="M6 6V40H90"/><path class="fl-mini-curve"/></svg><span>Ease Out</span></button>
+                <button class="cursor-interaction" data-curve="ease-in" aria-pressed="false" aria-label="Ease In — começa lento e acelera"><svg viewBox="0 0 96 46" aria-hidden="true"><path class="fl-mini-grid" d="M6 6V40H90"/><path class="fl-mini-curve"/></svg><span>Ease In</span></button>
+                <button class="cursor-interaction" data-curve="ease-in-out" aria-pressed="true" aria-label="Ease In / Out — entrada e saída suaves"><svg viewBox="0 0 96 46" aria-hidden="true"><path class="fl-mini-grid" d="M6 6V40H90"/><path class="fl-mini-curve"/></svg><span>Ease In / Out</span></button>
+                <button class="cursor-interaction" data-curve="expo-out" aria-pressed="false" aria-label="Expo Out — arranque muito rápido e parada suave"><svg viewBox="0 0 96 46" aria-hidden="true"><path class="fl-mini-grid" d="M6 6V40H90"/><path class="fl-mini-curve"/></svg><span>Expo Out</span></button>
+                <button class="cursor-interaction" data-curve="expo-in-out" aria-pressed="false" aria-label="Expo In / Out — aceleração concentrada no meio"><svg viewBox="0 0 96 46" aria-hidden="true"><path class="fl-mini-grid" d="M6 6V40H90"/><path class="fl-mini-curve"/></svg><span>Expo In / Out</span></button>
+                <button class="cursor-interaction" data-curve="back-out" aria-pressed="false" aria-label="Back Out — ultrapassa o alvo e retorna"><svg viewBox="0 0 96 46" aria-hidden="true"><path class="fl-mini-grid" d="M6 6V40H90"/><path class="fl-mini-curve"/></svg><span>Back Out</span></button>
+              </div>
+              <div class="fl-curve-toolbar"><button class="fl-draw-button cursor-interaction" id="fl-draw" data-curve="custom" aria-pressed="false"><i data-lucide="pen-tool" aria-hidden="true"></i><span>Desenhar minha curva</span></button><button class="fl-preview-button cursor-interaction" id="fl-preview"><i data-lucide="play" aria-hidden="true"></i><span>Reproduzir</span></button></div>
+              <div class="fl-graph-surface"><div class="fl-graph-scale"><span id="fl-graph-top">120%</span><span id="fl-graph-bottom">100%</span></div><div class="fl-graph" id="fl-graph"><svg role="img" aria-label="Curva de escala do zoom ao longo do tempo" preserveAspectRatio="none"><defs><linearGradient id="fl-responsive-area" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="currentColor" stop-opacity="0.065"/><stop offset="100%" stop-color="currentColor" stop-opacity="0"/></linearGradient></defs><path class="fl-grid-path"/><path class="fl-area-path" fill="url(#fl-responsive-area)"/><path class="fl-motion-path"/><path class="fl-handle-lines"/><circle class="fl-start-dot" r="3"/><circle class="fl-end-dot" r="3"/><line class="fl-playhead"/><circle class="fl-runner" r="4"/></svg><button class="fl-handle" data-handle="1" aria-label="Ponto de entrada. Arraste ou use as setas do teclado." hidden><span></span></button><button class="fl-handle" data-handle="2" aria-label="Ponto de saída. Arraste ou use as setas do teclado." hidden><span></span></button></div><div class="fl-graph-time"><span id="fl-graph-start">0,0 s</span><span id="fl-graph-end">1,6 s</span></div></div>
+              <div class="fl-editor-meta" hidden><span>Arraste os dois pontos para desenhar.</span><button class="cursor-interaction" id="fl-reset-curve">Redefinir</button></div>
+              <details class="fl-fine-tune" hidden><summary class="cursor-interaction">Ajuste fino dos pontos</summary><div class="fl-points-grid"><fieldset><legend>Entrada</legend><label>X<input type="number" step="0.01" min="0" max="1" data-coordinate="x1" aria-label="Entrada X" value="0.65"></label><label>Y<input type="number" step="0.01" min="-0.6" max="1.6" data-coordinate="y1" aria-label="Entrada Y" value="0"></label></fieldset><fieldset><legend>Saída</legend><label>X<input type="number" step="0.01" min="0" max="1" data-coordinate="x2" aria-label="Saída X" value="0.35"></label><label>Y<input type="number" step="0.01" min="-0.6" max="1.6" data-coordinate="y2" aria-label="Saída Y" value="1"></label></fieldset></div></details>
+            </section>
+            <section class="fl-parameters" aria-label="Parâmetros do zoom">
+              <div class="fl-parameter"><span class="fl-label">Direção</span><div class="fl-segment" data-group="direction"><span class="fl-segment-glider"></span><button class="cursor-interaction" data-value="in" aria-pressed="true">Zoom In <i data-lucide="arrow-down-left" aria-hidden="true"></i></button><button class="cursor-interaction" data-value="out" aria-pressed="false">Zoom Out <i data-lucide="arrow-up-right" aria-hidden="true"></i></button></div></div>
+              <div class="fl-parameter"><span class="fl-label">Comportamento</span><div class="fl-segment" data-group="behavior"><span class="fl-segment-glider"></span><button class="cursor-interaction" data-value="punch" aria-pressed="true">Punch Smooth</button><button class="cursor-interaction" data-value="full" aria-pressed="false">Clipe inteiro</button></div></div>
+              <div class="fl-range-field"><div class="fl-field-head"><label for="fl-scale">Escala final</label><output for="fl-scale" id="fl-scale-out">120<span>%</span></output></div><input id="fl-scale" type="range" min="105" max="150" value="120" aria-label="Escala final"><div class="fl-range-limits"><span>105%</span><span>150%</span></div></div>
+              <div class="fl-range-field" id="fl-duration-field"><div class="fl-field-head"><label for="fl-duration">Duração</label><output for="fl-duration" id="fl-duration-out">1,6<span>s</span></output></div><input id="fl-duration" type="range" min="0.4" max="4" step="0.1" value="1.6" aria-label="Duração do punch"><div class="fl-presets"><button class="cursor-interaction" data-duration="0.8" aria-pressed="false">0,8 s</button><button class="cursor-interaction" data-duration="1.2" aria-pressed="false">1,2 s</button><button class="cursor-interaction" data-duration="1.6" aria-pressed="true">1,6 s</button><button class="cursor-interaction" data-duration="2" aria-pressed="false">2,0 s</button></div></div>
+            </section>
+          </div>
+          <div class="fl-note"><i data-lucide="layers-2" aria-hidden="true"></i><span>Novo efeito Transform · Motion original preservado</span></div>
+        </div>
+        <div class="fl-screen" id="fl-other-screen" hidden></div>
+        <div class="fl-action-bar"><div class="fl-action-description"><span class="fl-small" id="fl-action-label">1 clipe selecionado</span><span id="fl-action-summary">Zoom In · 120% · 1,6 s</span></div><button class="fl-apply cursor-interaction" id="fl-apply"><span>Aplicar zoom</span><i data-lucide="arrow-up-right" aria-hidden="true"></i></button></div>
+      </main>
+    </div>
+    <footer class="fl-footer"><span id="fl-status" role="status" aria-live="polite">Prévia interativa · dados de exemplo</span><span>Conceito 02 / Clean</span></footer>
+  </div>
+</div>
+<style>
+#fl-responsive{--fl-bg:#111214;--fl-sidebar:#0d0e10;--fl-raised:#24262b;--fl-well:#191b1f;--fl-line:#27292e;--fl-text:#eff0f2;--fl-muted:#a0a3ab;--fl-accent:#619dff;--fl-radius:7px;--fl-space:32px;color-scheme:dark;font:13px/1.5 "Instrument Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--fl-text);width:100%;max-width:var(--fl-preview-width,980px);container-type:inline-size;container-name:fl-shell;margin:0 auto;padding:6px 0}
+#fl-responsive *{box-sizing:border-box}#fl-responsive [hidden]{display:none!important}#fl-responsive button,#fl-responsive input,#fl-responsive select{font:inherit;color:inherit}#fl-responsive button{appearance:none;display:inline-flex;align-items:center;justify-content:center;gap:8px;margin:0;border:0;background:none;line-height:1.4;transition:background 160ms,color 160ms,opacity 160ms}#fl-responsive button:active{opacity:.75}#fl-responsive button:disabled{opacity:.5}#fl-responsive button:focus-visible,#fl-responsive input:focus-visible,#fl-responsive select:focus-visible{outline:2px solid var(--fl-accent);outline-offset:3px}#fl-responsive svg.lucide{width:16px;height:16px;stroke-width:1.55;flex-shrink:0}#fl-responsive h2,#fl-responsive h3,#fl-responsive p{font-family:inherit;margin:0}#fl-responsive .fl-window{background:var(--fl-bg);border:1px solid var(--fl-line);border-radius:12px;overflow:hidden}
+#fl-responsive .fl-top{display:flex;align-items:center;gap:24px;padding:0 22px;height:58px;border-bottom:1px solid var(--fl-line)}#fl-responsive .fl-brand{display:flex;align-items:center;gap:5px;flex:0 0 166px;font-size:21px;letter-spacing:-.85px;font-weight:600}#fl-responsive .fl-brand-dot{color:var(--fl-accent);font-weight:400;padding-left:2px}#fl-responsive .fl-search{display:flex;align-items:center;gap:9px;flex:1;max-width:300px;min-width:0;color:var(--fl-muted)}#fl-responsive .fl-search input{border:0;background:transparent;width:100%;min-width:0;padding:7px 0;font-size:12px}#fl-responsive .fl-search input::placeholder{color:var(--fl-muted)}#fl-responsive .fl-search input:focus-visible{outline-offset:4px}#fl-responsive .fl-prototype{margin-left:auto;font-size:11px;color:var(--fl-muted);white-space:nowrap}
+#fl-responsive .fl-layout{display:grid;grid-template-columns:212px minmax(0,1fr)}#fl-responsive .fl-sidebar{background:var(--fl-sidebar);padding:26px 14px 20px;display:flex;flex-direction:column;gap:27px}#fl-responsive .fl-nav-group{display:flex;flex-direction:column;gap:3px}#fl-responsive .fl-eyebrow{font-size:11px;letter-spacing:0;font-weight:400;color:var(--fl-muted)}#fl-responsive .fl-sidebar .fl-eyebrow{padding:0 10px;margin-bottom:9px;color:#979ba4}#fl-responsive .fl-nav{position:relative;justify-content:flex-start;min-width:0;text-align:left;gap:10px;min-height:36px;padding:9px 10px;border-radius:5px;color:#b5b8c0;font-size:12px;white-space:nowrap}#fl-responsive .fl-nav:hover{color:var(--fl-text);background:#1a1c20}#fl-responsive .fl-nav[aria-pressed=true]{background:#1d2533;color:#c2d8ff}#fl-responsive .fl-nav[aria-pressed=true]>svg{color:var(--fl-accent)}#fl-responsive .fl-sidebar-foot{display:flex;align-items:center;gap:8px;margin-top:auto;padding:32px 10px 0;color:var(--fl-muted);font-size:11px}#fl-responsive .fl-sidebar-foot svg{width:14px;height:14px}#fl-responsive .fl-version{font:10px "IBM Plex Mono",monospace;margin-left:auto}
+#fl-responsive .fl-work{min-width:0;padding:27px var(--fl-space) 0;display:flex;flex-direction:column}#fl-responsive .fl-work-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:19px}#fl-responsive h2{font-size:25px;letter-spacing:-.7px;font-weight:500;line-height:1.25;margin-top:7px}#fl-responsive .fl-work-heading p{font-size:12px;color:var(--fl-muted);margin-top:7px}#fl-responsive .fl-icon-button{width:32px;height:32px;color:var(--fl-muted);border-radius:50%;flex-shrink:0}#fl-responsive .fl-icon-button:hover{background:var(--fl-raised);color:var(--fl-text)}#fl-responsive .fl-context{display:flex;align-items:center;gap:10px;padding:10px 0 18px;margin-bottom:22px;border-bottom:1px solid var(--fl-line);font-size:11px;color:var(--fl-muted);flex-wrap:wrap}#fl-responsive .fl-context>svg{width:14px;height:14px;color:#b0b5c1}#fl-responsive .fl-context strong{font-weight:400;color:#d1d4da;font-size:12px}#fl-responsive .fl-context>span:not(.fl-time){font-size:11px}#fl-responsive .fl-context-status{padding-left:10px;border-left:1px solid #44474f}#fl-responsive .fl-time{font:11px "IBM Plex Mono",monospace;margin-left:auto;white-space:nowrap}
+#fl-responsive .fl-control-grid{display:flex;flex-direction:column;gap:23px}#fl-responsive .fl-curve-panel{min-width:0}#fl-responsive .fl-section-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:15px}#fl-responsive h3{font-size:12px;font-weight:500;color:#c6c9d0}#fl-responsive .fl-accent-label{font-size:11px;color:var(--fl-muted)}#fl-responsive .fl-graph-surface{position:relative;padding:0 2px 0 0;color:var(--fl-accent)}#fl-responsive .fl-graph{height:136px;position:relative;margin-left:48px}#fl-responsive .fl-graph>svg{width:100%;height:100%;overflow:visible}#fl-responsive .fl-graph-scale{position:absolute;left:0;top:3px;bottom:24px;display:flex;flex-direction:column;justify-content:space-between;color:var(--fl-muted);font:11px "IBM Plex Mono",monospace}#fl-responsive .fl-graph-time{display:flex;justify-content:space-between;margin:9px 0 0 48px;color:var(--fl-muted);font:11px "IBM Plex Mono",monospace}#fl-responsive .fl-grid-path{stroke:#24262c;stroke-width:1;fill:none}#fl-responsive .fl-motion-path{stroke:currentColor;stroke-width:2;fill:none;stroke-linecap:round}#fl-responsive .fl-start-dot,#fl-responsive .fl-end-dot{fill:var(--fl-bg);stroke:currentColor;stroke-width:1.5}#fl-responsive .fl-playhead{stroke:#dce7ff;stroke-width:1;opacity:0}#fl-responsive .fl-runner{display:none;fill:#eef3ff;stroke:var(--fl-accent);stroke-width:2}
+#fl-responsive .fl-curve-toolbar{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-top:16px}#fl-responsive .fl-curve-options{display:flex;align-items:center;gap:3px;flex-wrap:wrap}#fl-responsive .fl-curve-options button{padding:6px 11px;font-size:12px;color:var(--fl-muted);border-radius:5px}#fl-responsive .fl-curve-options button:hover{color:var(--fl-text);background:#1b1d22}#fl-responsive .fl-curve-options button[aria-pressed=true]{color:var(--fl-text);background:#25272d}#fl-responsive .fl-preview-button{font-size:11px;padding:7px 0 7px 10px;white-space:nowrap;color:#b7bdc9}#fl-responsive .fl-preview-button:hover{color:var(--fl-text)}#fl-responsive .fl-preview-button svg{width:12px;height:12px;color:var(--fl-accent)}
+#fl-responsive .fl-parameters{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:22px 32px;padding-top:21px;border-top:1px solid var(--fl-line)}#fl-responsive .fl-parameter{min-width:0}#fl-responsive .fl-label{display:block;color:#bfc3cc;font-size:12px;margin-bottom:9px}#fl-responsive .fl-segment{position:relative;display:flex;background:#1b1d22;padding:3px;border-radius:var(--fl-radius)}#fl-responsive .fl-segment-glider{position:absolute;inset:3px auto 3px 3px;width:calc(50% - 3px);border-radius:4px;background:#30333b;transition:transform 210ms cubic-bezier(.2,.8,.2,1)}#fl-responsive .fl-segment[data-selected=out] .fl-segment-glider,#fl-responsive .fl-segment[data-selected=full] .fl-segment-glider{transform:translateX(100%)}#fl-responsive .fl-segment button{position:relative;z-index:1;flex:1;min-width:0;padding:8px 3px;font-size:12px;color:var(--fl-muted);white-space:nowrap}#fl-responsive .fl-segment button[aria-pressed=true]{color:#f0f1f4}#fl-responsive .fl-segment svg{width:12px;height:12px}
+#fl-responsive .fl-field-head{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:12px;color:#bfc3cc;margin-bottom:17px}#fl-responsive output{font:400 16px "IBM Plex Mono",monospace;color:#ebedf1;letter-spacing:-.5px}#fl-responsive output>span{color:var(--fl-muted);font-size:11px;margin-left:4px}#fl-responsive input[type=range]{appearance:none;display:block;width:100%;height:3px;margin:0;background:linear-gradient(to right,var(--fl-accent) var(--fl-progress,33.33%),#3a3e47 var(--fl-progress,33.33%));border-radius:3px;outline-offset:6px;cursor:ew-resize}#fl-responsive input[type=range]::-webkit-slider-thumb{appearance:none;width:11px;height:11px;border-radius:50%;border:0;background:#e3e7ee}#fl-responsive input[type=range]::-moz-range-thumb{width:11px;height:11px;border-radius:50%;border:0;background:#e3e7ee}#fl-responsive .fl-range-limits{display:flex;justify-content:space-between;margin-top:13px;font:11px "IBM Plex Mono",monospace;color:var(--fl-muted)}#fl-responsive .fl-presets{display:flex;justify-content:space-between;gap:4px;margin-top:8px}#fl-responsive .fl-presets button{padding:4px 6px;color:var(--fl-muted);font:11px "IBM Plex Mono",monospace;border-radius:4px}#fl-responsive .fl-presets button[aria-pressed=true]{color:#bcd6ff;background:#1b2940}#fl-responsive .fl-presets button:hover{color:#ecf2ff;background:#24272d}
+#fl-responsive .fl-note{display:flex;gap:7px;align-items:center;font-size:11px;color:var(--fl-muted);padding:21px 0}#fl-responsive .fl-note svg{width:13px;height:13px;flex-shrink:0}#fl-responsive .fl-action-bar{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:17px 0 22px;border-top:1px solid var(--fl-line);margin-top:auto}#fl-responsive .fl-action-description{display:flex;flex-direction:column;gap:4px}#fl-responsive .fl-small{font-size:11px;color:var(--fl-muted)}#fl-responsive #fl-action-summary{font-size:11px;color:#d5d8e0}#fl-responsive .fl-apply{min-width:151px;justify-content:space-between;padding:12px 15px;border-radius:var(--fl-radius);background:#2e6fdb;color:white;font-size:12px;font-weight:500}#fl-responsive .fl-apply:hover{background:#3c7de9}#fl-responsive .fl-apply svg{width:14px;height:14px}#fl-responsive .fl-footer{display:flex;justify-content:space-between;gap:16px;padding:10px 20px;font-size:11px;color:var(--fl-muted);border-top:1px solid var(--fl-line);background:var(--fl-sidebar)}#fl-responsive .fl-footer>span:last-child{white-space:nowrap}#fl-responsive .fl-help{padding:12px 14px;border-left:2px solid var(--fl-accent);background:#192231;color:#c8d6ee;font-size:12px;margin-bottom:16px}#fl-responsive .fl-no-results{padding:10px;font-size:12px;color:var(--fl-muted)}
+#fl-responsive .fl-generic-fields{display:grid;grid-template-columns:1fr 1fr;gap:23px 28px;margin-bottom:28px}#fl-responsive .fl-generic-field{display:flex;flex-direction:column;gap:10px;font-size:12px;color:#c6cad4}#fl-responsive .fl-generic-field select,#fl-responsive .fl-generic-field input:not([type=range]){width:100%;min-width:0;padding:11px 12px;border:0;border-radius:var(--fl-radius);background:#22252b;color:#e3e6ec;font-size:12px}#fl-responsive .fl-secondary-preview{min-height:190px;display:flex;flex-direction:column;justify-content:center;gap:20px;padding:28px 0;border-top:1px solid var(--fl-line);border-bottom:1px solid var(--fl-line);margin-bottom:6px}#fl-responsive .fl-wave{display:flex;align-items:center;height:76px;gap:3px;overflow:hidden}#fl-responsive .fl-wave i{flex:1;min-width:2px;border-radius:2px;background:var(--fl-accent);opacity:.8}#fl-responsive .fl-wave i.fl-quiet{background:#777d89;opacity:.55}#fl-responsive .fl-preview-legend{display:flex;justify-content:space-between;gap:12px;font-size:11px;color:var(--fl-muted)}#fl-responsive .fl-subtitle-line{font-size:23px;font-weight:500;letter-spacing:-.5px;text-align:center;padding:15px 0}#fl-responsive .fl-highlight{color:var(--fl-accent)}#fl-responsive .fl-preview-file{display:flex;gap:12px;align-items:center;font-size:13px}#fl-responsive .fl-preview-file svg{color:var(--fl-accent)}#fl-responsive .fl-preview-file small{display:block;font-size:11px;color:var(--fl-muted);margin-top:4px}
+#fl-responsive .fl-screen-switch{animation:fl-responsive-enter 180ms ease-out both}@keyframes fl-responsive-enter{from{opacity:.25;transform:translateY(3px)}to{opacity:1;transform:translateY(0)}}#fl-responsive[data-motion=off] *,#fl-responsive[data-motion=off] *::before{transition:none!important;animation:none!important}
+@media(prefers-reduced-motion:reduce){#fl-responsive *,#fl-responsive *::before{animation:none!important;transition:none!important}}
+@media(pointer:coarse){#fl-responsive .fl-nav,#fl-responsive .fl-segment button,#fl-responsive .fl-presets button,#fl-responsive .fl-preview-button,#fl-responsive .fl-icon-button{min-height:44px}#fl-responsive .fl-icon-button{min-width:44px}#fl-responsive .fl-search input{font-size:16px}}
+#fl-responsive .fl-curve-gallery{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;margin-bottom:12px}
+#fl-responsive .fl-curve-gallery button{position:relative;display:flex;flex-direction:column;align-items:stretch;gap:7px;min-width:0;padding:10px 11px 8px;border:1px solid transparent;border-radius:6px;background:#1b1d22;color:#aeb5c1;font-size:11px;line-height:1.3;text-align:center}
+#fl-responsive .fl-curve-gallery button:hover{background:#252931;color:#dce8ff}
+#fl-responsive .fl-curve-gallery button[aria-pressed=true]{background:#19263c;border-color:#528ded;color:#c6dcff}
+#fl-responsive .fl-curve-gallery button[aria-pressed=true]::after{content:'✓';position:absolute;right:7px;top:3px;color:#a8cbff;font-size:11px}
+#fl-responsive .fl-curve-gallery svg{display:block;width:100%;height:38px;overflow:visible}
+#fl-responsive .fl-mini-grid{fill:none;stroke:#3b404b;stroke-width:1}
+#fl-responsive .fl-mini-curve{fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round}
+#fl-responsive .fl-curve-toolbar{margin:8px 0 18px;flex-wrap:wrap;gap:6px 14px}
+#fl-responsive .fl-draw-button{font-size:12px;min-height:33px;gap:8px;color:#b7bdc9;padding:6px 0}
+#fl-responsive .fl-draw-button:hover,#fl-responsive .fl-draw-button[aria-pressed=true]{color:#a8cbff}
+#fl-responsive .fl-draw-button svg{width:14px;height:14px}
+#fl-responsive .fl-graph{height:138px}
+#fl-responsive .fl-editing .fl-graph{height:192px}
+#fl-responsive .fl-graph-scale{top:0;bottom:0;display:block;width:42px}
+#fl-responsive .fl-graph-scale span{position:absolute;left:0;white-space:nowrap}
+#fl-responsive .fl-handle-lines{fill:none;stroke:#6e88b1;stroke-width:1;stroke-dasharray:3 3;pointer-events:none}
+#fl-responsive .fl-graph button.fl-handle{position:absolute;display:grid;place-items:center;width:28px;height:28px;padding:0;transform:translate(-50%,-50%);border:0;background:transparent;border-radius:50%;cursor:grab;touch-action:none;z-index:2;transition:none}
+#fl-responsive .fl-graph button.fl-handle:active{cursor:grabbing;opacity:1}
+#fl-responsive .fl-handle>span{display:block;width:11px;height:11px;border:2px solid #c9dcff;background:#3c78db;border-radius:50%}
+#fl-responsive .fl-handle[data-handle='2']>span{border-radius:3px}
+#fl-responsive .fl-editor-meta{display:flex;justify-content:space-between;align-items:center;gap:12px;color:var(--fl-muted);font-size:11px;margin-top:14px}
+#fl-responsive .fl-editor-meta button{font-size:11px;color:#bdcbe0;padding:5px 0}
+#fl-responsive .fl-fine-tune{margin-top:12px;color:var(--fl-muted);font-size:11px}
+#fl-responsive .fl-fine-tune summary{padding:5px 0}
+#fl-responsive .fl-points-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:12px}
+#fl-responsive .fl-points-grid fieldset{display:flex;min-width:0;gap:10px;border:0;padding:0;margin:0}
+#fl-responsive .fl-points-grid legend{margin-bottom:8px;color:#c7d0df}
+#fl-responsive .fl-points-grid label{display:flex;align-items:center;gap:6px;min-width:0;flex:1}
+#fl-responsive .fl-points-grid input{min-width:0;width:100%;border:1px solid #3c4350;border-radius:5px;padding:6px;background:#1e2229;color:#e0e7f3;font:11px 'IBM Plex Mono',monospace}
+@media(pointer:coarse){#fl-responsive .fl-graph button.fl-handle{width:44px;height:44px}#fl-responsive .fl-draw-button,#fl-responsive .fl-editor-meta button{min-height:44px}}
+/* Layout follows the panel and the remaining workspace, including icon mode. */
+#fl-responsive .fl-top{height:58px;gap:14px;padding:0 16px}
+#fl-responsive .fl-brand{flex:0 0 126px}
+#fl-responsive .fl-nav-toggle{width:32px;height:32px;flex-shrink:0;color:#b8c0cc;border-radius:5px}
+#fl-responsive .fl-nav-toggle:hover{color:#ecf1f9;background:#242831}
+#fl-responsive .fl-nav-toggle span{display:flex;align-items:center}
+#fl-responsive .fl-toggle-expand{display:none!important}
+#fl-responsive[data-nav-collapsed=true] .fl-toggle-expand{display:flex!important}
+#fl-responsive[data-nav-collapsed=true] .fl-toggle-collapse{display:none!important}
+#fl-responsive .fl-layout{position:relative;min-height:540px;grid-template-columns:212px minmax(0,1fr)}
+#fl-responsive .fl-sidebar{z-index:4;min-width:0;gap:24px}
+#fl-responsive .fl-nav{font-size:12px;min-height:38px}
+#fl-responsive .fl-nav svg{width:17px;height:17px}
+#fl-responsive .fl-work{container-type:inline-size;container-name:fl-work;min-width:0;padding:25px clamp(12px,3cqw,var(--fl-space)) 0}
+#fl-responsive .fl-context strong{min-width:0;overflow-wrap:anywhere}
+#fl-responsive .fl-time{font-size:11px}
+#fl-responsive .fl-version{font-size:11px}
+#fl-responsive .fl-nav-scrim{position:absolute;inset:0;z-index:3;width:100%;height:100%;background:#0008;border-radius:0}
+#fl-responsive[data-nav-collapsed=true] .fl-layout{grid-template-columns:56px minmax(0,1fr)}
+#fl-responsive[data-nav-collapsed=true] .fl-sidebar{padding:20px 7px;gap:18px;align-items:stretch}
+#fl-responsive[data-nav-collapsed=true] .fl-nav{justify-content:center;padding:0;width:42px;height:40px;gap:0}
+#fl-responsive[data-nav-collapsed=true] .fl-sidebar .fl-eyebrow,#fl-responsive[data-nav-collapsed=true] .fl-nav>span,#fl-responsive[data-nav-collapsed=true] .fl-sidebar-foot{display:none}
+#fl-responsive[data-nav-collapsed=true] .fl-nav-group+.fl-nav-group{border-top:1px solid var(--fl-line);padding-top:16px}
+#fl-responsive[data-nav-collapsed=true] .fl-no-results{position:absolute;left:56px;background:#1e2735;padding:10px;width:160px;border-radius:5px;z-index:5}
+#fl-responsive[data-nav-overlay=true] .fl-layout{grid-template-columns:56px minmax(0,1fr)}
+#fl-responsive[data-nav-overlay=true] .fl-sidebar{position:absolute;inset:0 auto auto 0;width:224px;min-height:100%;padding:22px 14px;background:#13161c;border-right:1px solid #414a59}
+#fl-responsive[data-nav-overlay=true] .fl-work{grid-column:2}
+#fl-responsive[data-nav-overlay=true] .fl-brand{color:var(--fl-text)}
+@container fl-shell (max-width:640px){
+  #fl-responsive .fl-top{gap:11px;padding:0 12px}
+  #fl-responsive .fl-brand{flex-basis:auto;font-size:20px}
+  #fl-responsive .fl-prototype{display:none}
+  #fl-responsive .fl-search{margin-left:auto;max-width:220px}
+  #fl-responsive .fl-footer>span:last-child{display:none}
+  #fl-responsive .fl-work{padding-top:22px}
+}
+@container fl-shell (max-width:400px){
+  #fl-responsive .fl-top{gap:8px;padding:0 9px}
+  #fl-responsive .fl-brand{font-size:19px;gap:3px}
+  #fl-responsive .fl-search{gap:6px}
+  #fl-responsive .fl-search input{font-size:12px}
+  #fl-responsive .fl-search svg{width:14px;height:14px}
+  #fl-responsive .fl-footer{padding:10px 12px}
+}
+@container fl-work (max-width:520px){
+  #fl-responsive .fl-parameters{gap:20px}
+  #fl-responsive .fl-segment button{font-size:12px}
+  #fl-responsive .fl-segment svg{display:none}
+  #fl-responsive .fl-context{gap:8px}
+  #fl-responsive .fl-generic-fields{gap:22px 18px}
+}
+@container fl-work (max-width:440px){
+  #fl-responsive .fl-curve-gallery{grid-template-columns:repeat(2,minmax(0,1fr))}
+  #fl-responsive .fl-curve-gallery svg{height:40px}
+  #fl-responsive .fl-parameters,#fl-responsive .fl-generic-fields{grid-template-columns:minmax(0,1fr);gap:22px}
+  #fl-responsive .fl-segment svg{display:block}
+  #fl-responsive .fl-action-bar{align-items:stretch;flex-direction:column;gap:16px}
+  #fl-responsive .fl-action-description{flex-direction:row;justify-content:space-between;gap:8px;flex-wrap:wrap}
+  #fl-responsive .fl-apply{width:100%;min-height:42px}
+  #fl-responsive .fl-context .fl-time{margin-left:0}
+  #fl-responsive .fl-context strong{flex-basis:calc(100% - 30px)}
+  #fl-responsive .fl-context-status{padding-left:8px}
+  #fl-responsive .fl-note{align-items:flex-start;line-height:1.6}
+  #fl-responsive .fl-graph,#fl-responsive .fl-graph-time{margin-left:40px}
+  #fl-responsive .fl-graph-scale{width:36px}
+  #fl-responsive .fl-points-grid{grid-template-columns:minmax(0,1fr)}
+  #fl-responsive .fl-editor-meta{align-items:flex-start}
+  #fl-responsive .fl-preview-legend{flex-wrap:wrap}
+}
+@container fl-work (max-width:300px){
+  #fl-responsive h2{font-size:23px;overflow-wrap:anywhere}
+  #fl-responsive .fl-curve-toolbar{align-items:stretch;flex-direction:column;gap:4px}
+  #fl-responsive .fl-draw-button,#fl-responsive .fl-preview-button{justify-content:flex-start;padding-left:0;min-height:36px}
+  #fl-responsive .fl-draw-button{font-size:12px}
+  #fl-responsive .fl-curve-gallery button{padding:10px 7px 9px;font-size:11px}
+  #fl-responsive .fl-section-head{align-items:flex-start}
+  #fl-responsive .fl-accent-label{text-align:right}
+  #fl-responsive .fl-context-status{border:0;padding-left:0}
+}
+@media(pointer:coarse){#fl-responsive .fl-nav-toggle{min-width:44px;min-height:44px}#fl-responsive[data-nav-collapsed=true] .fl-sidebar{padding-left:5px;padding-right:5px}#fl-responsive[data-nav-collapsed=true] .fl-nav{width:46px;min-height:46px}}
+</style>
+<script>
+(()=>{
+const root=document.getElementById('fl-responsive');
+const q=s=>root.querySelector(s), qa=s=>Array.from(root.querySelectorAll(s));
+const defaults={tool:'zoom',direction:'in',behavior:'punch',curve:'ease-in-out',scale:120,duration:1.6,custom:{x1:0.65,y1:0,x2:0.35,y2:1},customEdited:false,navPreference:null};
+let state={...defaults};let frame=0,actionTimer=0;
+const design={previewWidth:980,spacing:32,accent:'#619dff',motion:true,radius:7};
+const curveNames={punch:'Punch',linear:'Linear','ease-out':'Ease Out','ease-in':'Ease In','ease-in-out':'Ease In / Out','expo-out':'Expo Out','expo-in-out':'Expo In / Out','back-out':'Back Out',custom:'Minha curva'};
+const meta={zoom:['Zoom In / Out','Edição','Defina escala, duração e suavidade.','Aplicar zoom'],silence:['Corte de Silêncios','Edição','Ajuste a detecção de pausas no áudio selecionado.','Analisar silêncios'],fillers:['Cortar Muletas','Edição','Identifique muletas e revise os cortes.','Analisar fala'],flow:['Curvas de velocidade','Edição','Ajuste a interpolação entre keyframes.','Aplicar curva'],captions:['Legendas','Texto','Transcreva o áudio e gere suas legendas.','Gerar legendas'],translate:['Traduzir Legenda','Texto','Traduza o SRT mantendo os tempos.','Traduzir legenda'],download:['Baixar Vídeos','Mídia','Baixe e importe um vídeo pelo link.','Baixar vídeo'],organize:['Organizar Pastas','Projeto','Agrupe os arquivos do projeto por tipo.','Organizar projeto']};
+const fmt=n=>Number(n).toFixed(1).replace('.',',');
+function icons(){if(globalThis.lucide)lucide.createIcons({attrs:{width:16,height:16}})}
+function persist(){if(window.openai?.setWidgetState)window.openai.setWidgetState({modelContent:{proposta:'Framelab Clean',ferramenta:meta[state.tool][0],navegacao:state.navPreference===true?'icones':state.navPreference===false?'nomes':'automatica',larguraPrevia:design.previewWidth,espacamento:design.spacing,cor:design.accent,curva:curveNames[state.curve],pontos:state.curve==='custom'?state.custom:null},privateContent:{...state}}).catch(()=>{})}
+function reduce(){return !design.motion||matchMedia('(prefers-reduced-motion: reduce)').matches}
+const presetPoints={linear:{x1:1/3,y1:1/3,x2:2/3,y2:2/3},'ease-out':{x1:.16,y1:.84,x2:.44,y2:1},'ease-in':{x1:.56,y1:0,x2:.84,y2:.16},'ease-in-out':{x1:.65,y1:0,x2:.35,y2:1}};
+const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
+function safeCustom(p){const d={x1:.65,y1:0,x2:.35,y2:1};return Object.fromEntries(Object.keys(d).map(k=>[k,clamp(Number.isFinite(Number(p?.[k]))?Number(p[k]):d[k],k[0]==='x'?0:-.6,k[0]==='x'?1:1.6)]))}
+function bezier(p,t){if(t<=0)return 0;if(t>=1)return 1;const at=(a,b,u)=>3*(1-u)*(1-u)*u*a+3*(1-u)*u*u*b+u*u*u;let lo=0,hi=1;for(let i=0;i<24;i++){const m=(lo+hi)/2;if(at(p.x1,p.x2,m)<t)lo=m;else hi=m}return at(p.y1,p.y2,(lo+hi)/2)}
+function curveAt(id,t){
+  if(id==='custom')return bezier(state.custom,t);
+  if(presetPoints[id])return bezier(presetPoints[id],t);
+  if(t<=0)return 0;if(t>=1)return 1;
+  if(id==='punch')return (1-Math.pow(2,-3*t))/(1-Math.pow(2,-3));
+  if(id==='expo-out')return 1-Math.pow(2,-10*t);
+  if(id==='expo-in-out')return t<.5?Math.pow(2,20*t-10)/2:(2-Math.pow(2,-20*t+10))/2;
+  if(id==='back-out'){const u=t-1;return 1+2.70158*u*u*u+1.70158*u*u}
+  return t;
+}
+function ease(t){return curveAt(state.curve,t)}
+function range(){return state.curve==='custom'?{lo:-.6,hi:1.6}:state.curve==='back-out'?{lo:-.14,hi:1.14}:{lo:0,hi:1}}
+function project(x,y,w,h){const r=range();return {x:10+x*(w-20),y:10+(r.hi-y)/(r.hi-r.lo)*(h-20)}}
+function projectControl(x,y,w,h){return project(x,state.tool!=='flow'&&state.direction==='out'?1-y:y,w,h)}
+function point(t,w,h){return projectControl(t,ease(t),w,h)}
+function renderGallery(){qa('.fl-curve-gallery [data-curve]').forEach(b=>{let d='';for(let i=0;i<=60;i++){const t=i/60,y=curveAt(b.dataset.curve,t);d+=`${i?'L':'M'}${(6+t*84).toFixed(2)},${(40-(y+.14)/1.28*34).toFixed(2)} `}b.querySelector('.fl-mini-curve').setAttribute('d',d)})}
+function graph(){
+  const box=q('#fl-graph'),svg=box.querySelector('svg');const w=Math.max(50,box.clientWidth),h=box.clientHeight;if(!h)return;
+  const editing=state.curve==='custom';svg.setAttribute('viewBox',`0 0 ${w} ${h}`);let d='';
+  for(let i=0;i<=120;i++){const p=point(i/120,w,h);d+=`${i?'L':'M'}${p.x.toFixed(2)},${p.y.toFixed(2)} `}
+  q('.fl-motion-path').setAttribute('d',d);q('.fl-area-path').setAttribute('d',`${d} L${w-10},${h-10} L10,${h-10} Z`);
+  const bottom=project(0,0,w,h).y,top=project(0,1,w,h).y;
+  q('.fl-grid-path').setAttribute('d',`M10,${top} H${w-10} M10,${(top+bottom)/2} H${w-10} M10,${bottom} H${w-10} M${w/3},10 V${h-10} M${w*2/3},10 V${h-10}`);
+  q('#fl-graph-top').style.top=(top-7)+'px';q('#fl-graph-bottom').style.top=(bottom-7)+'px';
+  for(const [sel,t] of [['.fl-start-dot',0],['.fl-end-dot',1]]){const p=point(t,w,h);q(sel).setAttribute('cx',p.x);q(sel).setAttribute('cy',p.y)}
+  q('.fl-handle-lines').style.display=editing?'':'none';qa('[data-handle]').forEach(b=>b.hidden=!editing);
+  if(editing){const p=state.custom,a=point(0,w,h),z=point(1,w,h),c1=projectControl(p.x1,p.y1,w,h),c2=projectControl(p.x2,p.y2,w,h);q('.fl-handle-lines').setAttribute('d',`M${a.x},${a.y} L${c1.x},${c1.y} M${z.x},${z.y} L${c2.x},${c2.y}`);[c1,c2].forEach((v,i)=>{const b=q(`[data-handle="${i+1}"]`);b.style.left=v.x+'px';b.style.top=v.y+'px';b.setAttribute('aria-label',`Ponto de ${i?'saída':'entrada'}. X ${p['x'+(i+1)].toFixed(2)}, Y ${p['y'+(i+1)].toFixed(2)}. Arraste ou use as setas.`)});qa('[data-coordinate]').forEach(e=>{if(document.activeElement!==e)e.value=state.custom[e.dataset.coordinate].toFixed(2)})}
+}
+function editorState(){const editing=state.curve==='custom';q('.fl-curve-panel').classList.toggle('fl-editing',editing);q('.fl-editor-meta').hidden=!editing;q('.fl-fine-tune').hidden=!editing;q('.fl-runner').style.display='none';q('.fl-playhead').style.opacity='0';q('#fl-preview span').textContent='Reproduzir';q('.fl-parameters').hidden=state.tool==='flow';q('#fl-zoom-screen .fl-note span').textContent=state.tool==='flow'?'Curva aplicada entre os keyframes selecionados.':'Novo efeito Transform · Motion original preservado';q('#fl-graph-bottom').textContent=state.tool==='flow'?'0%':'100%';q('#fl-graph-start').textContent=state.tool==='flow'?'0%':'0,0 s';if(state.tool==='flow'){q('#fl-graph-top').textContent='100%';q('#fl-graph-end').textContent='100%';q('#fl-action-summary').textContent=curveNames[state.curve]+' · Keyframes selecionados'}}
+function selectCurve(id){cancelAnimationFrame(frame);if(id==='custom'&&!state.customEdited)state.custom={...(presetPoints[state.curve]||{x1:.16,y1:.84,x2:.44,y2:1})};state.curve=id;draw();if(id!=='custom')play();persist()}
+qa('[data-handle]').forEach(button=>{
+  let dragging=false;
+  function move(e){if(!dragging)return;const box=q('#fl-graph'),rect=box.getBoundingClientRect(),r=range(),i=button.dataset.handle;const x=clamp((e.clientX-rect.left-10)/(rect.width-20),0,1);let y=clamp(r.hi-(e.clientY-rect.top-10)/(rect.height-20)*(r.hi-r.lo),-.6,1.6);if(state.tool!=='flow'&&state.direction==='out')y=1-y;state.custom={...state.custom,['x'+i]:x,['y'+i]:y};state.customEdited=true;graph()}
+  button.addEventListener('pointerdown',e=>{if(e.button!==0)return;cancelAnimationFrame(frame);q('.fl-runner').style.display='none';dragging=true;button.setPointerCapture(e.pointerId);e.preventDefault();button.focus()});
+  button.addEventListener('pointermove',move);
+  function finish(){if(!dragging)return;dragging=false;persist()}
+  button.addEventListener('pointerup',finish);button.addEventListener('pointercancel',finish);button.addEventListener('lostpointercapture',finish);
+  button.addEventListener('keydown',e=>{if(!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key))return;e.preventDefault();const i=button.dataset.handle,amount=e.shiftKey?.1:.01,p={...state.custom};if(e.key==='ArrowLeft')p['x'+i]-=amount;if(e.key==='ArrowRight')p['x'+i]+=amount;const sign=state.tool!=='flow'&&state.direction==='out'?-1:1;if(e.key==='ArrowUp')p['y'+i]+=amount*sign;if(e.key==='ArrowDown')p['y'+i]-=amount*sign;state.custom=safeCustom(p);state.customEdited=true;graph();persist()});
+});
+qa('[data-coordinate]').forEach(input=>input.addEventListener('input',()=>{if(input.value===''||!Number.isFinite(input.valueAsNumber))return;state.custom=safeCustom({...state.custom,[input.dataset.coordinate]:input.valueAsNumber});state.customEdited=true;cancelAnimationFrame(frame);graph()}));
+qa('[data-coordinate]').forEach(input=>input.addEventListener('change',()=>{input.value=state.custom[input.dataset.coordinate].toFixed(2);persist()}));
+q('#fl-reset-curve').addEventListener('click',()=>{state.custom={x1:.16,y1:.84,x2:.44,y2:1};state.customEdited=true;draw();persist()});
+
+function sliders(){qa('input[type=range]').forEach(e=>e.style.setProperty('--fl-progress',`${(Number(e.value)-Number(e.min))/(Number(e.max)-Number(e.min))*100}%`))}
+function draw(){q('#fl-scale').value=state.scale;q('#fl-duration').value=state.duration;q('#fl-scale-out').innerHTML=`${state.scale}<span>%</span>`;q('#fl-duration-out').innerHTML=`${fmt(state.duration)}<span>s</span>`;q('#fl-graph-top').textContent=state.scale+'%';q('#fl-graph-end').textContent=state.behavior==='full'?'8,4 s':fmt(state.duration)+' s';q('#fl-duration-field').hidden=state.behavior==='full';q('#fl-curve-label').textContent=curveNames[state.curve];qa('[data-curve]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.curve===state.curve)));qa('[data-duration]').forEach(b=>b.setAttribute('aria-pressed',String(Number(b.dataset.duration)===Number(state.duration))));qa('[data-group]').forEach(g=>{g.dataset.selected=state[g.dataset.group];g.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.value===state[g.dataset.group]))) });if(state.tool==='zoom')q('#fl-action-summary').textContent=`Zoom ${state.direction==='in'?'In':'Out'} · ${state.scale}% · ${state.behavior==='full'?'Clipe inteiro':fmt(state.duration)+' s'}`;sliders();editorState();graph()}
+function play(){cancelAnimationFrame(frame);const btn=q('#fl-preview'),runner=q('.fl-runner'),line=q('.fl-playhead');const start=performance.now(),duration=reduce()?0:(state.tool==='flow'?1.6:state.behavior==='full'?8.4:Number(state.duration))*1000;btn.querySelector('span').textContent='Reproduzindo';runner.style.display='block';line.style.opacity='.3';function tick(now){let t=duration?Math.min(1,(now-start)/duration):1;const w=q('#fl-graph').clientWidth,h=q('#fl-graph').clientHeight,p=point(t,w,h);runner.setAttribute('cx',p.x);runner.setAttribute('cy',p.y);line.setAttribute('x1',p.x);line.setAttribute('x2',p.x);line.setAttribute('y1',4);line.setAttribute('y2',h-4);if(t<1)frame=requestAnimationFrame(tick);else{btn.querySelector('span').textContent='Reproduzir';line.style.opacity='0'}}frame=requestAnimationFrame(tick)}
+function selectField(label,options){return `<label class="fl-generic-field">${label}<select>${options.map(o=>`<option>${o}</option>`).join('')}</select></label>`}
+function wave(){return `<div class="fl-wave" aria-label="Forma de onda ilustrativa com pausas destacadas">${Array.from({length:67},(_,i)=>{const quiet=(i>14&&i<22)||(i>44&&i<52);return `<i class="${quiet?'fl-quiet':''}" style="height:${quiet?5+Math.sin(i)*3:15+Math.abs(Math.sin(i*1.73)*Math.cos(i*.31))*50}px"></i>`}).join('')}</div><div class="fl-preview-legend"><span>Áudio selecionado</span><span>Pausas em destaque</span></div>`}
+function other(){let fields='',preview='',note='';switch(state.tool){case'silence':fields=selectField('Perfil de corte',['Equilibrado','Suave','Agressivo'])+selectField('Modo de análise',['Áudio','Transcrição'])+selectField('Pausa mínima',['0,4 s','0,6 s','0,8 s'])+selectField('Margem da fala',['0,08 s','0,12 s','0,16 s']);preview=wave();note='Revise os trechos detectados antes de aplicar os cortes.';break;case'fillers':fields=selectField('Faixa de áudio',['A1 · Voz principal','A2 · Áudio ambiente'])+selectField('Idioma da fala',['Português','Detecção automática']);preview=wave();note='Revise as muletas identificadas antes de cortar.';break;case'captions':fields=selectField('Faixa de áudio',['A1 · Voz principal','A2 · Áudio ambiente'])+selectField('Idioma',['Português (Brasil)','Detectar automaticamente','Inglês'])+selectField('Transcrição',['Alta precisão','Rápida'])+selectField('Palavras por linha',['6 palavras','4 palavras','8 palavras']);preview='<div class="fl-preview-legend"><span>Prévia de leitura</span><span>00:00:02:08</span></div><div class="fl-subtitle-line">O detalhe faz <span class="fl-highlight">a diferença.</span></div>';note='Revise a transcrição antes de exportar o SRT.';break;case'flow':fields=selectField('Curva',['Suave','Punch','Linear'])+selectField('Aplicar entre',['Keyframes selecionados','Primeiro e último keyframe']);preview='<div class="fl-subtitle-line">Entrada suave <span class="fl-highlight">→</span> Saída suave</div><div class="fl-preview-legend"><span>Interpolação do movimento</span><span>Keyframes selecionados</span></div>';note='Escolha os keyframes do movimento na timeline.';break;case'translate':fields=selectField('Idioma de origem',['Detectar automaticamente','Português','Inglês'])+selectField('Traduzir para',['Inglês','Português','Espanhol']);preview='<div class="fl-preview-file"><i data-lucide="file-text" aria-hidden="true"></i><div>Entrevista.srt<small>32 legendas · tempos preservados</small></div></div>';note='A tradução mantém a duração e os tempos das legendas.';break;case'download':fields='<label class="fl-generic-field" style="grid-column:1/-1">Link do vídeo<input type="url" placeholder="Cole o link do YouTube ou TikTok" aria-label="Link do vídeo"></label>'+selectField('Qualidade',['Melhor disponível','1080p','720p'])+selectField('Formato',['Vídeo + áudio','Somente áudio']);preview='<div class="fl-preview-file"><i data-lucide="download" aria-hidden="true"></i><div>Pronto para receber seu link<small>O vídeo aparecerá no projeto após a importação.</small></div></div>';note='Escolha a qualidade e o formato antes de baixar.';break;case'organize':fields=selectField('Agrupar arquivos',['Por tipo de mídia','Por nome'])+selectField('Escopo',['Projeto inteiro','Itens selecionados']);preview='<div class="fl-preview-file"><i data-lucide="folder" aria-hidden="true"></i><div>Vídeos<small>Clipes e arquivos de vídeo</small></div></div><div class="fl-preview-file"><i data-lucide="folder" aria-hidden="true"></i><div>Áudio<small>Músicas, efeitos e gravações</small></div></div>';note='Uma estrutura de pastas consistente para continuar editando.';break}q('#fl-other-screen').innerHTML=`<div class="fl-section-head"><h3>Configuração</h3><span class="fl-small">${meta[state.tool][1].split(' / ')[0]}</span></div><div class="fl-generic-fields">${fields}</div><div class="fl-secondary-preview">${preview}</div><div class="fl-note"><i data-lucide="info" aria-hidden="true"></i><span>${note}</span></div>`;icons()}
+function switchTool(id,save=true){if(!meta[id])return;cancelAnimationFrame(frame);clearTimeout(actionTimer);q('#fl-apply').disabled=false;state.tool=id;const m=meta[id];q('#fl-title').textContent=m[0];q('#fl-category').textContent=m[1];q('#fl-subtitle').textContent=m[2];q('#fl-apply span').textContent=m[3];q('#fl-action-label').textContent=['silence','fillers'].includes(id)?'Pronto para analisar':'Pronto para começar';q('#fl-action-summary').textContent=['download','organize','translate'].includes(id)?'Configuração do projeto':'1 clipe selecionado';qa('[data-tool]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.tool===id)));const curveTool=id==='zoom'||id==='flow';q('#fl-zoom-screen').hidden=!curveTool;q('#fl-other-screen').hidden=curveTool;if(curveTool)draw();else other();const screen=q(curveTool?'#fl-zoom-screen':'#fl-other-screen');screen.classList.remove('fl-screen-switch');void screen.offsetWidth;screen.classList.add('fl-screen-switch');q('#fl-status').textContent='Prévia interativa · dados de exemplo';if(save)persist()}
+qa('[data-tool]').forEach(b=>b.addEventListener('click',()=>switchTool(b.dataset.tool)));
+qa('[data-group] button').forEach(b=>b.addEventListener('click',()=>{state[b.parentElement.dataset.group]=b.dataset.value;draw();persist()}));
+qa('[data-curve]').forEach(b=>b.addEventListener('click',()=>selectCurve(b.dataset.curve)));
+qa('[data-duration]').forEach(b=>b.addEventListener('click',()=>{state.duration=Number(b.dataset.duration);draw();persist()}));
+q('#fl-scale').addEventListener('input',e=>{state.scale=Number(e.target.value);draw()});q('#fl-scale').addEventListener('change',persist);
+q('#fl-duration').addEventListener('input',e=>{state.duration=Number(e.target.value);draw()});q('#fl-duration').addEventListener('change',persist);
+q('#fl-preview').addEventListener('click',play);
+q('#fl-help').addEventListener('click',()=>{q('.fl-help').hidden=!q('.fl-help').hidden;q('#fl-help').setAttribute('aria-expanded',String(!q('.fl-help').hidden))});
+q('.fl-search input').addEventListener('input',e=>{const value=e.target.value.toLocaleLowerCase('pt-BR');let count=0;qa('[data-tool]').forEach(b=>{b.hidden=!b.textContent.toLocaleLowerCase('pt-BR').includes(value);if(!b.hidden)count++});qa('.fl-nav-group').forEach(g=>g.hidden=Array.from(g.querySelectorAll('button')).every(b=>b.hidden));q('.fl-no-results').hidden=count>0});
+q('#fl-apply').addEventListener('click',()=>{const b=q('#fl-apply');b.disabled=true;b.querySelector('span').textContent='Simulando…';q('#fl-status').textContent='Demonstração do estado de processamento';actionTimer=setTimeout(()=>{b.querySelector('span').textContent='Concluído';q('#fl-status').textContent='Simulação concluída · nenhum clipe foi alterado';actionTimer=setTimeout(()=>{b.disabled=false;b.querySelector('span').textContent=meta[state.tool][3]},1800)},reduce()?0:1100)});
+function restore(saved){const s=saved?.privateContent;if(!s||!meta[s.tool]||JSON.stringify(s)===JSON.stringify(state))return;state={...defaults,...s,scale:Math.max(105,Math.min(150,Number(s.scale)||120)),duration:Math.max(.4,Math.min(4,Number(s.duration)||1.6))};if(!curveNames[state.curve])state.curve='ease-in-out';state.custom=safeCustom(state.custom);switchTool(state.tool,false)}
+function layoutNav(){
+  const width=root.getBoundingClientRect().width;
+  const collapsed=typeof state.navPreference==='boolean'?state.navPreference:width<740;
+  const overlay=!collapsed&&width<600;
+  root.dataset.navCollapsed=String(collapsed);root.dataset.navOverlay=String(overlay);
+  const label=collapsed?'Mostrar nomes das ferramentas':'Recolher nomes das ferramentas';
+  q('#fl-nav-toggle').setAttribute('aria-label',label);q('#fl-nav-toggle').setAttribute('data-tooltip',label);q('#fl-nav-toggle').setAttribute('aria-expanded',String(!collapsed));
+  q('.fl-nav-scrim').hidden=!overlay;q('.fl-work').inert=overlay;
+  q('.fl-search input').placeholder=width<450?'Buscar':'Buscar ferramenta';
+  qa('[data-tool]').forEach(b=>{b.setAttribute('aria-label',meta[b.dataset.tool][0]);if(collapsed){b.setAttribute('data-tooltip',meta[b.dataset.tool][0]);b.setAttribute('data-tooltip-placement','right')}else{b.removeAttribute('data-tooltip');b.removeAttribute('data-tooltip-placement')}});
+  requestAnimationFrame(graph);
+}
+function closeNav(){state.navPreference=true;layoutNav();persist()}
+q('#fl-nav-toggle').addEventListener('click',()=>{state.navPreference=root.dataset.navCollapsed!=='true';layoutNav();persist()});
+q('.fl-nav-scrim').addEventListener('click',closeNav);
+root.addEventListener('keydown',e=>{if(e.key==='Escape'&&root.dataset.navOverlay==='true'){e.preventDefault();closeNav();q('#fl-nav-toggle').focus()}});
+qa('[data-tool]').forEach(b=>b.addEventListener('click',()=>{if(root.dataset.navOverlay==='true')closeNav()}));
+function designRender(){root.style.setProperty('--fl-accent',design.accent);root.style.setProperty('--fl-radius',design.radius+'px');root.style.setProperty('--fl-space',design.spacing+'px');root.style.setProperty('--fl-preview-width',design.previewWidth+'px');root.dataset.motion=design.motion?'on':'off';layoutNav()}
+renderGallery();draw();restore(window.openai?.widgetState);layoutNav();new ResizeObserver(graph).observe(q('#fl-graph'));let lastPanelWidth=0;new ResizeObserver(entries=>{const width=entries[0].contentRect.width;if(Math.abs(width-lastPanelWidth)>.5){lastPanelWidth=width;layoutNav()}}).observe(root);window.addEventListener('openai:set_globals',e=>{restore(e.detail?.globals?.widgetState);layoutNav()});
+if(globalThis.Tweak){const tweak=new Tweak({container:root,onChange:()=>{designRender();persist()}});tweak.addSlider(design,'previewWidth',{label:'Largura da prévia',min:320,max:1024,step:1,unit:'px'});tweak.addSlider(design,'spacing',{label:'Respiro lateral',min:20,max:44,unit:'px'});tweak.addColorPicker(design,'accent',{label:'Cor de destaque',reference:'--fl-accent'});tweak.addToggle(design,'motion',{label:'Animações'});}
+})();
+</script>
+</body>
+</html>

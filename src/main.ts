@@ -2,6 +2,9 @@ import "./styles/fonts.css";
 import "./styles/shell.css";
 import { ProductShell } from "./shell/ProductShell";
 
+/** Cravado pelo vite no momento do build. Ver o porquê em vite.config.ts. */
+declare const __BUILD_STAMP__: string;
+
 /**
  * Anything thrown here used to leave the panel a blank rectangle: the
  * Shell constructor and the first Tool's mount both run inside bootstrap,
@@ -14,6 +17,9 @@ function bootstrap(): void {
     return;
   }
   try {
+    // A primeira linha do console diz QUAL arquivo está rodando. Sem
+    // ela, "já corrigi isso" e "continua igual" são as duas verdades.
+    console.log(`[Framelab] build ${__BUILD_STAMP__}`);
     new ProductShell(root).start();
   } catch (cause) {
     console.error("[Framelab] falha ao iniciar:", cause);

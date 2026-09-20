@@ -528,6 +528,22 @@ export function unixScript(
     "set -u",
     `WORK=${shellQuote(folder)}`,
     `printf 1 > "$WORK/${STARTED_FILE}"`,
+    /*
+     * FFMPEG nasce vazia, e isso NÃO é enfeite.
+     *
+     * Com `set -u` ligado, ler uma variável que nunca recebeu valor
+     * aborta o bash na hora. O laço abaixo só atribui FFMPEG quando
+     * ENCONTRA o binário, e a primeira leitura dela é justamente o
+     * teste que decide baixar o FFmpeg. Ou seja: na máquina onde
+     * nenhum dos caminhos tem ffmpeg — exatamente a primeira execução
+     * de um usuário novo — o script morria em "unbound variable"
+     * antes de escrever o resultado, o bloco de download logo abaixo
+     * nunca rodava, e o painel esperava os 20 minutos do tempo limite
+     * para depois acusar problema de autorização que não existia.
+     *
+     * O whisper.ts e o ytdlp.ts já faziam isto. Só este arquivo não.
+     */
+    "FFMPEG=''",
     `CUSTOM=${shellQuote(ffmpegPath)}`,
     // A ordem procura primeiro o que o editor escolheu, depois o diretório
     // integrado do Framelab, Homebrew, MacPorts, PATH e a pasta de trabalho.
@@ -671,6 +687,11 @@ export function probeScript(folder: string, ffmpegPath: string): string {
     "#!/bin/bash",
     `printf '\\033]0;Framelab — teste\\007'`,
     "set -u",
+    // Pelo mesmo motivo do script de extração: sem isto o teste morria
+    // em "unbound variable" na máquina sem ffmpeg, e o diagnóstico
+    // respondia "sem resposta em 20s" — culpando a autorização do
+    // sistema por um erro de script nosso.
+    "FFMPEG=''",
     `CUSTOM=${shellQuote(ffmpegPath)}`,
     'for candidate in "$CUSTOM" "$HOME/Library/Application Support/Framelab/bin/ffmpeg" ' +
       '"/Library/Application Support/Framelab/bin/ffmpeg" /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg /opt/local/bin/ffmpeg /usr/bin/ffmpeg ' +

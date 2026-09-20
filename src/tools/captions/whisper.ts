@@ -56,6 +56,8 @@ const STAGE_FILE = "cc-stage.txt";
  */
 const WHISPER_LOG = "cc-whisper.log";
 const STARTED_FILE = "cc-started.txt";
+/** Quanto o motor levou, escrito pelo script. Ver `readTiming`. */
+const TIMING_FILE = "cc-timing.txt";
 const OUT_BASE = "cc-out";
 const SCRIPT_FILE = "captions.command";
 const SCRIPT_FILE_WIN = "captions.bat";
@@ -83,6 +85,18 @@ export interface WhisperModel {
   readonly file: string;
   readonly url: string;
   readonly megabytes: number;
+  /**
+   * Largura da busca em feixe.
+   *
+   * É o botão de velocidade que ninguém vê. O whisper.cpp assume 5, e
+   * 5 custa de duas a três vezes o tempo de uma busca estreita — o
+   * grosso da espera sai daqui, não do tamanho do modelo. O feixe
+   * largo compensa onde o modelo erra e precisa de uma segunda
+   * opinião; num modelo que já acerta, ele paga caro por pouco. Por
+   * isso o valor acompanha a escada: largo no pequeno, estreito no
+   * grande.
+   */
+  readonly beamSize: number;
 }
 
 /**
@@ -97,6 +111,7 @@ export const MODELS: readonly WhisperModel[] = [
     file: "ggml-small-q5_1.bin",
     url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin",
     megabytes: 181,
+    beamSize: 5,
   },
   {
     id: "turbo",
@@ -105,14 +120,16 @@ export const MODELS: readonly WhisperModel[] = [
     file: "ggml-large-v3-turbo-q5_0.bin",
     url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
     megabytes: 547,
+    beamSize: 3,
   },
   {
     id: "large",
     label: "Máxima",
-    note: "1 GB · 2,4x mais lento, mesma precisão nos testes",
+    note: "1 GB · bem mais lento, e nos testes não acertou mais que o Equilibrado",
     file: "ggml-large-v3-q5_0.bin",
     url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-q5_0.bin",
     megabytes: 1031,
+    beamSize: 2,
   },
 ];
 
@@ -181,6 +198,26 @@ export interface TranscribeResult {
   /** O JSON cru do whisper, quando deu certo. */
   json: string | null;
   scriptPath: string | null;
+  /**
+   * Quanto o motor levou e para quanto áudio, em segundos.
+   *
+   * Existe para "está lento" virar um número: `8 min para 12 min de
+   * áudio` é uma frase que dá para comparar entre modelos e entre
+   * máquinas; "demorou" não é.
+   */
+  timing?: { elapsedSeconds: number; audioSeconds: number } | null;
+}
+
+/** Lê o carimbo de tempo que o script deixou. Ausente não é erro. */
+function readTiming(
+  space: Workspace
+): { elapsedSeconds: number; audioSeconds: number } | null {
+  const raw = readText(space, TIMING_FILE);
+  if (!raw) return null;
+  const [gasto, audio] = raw.split(/\s+/).map((n) => Number.parseFloat(n));
+  return Number.isFinite(gasto) && Number.isFinite(audio)
+    ? { elapsedSeconds: gasto, audioSeconds: audio }
+    : null;
 }
 
 export interface StageReport {
@@ -211,7 +248,7 @@ export async function transcribe(
   const scriptPath = nativePath(space, scriptName());
   const outJson = `${OUT_BASE}.json`;
 
-  for (const name of [RESULT_FILE, STAGE_FILE, STARTED_FILE, WHISPER_LOG, outJson, "cc-audio.wav"]) {
+  for (const name of [RESULT_FILE, STAGE_FILE, STARTED_FILE, WHISPER_LOG, TIMING_FILE, outJson, "cc-audio.wav"]) {
     await remove(space, name);
   }
 
@@ -291,6 +328,7 @@ export async function transcribe(
           error: null,
           json: readJson(space, outJson),
           scriptPath,
+          timing: readTiming(space),
         };
       } catch {
         // JSON pela metade; o `mv` do script torna isso raro.
@@ -413,7 +451,13 @@ export function unixScript(
       ? []
       : [
           'stage "Conferindo o idioma…"',
-          `DET=$("$WHISPER" -m "$MODEL" -f "$WORK/cc-audio.wav" -dl 2>&1 || true)`,
+          // O `-dl` só olha os primeiros 30s, mas LÊ o arquivo inteiro
+          // antes de decidir isso: numa faixa de uma hora são ~115 MB
+          // de PCM carregados para usar meio por cento deles. Um
+          // recorte custa centésimos de segundo e poupa a leitura.
+          `"$FFMPEG" -v error -y -t 30 -i "$WORK/cc-audio.wav" -c copy "$WORK/cc-probe.wav" 2>/dev/null || cp "$WORK/cc-audio.wav" "$WORK/cc-probe.wav"`,
+          `DET=$("$WHISPER" -m "$MODEL" -f "$WORK/cc-probe.wav" -dl 2>&1 || true)`,
+          'rm -f "$WORK/cc-probe.wav"',
           `DETLANG=$(printf '%s' "$DET" | sed -n 's/.*auto-detected language: \\([a-z][a-z]*\\).*/\\1/p' | head -1)`,
           `DETP=$(printf '%s' "$DET" | sed -n 's/.*p = \\([0-9.]*\\).*/\\1/p' | head -1)`,
           // A probabilidade entra como VARIÁVEL do awk. Escrita como
@@ -446,6 +490,19 @@ export function unixScript(
     // eficiência atrasam o conjunto. Fora do macOS cai para o total.
     'THREADS=$(sysctl -n hw.perflevel0.physicalcpu 2>/dev/null || sysctl -n hw.physicalcpu 2>/dev/null || echo 4)',
     /*
+     * Flash attention: de graça, quando o binário tem.
+     *
+     * Nas builds recentes do whisper.cpp o `-fa` acelera a atenção no
+     * Metal sem mexer no resultado. Nas antigas ele não existe — e um
+     * argumento desconhecido não é ignorado, o whisper MORRE nele. Daí
+     * a pergunta ao `--help` antes: quem tem, usa; quem não tem, roda
+     * como rodava.
+     */
+    `FA=""; "$WHISPER" --help 2>&1 | grep -q -- "-fa" && FA="-fa"`,
+    // O relógio de parede desta etapa, para o painel poder dizer
+    // "3 min para 10 min de áudio" em vez de só "demorou".
+    "T0=$(date +%s)",
+    /*
      * `-pp` é uma BANDEIRA. Escrito `-pp false`, o `false` virava um
      * segundo arquivo de entrada ("input file not found 'false'") — o
      * whisper reclamava e seguia, mas o progresso nunca chegou ao
@@ -453,9 +510,12 @@ export function unixScript(
      * saem o percentual e o diagnóstico de lentidão.
      */
     `"$WHISPER" -m "$MODEL" -f "$WORK/cc-audio.wav" -l ${q(language)} ` +
-      `-t "$THREADS" -bs 5 -bo 5 -sns -et 2.4 -lpt -1.0 ` +
+      `-t "$THREADS" $FA -bs ${model.beamSize} -bo ${model.beamSize} -sns -et 2.4 -lpt -1.0 ` +
       (prompt ? `--prompt ${q(prompt)} ` : "") +
       `-ojf -of "$WORK/${OUT_BASE}" -pp >/dev/null 2>"$WORK/${WHISPER_LOG}" || fail whisper-failed`,
+    // Quanto levou, e para quantos segundos de áudio. É o número que
+    // transforma "está lento" em algo que dá para conferir.
+    `printf '%s %s' "$(( $(date +%s) - T0 ))" ${q(job.durationSeconds.toFixed(1))} > "$WORK/${TIMING_FILE}"`,
     `if [ ! -f "$WORK/${OUT_BASE}.json" ]; then fail no-output; fi`,
 
     // O WAV de 16 kHz de uma hora de fala são ~115 MB; some assim que

@@ -1,8 +1,8 @@
 {
-  "version": "0.4.0",
-  "releaseDate": "2026-09-04",
+  "version": "0.4.1",
+  "releaseDate": "2026-09-11",
   "minPremiereVersion": "25.0.0",
-  "changelog": "TRADUZIR LEGENDA (nova). Você traz um .srt — do disco ou de dentro do projeto aberto — escolhe os idiomas, e sai o mesmo arquivo traduzido com os tempos IDÊNTICOS aos que entraram. A tradução é por FRASE, não por bloco: numa legenda a frase atravessa três ou quatro blocos, e traduzir cada pedaço solto produzia texto sem sentido. A frase vai inteira e volta repartida nos mesmos blocos. Detecta o idioma de origem sozinho, traduz para 16 idiomas, e o arquivo novo entra no projeto marcado na frente — [PT] nome.srt — para você distinguir do original mesmo com o nome cortado no painel. LEGENDAS: a transcrição confere o idioma antes de gastar minutos. Forçar francês num áudio em português não dava erro — o motor obedecia e inventava uma tradução inteira. Agora ele detecta em 4 segundos e avisa antes. O modelo Máxima passou a dizer o preço real: 2,4x mais lento que o Equilibrado, com a mesma precisão nos testes. ZOOM: corrigido o keyframe âncora que podia entrar com escala 0%. Ajustes de padrão e de rótulo nas legendas, e o Organizar agora reconhece sequências aninhadas e uma categoria própria para legendas.",
+  "changelog": "ÍCONES DA INTERFACE: correção da renderização SVG no motor UXP do Premiere Pro. Todos os ícones do menu lateral (Corte de Silêncios, Cortar Muletas, Curvas de velocidade, Traduzir Legenda, Legendas, Baixar Vídeos, Organizar Pastas e Zoom) agora são exibidos com nitidez total e traços precisos no tema Tungsten 3200K. Melhorias de estabilidade e compatibilidade geral.",
   "downloadUrl": "https://github.com/SidyFurtado/framelab/releases/latest/download/Framelab-macOS.zip",
   "bundleFiles": {
     "manifest.json": "https://raw.githubusercontent.com/SidyFurtado/framelab/main/dist/manifest.json",

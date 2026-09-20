@@ -40,8 +40,11 @@
       let bestIndex = -1;
       let totalSelected = 0;
       let totalSeconds = 0;
+      const tracks = await Promise.all(
+        Array.from({ length: trackCount }, (_, index) => sequence.getVideoTrack(index))
+      );
       for (let trackIndex = 0; trackIndex < trackCount; trackIndex++) {
-        const track = await sequence.getVideoTrack(trackIndex);
+        const track = tracks[trackIndex];
         if (!track) {
           continue;
         }
@@ -126,24 +129,32 @@
     const refs = [];
     const seen = /* @__PURE__ */ new Map();
     const trackCount = await sequence.getVideoTrackCount();
+    const tracks = await Promise.all(
+      Array.from({ length: trackCount }, (_, index) => sequence.getVideoTrack(index))
+    );
     for (let trackIndex = 0; trackIndex < trackCount; trackIndex++) {
-      const track = await sequence.getVideoTrack(trackIndex);
+      const track = tracks[trackIndex];
       if (!track) {
         continue;
       }
       const items = track.getTrackItems(ppro.Constants.TrackItemType.CLIP, false);
-      for (const item of items) {
-        if (await item.getIsSelected()) {
-          const base = await clipIdentity(item, trackIndex, refs.length);
-          const repeat = seen.get(base) ?? 0;
-          seen.set(base, repeat + 1);
-          refs.push({
-            clip: item,
-            key: repeat === 0 ? base : `${base}#${repeat}`,
-            trackIndex
-          });
-        }
-      }
+      const selected = await Promise.all(
+        items.map((item) => Promise.resolve(item.getIsSelected()).catch(() => false))
+      );
+      const chosen = items.filter((_, at) => selected[at]);
+      const identities = await Promise.all(
+        chosen.map((item, at) => clipIdentity(item, trackIndex, refs.length + at))
+      );
+      chosen.forEach((item, at) => {
+        const base = identities[at];
+        const repeat = seen.get(base) ?? 0;
+        seen.set(base, repeat + 1);
+        refs.push({
+          clip: item,
+          key: repeat === 0 ? base : `${base}#${repeat}`,
+          trackIndex
+        });
+      });
     }
     return refs;
   }
@@ -214,6 +225,367 @@
       }
     }
     return { ok: missing.length === 0, missing };
+  }
+  const WORK_FOLDER = "edit-toolbox-audio";
+  const PROBE_FILE = "write-probe.txt";
+  function uxpModule(name) {
+    if (typeof require !== "function") {
+      return null;
+    }
+    try {
+      return require(name) ?? null;
+    } catch {
+      return null;
+    }
+  }
+  function fsModule() {
+    return uxpModule("fs");
+  }
+  function shellModule() {
+    return uxpModule("uxp")?.shell ?? null;
+  }
+  function platform() {
+    try {
+      return uxpModule("os")?.platform() ?? "darwin";
+    } catch {
+      return "darwin";
+    }
+  }
+  function isWindows() {
+    return /^win/i.test(platform());
+  }
+  const UXP_SCHEME = /^[a-z][a-z0-9+.-]+:/i;
+  function join(base, ...parts) {
+    const separator = isWindows() && !UXP_SCHEME.test(base) ? "\\" : "/";
+    return [base.replace(/[\\/]+$/, ""), ...parts].join(separator);
+  }
+  let cached = null;
+  let attempts = [];
+  function workspaceAttempts() {
+    return attempts;
+  }
+  function forgetWorkspace() {
+    cached = null;
+    attempts = [];
+  }
+  async function workspace() {
+    if (cached) {
+      return cached;
+    }
+    const fs = fsModule();
+    if (!fs) {
+      throw new Error('require("fs") não resolveu');
+    }
+    attempts = [];
+    for (const candidate of await candidates()) {
+      const found = await tryCandidate(fs, candidate);
+      if (found) {
+        cached = found;
+        console.log(
+          `[Silêncios] pasta de trabalho: ${found.fsBase} (${found.origin}, ${found.sync ? "sync" : "async"}) → ${found.nativeBase}`
+        );
+        return found;
+      }
+    }
+    throw new Error(
+      `nenhum caminho gravável (${attempts.join(" · ") || "sem candidatos"})`
+    );
+  }
+  async function candidates() {
+    const list = [];
+    const storage = uxpModule("uxp")?.storage?.localFileSystem;
+    const dataNative = await nativePathOf(storage?.getDataFolder?.bind(storage), "getDataFolder");
+    if (dataNative) {
+      list.push({
+        fsBase: `plugin-data:/${WORK_FOLDER}`,
+        nativeBase: join(dataNative, WORK_FOLDER),
+        origin: "plugin-data + subpasta"
+      });
+      list.push({
+        fsBase: "plugin-data:",
+        nativeBase: dataNative,
+        origin: "plugin-data raiz"
+      });
+    }
+    const tempNative = await nativePathOf(
+      storage?.getTemporaryFolder?.bind(storage),
+      "getTemporaryFolder"
+    );
+    if (tempNative) {
+      list.push({
+        fsBase: `plugin-temp:/${WORK_FOLDER}`,
+        nativeBase: join(tempNative, WORK_FOLDER),
+        origin: "plugin-temp + subpasta"
+      });
+      list.push({
+        fsBase: "plugin-temp:",
+        nativeBase: tempNative,
+        origin: "plugin-temp raiz"
+      });
+    }
+    if (dataNative) {
+      list.push({
+        fsBase: join(dataNative, WORK_FOLDER),
+        nativeBase: join(dataNative, WORK_FOLDER),
+        origin: "caminho nativo (dados do plugin)"
+      });
+    }
+    try {
+      const home = uxpModule("os")?.homedir?.();
+      if (home) {
+        const base = isWindows() ? join(home, "AppData", "Local", "EditToolbox") : join(home, "Library", "Caches", "EditToolbox");
+        list.push({ fsBase: base, nativeBase: base, origin: "caminho nativo (home)" });
+      }
+    } catch (cause) {
+      attempts.push(`os.homedir: ${describe(cause)}`);
+    }
+    return list;
+  }
+  async function nativePathOf(read, label) {
+    if (typeof read !== "function") {
+      attempts.push(`${label}: ausente`);
+      return null;
+    }
+    try {
+      const folder = await read();
+      if (folder?.nativePath) {
+        return folder.nativePath;
+      }
+      attempts.push(`${label}: sem nativePath`);
+    } catch (cause) {
+      attempts.push(`${label}: ${describe(cause)}`);
+    }
+    return null;
+  }
+  async function tryCandidate(fs, candidate) {
+    try {
+      await fs.mkdir(candidate.fsBase, { recursive: true });
+    } catch {
+    }
+    const probe2 = join(candidate.fsBase, PROBE_FILE);
+    const stamp = "edit-toolbox";
+    for (const sync of [true, false]) {
+      try {
+        if (sync) {
+          fs.writeFileSync(probe2, stamp, { encoding: "utf-8" });
+        } else {
+          await fs.writeFile(probe2, stamp, { encoding: "utf-8" });
+        }
+        const back = String(fs.readFileSync(probe2, { encoding: "utf-8" }));
+        if (back.trim() !== stamp) {
+          attempts.push(`${candidate.origin}: leu "${back.slice(0, 20)}"`);
+          continue;
+        }
+        return { ...candidate, sync };
+      } catch (cause) {
+        attempts.push(`${candidate.origin} ${sync ? "sync" : "async"}: ${describe(cause)}`);
+      }
+    }
+    return null;
+  }
+  function fsPath(space, name) {
+    return join(space.fsBase, name);
+  }
+  function nativePath(space, name) {
+    return join(space.nativeBase, name);
+  }
+  async function write(space, name, data, executable = false) {
+    const fs = fsModule();
+    if (!fs) {
+      throw new Error('require("fs") não resolveu');
+    }
+    const path = fsPath(space, name);
+    const attempts2 = executable ? [{ encoding: "utf-8", mode: 493 }, { encoding: "utf-8" }] : [{ encoding: "utf-8" }];
+    let lastError = null;
+    for (const options of attempts2) {
+      try {
+        if (space.sync) {
+          fs.writeFileSync(path, data, options);
+        } else {
+          await fs.writeFile(path, data, options);
+        }
+        return;
+      } catch (cause) {
+        lastError = cause;
+      }
+    }
+    throw lastError ?? new Error(`não foi possível escrever ${name}`);
+  }
+  async function ensureDir(space, relative) {
+    const fs = fsModule();
+    if (!fs) {
+      throw new Error('require("fs") não resolveu');
+    }
+    const parts = relative.split("/").filter(Boolean);
+    let path = space.fsBase;
+    for (const part of parts) {
+      path = join(path, part);
+      try {
+        await fs.mkdir(path);
+      } catch {
+      }
+    }
+  }
+  function exists(space, relative) {
+    const fs = fsModule();
+    if (!fs) {
+      return false;
+    }
+    try {
+      fs.readFileSync(join(space.fsBase, relative), { encoding: "utf-8" });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  function readText$1(space, name) {
+    const fs = fsModule();
+    if (!fs) {
+      return null;
+    }
+    try {
+      const raw = fs.readFileSync(fsPath(space, name), { encoding: "utf-8" });
+      const text2 = String(raw).trim();
+      return text2.length > 0 ? text2 : null;
+    } catch {
+      return null;
+    }
+  }
+  async function remove(space, name) {
+    const fs = fsModule();
+    if (!fs) {
+      return;
+    }
+    try {
+      await fs.unlink(fsPath(space, name));
+    } catch {
+    }
+  }
+  function describe(cause) {
+    return cause instanceof Error ? cause.message : String(cause);
+  }
+  function shellQuote(value) {
+    return `'${value.replace(/'/g, `'\\''`)}'`;
+  }
+  function batValue(value) {
+    return value.replace(/[\r\n"]/g, "").replace(/%/g, "%%");
+  }
+  function wait$1(ms) {
+    return new Promise((resolve2) => setTimeout(resolve2, ms));
+  }
+  const DIAG_FILE = "zoom-diag.json";
+  async function dumpDiag(payload, file = DIAG_FILE) {
+    try {
+      const space = await workspace();
+      await write(space, file, JSON.stringify(payload, null, 2));
+      console.log(`[Diag] relatório em ${nativePath(space, file)}`);
+    } catch (cause) {
+      console.warn("[Zoom] não consegui escrever o relatório:", cause);
+    }
+  }
+  async function probeParams(ppro, component, ticks) {
+    const rows = [];
+    let count = 0;
+    try {
+      count = Number(await Promise.resolve(component.getParamCount())) || 0;
+    } catch {
+      return rows;
+    }
+    for (let index = 0; index < count; index += 1) {
+      let name = "(erro)";
+      let valor = "(não lido)";
+      let tipo = "?";
+      try {
+        const param = component.getParam(index);
+        try {
+          name = (param.displayName ?? "").trim();
+        } catch {
+          name = "(sem nome)";
+        }
+        try {
+          const raw = await param.getValueAtTime(ppro.TickTime.createWithTicks(ticks));
+          tipo = raw === null ? "null" : typeof raw;
+          valor = unwrapValue(raw);
+        } catch (cause) {
+          valor = `(erro: ${cause instanceof Error ? cause.message : String(cause)})`;
+        }
+      } catch {
+      }
+      rows.push({ index, name, tipo, valor });
+    }
+    return rows;
+  }
+  function unwrapValue(raw, depth = 0) {
+    if (raw === null || raw === void 0) {
+      return raw ?? null;
+    }
+    if (typeof raw === "number") {
+      return Number.isFinite(raw) ? raw : "NaN";
+    }
+    if (typeof raw !== "object") {
+      return raw;
+    }
+    if (Array.isArray(raw)) {
+      return raw.map((item) => unwrapValue(item, depth + 1));
+    }
+    const point = raw;
+    if (point.x !== void 0 || point.y !== void 0) {
+      return { x: Number(point.x), y: Number(point.y) };
+    }
+    const wrapper = raw;
+    if ("value" in wrapper && depth < 4) {
+      return unwrapValue(wrapper.value, depth + 1);
+    }
+    try {
+      const keys = Object.keys(raw);
+      return keys.length > 0 ? `(objeto: ${keys.join(", ")})` : String(raw);
+    } catch {
+      return String(raw);
+    }
+  }
+  function numberOf(raw) {
+    const plain = unwrapValue(raw);
+    return typeof plain === "number" ? plain : null;
+  }
+  async function probeKeyframes(param) {
+    let times;
+    try {
+      times = await Promise.resolve(param.getKeyframeListAsTickTimes());
+    } catch (cause) {
+      return `(erro na lista: ${cause instanceof Error ? cause.message : String(cause)})`;
+    }
+    if (!Array.isArray(times)) {
+      return "(o host não devolveu uma lista)";
+    }
+    const rows = [];
+    for (const time of times) {
+      let valor = "(não lido)";
+      try {
+        valor = unwrapValue(await param.getValueAtTime(time));
+      } catch (cause) {
+        valor = `(erro: ${cause instanceof Error ? cause.message : String(cause)})`;
+      }
+      rows.push({
+        ticks: String(time?.ticks ?? "?"),
+        segundos: Number(time?.seconds ?? NaN),
+        valor
+      });
+    }
+    return rows;
+  }
+  async function findComponent(chain, pattern) {
+    try {
+      const count = Number(await Promise.resolve(chain.getComponentCount())) || 0;
+      for (let index = 0; index < count; index += 1) {
+        const component = await Promise.resolve(chain.getComponentAtIndex(index));
+        const matchName = component ? await component.getMatchName().catch(() => "") : "";
+        if (pattern.test(matchName)) {
+          return component;
+        }
+      }
+    } catch {
+    }
+    return null;
   }
   const SCALE_MIN = 105;
   const SCALE_MAX = 150;
@@ -290,6 +662,8 @@
         if (!inPoint || !outPoint || !(outPoint.seconds > inPoint.seconds)) {
           continue;
         }
+        const seqStart = await Promise.resolve(clip.getStartTime()).catch(() => null);
+        const seqEnd = await Promise.resolve(clip.getEndTime()).catch(() => null);
         const newComponent = await ppro.VideoFilterFactory.createComponent(
           transformMatchName
         );
@@ -297,7 +671,10 @@
           continue;
         }
         const appendIndex = await Promise.resolve(chain.getComponentCount());
-        const punchSec = Math.max(PUNCH_DURATION_MIN, Math.min(PUNCH_DURATION_MAX, options.punchDuration));
+        const punchSec = Math.max(
+          PUNCH_DURATION_MIN,
+          Math.min(PUNCH_DURATION_MAX, options.punchDuration)
+        );
         const endTime = options.style === "punch" ? ppro.TickTime.createWithSeconds(
           Math.min(inPoint.seconds + punchSec, outPoint.seconds)
         ) : outPoint;
@@ -307,12 +684,14 @@
           newComponent,
           appendIndex,
           startTicks: inPoint.ticks,
-          endTicks: endTime.ticks
+          endTicks: endTime.ticks,
+          seqStartTicks: seqStart ? seqStart.ticks : "(ilegível)",
+          seqEndTicks: seqEnd ? seqEnd.ticks : "(ilegível)"
         });
       }
       if (targets.length === 0) {
         return fail$2(
-          speedSkipped > 0 ? `Nenhum clipe elegível: ${speedSkipped} com velocidade alterada. O Zoom precisa de clipes a 100% para o tempo do punch bater.` : "Nenhum clipe selecionado aceitou um efeito Transform."
+          speedSkipped > 0 ? `Nenhum clipe elegível: ${speedSkipped} com velocidade alterada. O Zoom precisa de clipes com velocidade a 100% para o tempo do punch bater.` : "Nenhum clipe selecionado aceitou um efeito Transform."
         );
       }
       let insertCommitted = false;
@@ -352,15 +731,22 @@
       const refreshedSequence = await (await ppro.Project.getActiveProject())?.getActiveSequence();
       const refreshedClips = refreshedSequence ? await collectSelectedVideoClips(ppro, refreshedSequence) : [];
       const clipByKey = new Map(refreshedClips.map((ref) => [ref.key, ref.clip]));
+      const semResgate = [];
+      let probeChain = null;
+      let probeTransform = null;
+      let probeTicks = "0";
+      let probeTarget = null;
       for (const target of targets) {
         const clip = clipByKey.get(target.clipKey);
         if (!clip) {
           console.warn("[Zoom] clipe não encontrado após a inserção do Transform");
+          semResgate.push(target.clipKey);
           continue;
         }
         const chain = await clip.getComponentChain();
         if (!chain) {
           console.warn("[Zoom] cadeia de efeitos ilegível após a inserção");
+          semResgate.push(target.clipKey);
           continue;
         }
         const comp = await findTransformComponent(
@@ -370,9 +756,21 @@
         );
         if (!comp) {
           console.warn("[Zoom] componente Transform não encontrado no clipe");
+          const porIndice = await componentAtIndex(chain, target.appendIndex);
+          if (porIndice) {
+            appended.push({ chain, component: porIndice });
+          } else {
+            semResgate.push(target.clipKey);
+          }
           continue;
         }
         appended.push({ chain, component: comp });
+        if (!probeTransform) {
+          probeChain = chain;
+          probeTransform = comp;
+          probeTicks = target.startTicks;
+          probeTarget = target;
+        }
         const scaleParam = await findScaleParamWithDiag(comp);
         if (!scaleParam) {
           console.warn("[Zoom] parâmetro Scale não encontrado no Transform");
@@ -385,60 +783,146 @@
           endTicks: target.endTicks
         });
       }
+      if (semResgate.length > 0) {
+        console.warn(
+          `[Zoom] ${semResgate.length} Transform(s) podem ter ficado no clipe: ` + semResgate.join(", ")
+        );
+      }
       if (readyScaleItems.length === 0) {
         rollbackAppends();
         return fail$2(
           "Nenhum parâmetro Scale encontrado no Transform. O console do UXP tem o dump."
         );
       }
+      const motion = probeChain ? await findComponent(probeChain, /motion/i) : null;
+      const relatorio = {
+        quando: (/* @__PURE__ */ new Date()).toISOString(),
+        transformMatchName,
+        ticksDaCabeca: probeTicks,
+        relogios: probeTarget ? {
+          mediaIn: probeTarget.startTicks,
+          mediaOut: probeTarget.endTicks,
+          sequenciaIn: probeTarget.seqStartTicks,
+          sequenciaOut: probeTarget.seqEndTicks
+        } : "(clipe-cobaia não encontrado)",
+        vouEscrever: {
+          de: options.direction === "in" ? NEUTRAL_SCALE : options.scalePercent,
+          para: options.direction === "in" ? options.scalePercent : NEUTRAL_SCALE
+        },
+        scaleParamEscolhido: readyScaleItems[0] ? safeDisplayName$1(readyScaleItems[0].scaleParam) : null,
+        motion: motion ? await probeParams(ppro, motion, probeTicks) : "(Motion não encontrado)",
+        transformNovo: probeTransform ? await probeParams(ppro, probeTransform, probeTicks) : "(Transform não encontrado)"
+      };
+      await dumpDiag(relatorio);
       const [baseFrom, baseTo] = options.direction === "in" ? [NEUTRAL_SCALE, options.scalePercent] : [options.scalePercent, NEUTRAL_SCALE];
+      const placedOf = /* @__PURE__ */ new Map();
+      const animaveis = [];
+      for (const item of readyScaleItems) {
+        const startSec = ppro.TickTime.createWithTicks(item.startTicks).seconds;
+        const endSec = ppro.TickTime.createWithTicks(item.endTicks).seconds;
+        const duration = endSec - startSec;
+        if (!(duration > 0)) {
+          continue;
+        }
+        placedOf.set(
+          item,
+          placeKeyframes(
+            ppro,
+            options,
+            baseFrom,
+            baseTo,
+            item.startTicks,
+            item.endTicks,
+            startSec,
+            duration,
+            ticksPerFrame
+          )
+        );
+        animaveis.push(item);
+      }
+      if (animaveis.length === 0) {
+        rollbackAppends();
+        return fail$2("Nenhum clipe selecionado tem duração para animar.");
+      }
+      let clockCommitted = false;
+      project2.lockedAccess(() => {
+        clockCommitted = project2.executeTransaction((compoundAction) => {
+          for (const item of animaveis) {
+            compoundAction.addAction(item.scaleParam.createSetTimeVaryingAction(true));
+          }
+        }, "Ligar o cronômetro do Zoom");
+      });
+      if (!clockCommitted) {
+        rollbackAppends();
+        return fail$2("O Premiere recusou ligar o cronômetro do Scale.");
+      }
+      const keyframesDoHost = [];
+      const paraApagar = [];
+      for (const item of animaveis) {
+        let times;
+        try {
+          times = await Promise.resolve(item.scaleParam.getKeyframeListAsTickTimes());
+        } catch (cause) {
+          console.warn("[Zoom] não deu para listar o que o cronômetro criou:", cause);
+          continue;
+        }
+        if (!Array.isArray(times)) {
+          continue;
+        }
+        for (const time of times) {
+          if (item === animaveis[0]) {
+            let valor = "(não lido)";
+            try {
+              const bruto = await item.scaleParam.getValueAtTime(time);
+              valor = numberOf(bruto) ?? bruto;
+            } catch (cause) {
+              valor = `(erro: ${describeError$1(cause)})`;
+            }
+            keyframesDoHost.push({ ticks: String(time?.ticks ?? "?"), valor });
+          }
+          paraApagar.push({ param: item.scaleParam, time });
+        }
+      }
+      let hostCleared = true;
+      if (paraApagar.length > 0) {
+        console.log(
+          `[Zoom] o cronômetro criou ${paraApagar.length} keyframe(s); apagando antes de escrever`
+        );
+        hostCleared = false;
+        try {
+          project2.lockedAccess(() => {
+            hostCleared = project2.executeTransaction((compoundAction) => {
+              for (const entry of paraApagar) {
+                compoundAction.addAction(
+                  entry.param.createRemoveKeyframeAction(entry.time)
+                );
+              }
+            }, "Limpar o keyframe que o Premiere criou sozinho");
+          });
+        } catch (cause) {
+          console.warn("[Zoom] a limpeza do âncora não assentou:", cause);
+        }
+      }
       let animCommitted = false;
       project2.lockedAccess(() => {
         animCommitted = project2.executeTransaction((compoundAction) => {
-          for (const item of readyScaleItems) {
-            const { scaleParam, startTicks, endTicks } = item;
-            try {
-              const initialKf = scaleParam.createKeyframe(baseFrom);
-              compoundAction.addAction(scaleParam.createSetValueAction(initialKf));
-            } catch (cause) {
-              console.warn("[Zoom] createSetValueAction warning:", cause);
+          for (const item of animaveis) {
+            const placed = placedOf.get(item);
+            if (!placed) {
+              continue;
             }
-            compoundAction.addAction(
-              scaleParam.createSetTimeVaryingAction(true)
-            );
-            const startSec = ppro.TickTime.createWithTicks(startTicks).seconds;
-            const endSec = ppro.TickTime.createWithTicks(endTicks).seconds;
-            const duration = endSec - startSec;
-            if (duration > 0) {
-              const delta = baseTo - baseFrom;
-              const placed = /* @__PURE__ */ new Map();
-              placed.set(startTicks, baseFrom);
-              const firstSnapped = snapTicksToFrame(startTicks, ticksPerFrame);
-              placed.set(firstSnapped, baseFrom);
-              for (let step2 = 0; step2 <= CURVE_KEYS; step2++) {
-                const t = step2 / CURVE_KEYS;
-                const ticks = snapTicksToFrame(
-                  ppro.TickTime.createWithSeconds(startSec + duration * t).ticks,
-                  ticksPerFrame
-                );
-                placed.set(ticks, baseFrom + delta * options.ease(t));
-              }
-              placed.set(endTicks, baseTo);
-              const lastTicks = snapTicksToFrame(endTicks, ticksPerFrame);
-              placed.set(lastTicks, baseTo);
-              for (const [ticks, value] of placed) {
-                const kf = scaleParam.createKeyframe(value);
-                kf.position = ppro.TickTime.createWithTicks(ticks);
-                compoundAction.addAction(scaleParam.createAddKeyframeAction(kf));
-              }
-              for (const ticks of placed.keys()) {
-                compoundAction.addAction(
-                  scaleParam.createSetInterpolationAtKeyframeAction(
-                    ppro.TickTime.createWithTicks(ticks),
-                    ppro.Constants.InterpolationMode.LINEAR
-                  )
-                );
-              }
+            for (const [ticks, value] of placed) {
+              const kf = item.scaleParam.createKeyframe(value);
+              kf.position = ppro.TickTime.createWithTicks(ticks);
+              compoundAction.addAction(item.scaleParam.createAddKeyframeAction(kf));
+            }
+            for (const ticks of placed.keys()) {
+              compoundAction.addAction(
+                item.scaleParam.createSetInterpolationAtKeyframeAction(
+                  ppro.TickTime.createWithTicks(ticks),
+                  ppro.Constants.InterpolationMode.LINEAR
+                )
+              );
             }
           }
         }, "Aplicar Zoom");
@@ -446,6 +930,123 @@
       if (!animCommitted) {
         rollbackAppends();
         return fail$2("Premiere rejected the zoom animation transaction.");
+      }
+      const headOf = /* @__PURE__ */ new Map();
+      for (const [item, placed] of placedOf) {
+        const first = [...placed.keys()][0];
+        if (first !== void 0) {
+          headOf.set(item, first);
+        }
+      }
+      const strays = [];
+      for (const item of readyScaleItems) {
+        const nossos = placedOf.get(item);
+        if (!nossos || nossos.size === 0) {
+          continue;
+        }
+        try {
+          const kfTimes = await Promise.resolve(item.scaleParam.getKeyframeListAsTickTimes());
+          if (!Array.isArray(kfTimes)) {
+            continue;
+          }
+          const meus = /* @__PURE__ */ new Set();
+          for (const t of nossos.keys()) {
+            try {
+              meus.add(BigInt(t).toString());
+            } catch {
+              meus.add(t);
+            }
+          }
+          const alheios = kfTimes.filter((time) => {
+            try {
+              return !meus.has(BigInt(time.ticks).toString());
+            } catch {
+              return false;
+            }
+          });
+          if (alheios.length > 0) {
+            strays.push({ param: item.scaleParam, times: alheios });
+          }
+        } catch (err) {
+          console.warn("[Zoom] leitura de keyframes para a varredura falhou:", err);
+        }
+      }
+      if (strays.length > 0) {
+        const total = strays.reduce((soma, entry) => soma + entry.times.length, 0);
+        console.log(`[Zoom] removendo ${total} keyframe(s) que o host criou sozinho`);
+        try {
+          project2.lockedAccess(() => {
+            project2.executeTransaction((compoundAction) => {
+              for (const entry of strays) {
+                for (const time of entry.times) {
+                  compoundAction.addAction(entry.param.createRemoveKeyframeAction(time));
+                }
+              }
+            }, "Limpar keyframe alheio do Zoom");
+          });
+        } catch (err) {
+          console.warn("[Zoom] não foi possível remover o keyframe alheio:", err);
+        }
+      }
+      const cabecas = [];
+      for (const item of readyScaleItems) {
+        const tick = headOf.get(item);
+        if (tick === void 0) {
+          continue;
+        }
+        const alvo = placedOf.get(item)?.get(tick) ?? baseFrom;
+        const time = ppro.TickTime.createWithTicks(tick);
+        const ler = async () => {
+          try {
+            return await item.scaleParam.getValueAtTime(time);
+          } catch (cause) {
+            return `(erro: ${describeError$1(cause)})`;
+          }
+        };
+        const bruto = await ler();
+        const relato = {
+          tick,
+          alvo,
+          antes: numberOf(bruto) ?? bruto,
+          precisou: false,
+          apagou: false,
+          escreveu: false,
+          depois: null
+        };
+        const lido = numberOf(bruto);
+        if (lido === null || Math.abs(lido - alvo) > 0.5) {
+          relato.precisou = true;
+          try {
+            project2.lockedAccess(() => {
+              relato.apagou = project2.executeTransaction((compoundAction) => {
+                compoundAction.addAction(
+                  item.scaleParam.createRemoveKeyframeAction(time)
+                );
+              }, "Corrigir a cabeça do Zoom (apagar)");
+            });
+            project2.lockedAccess(() => {
+              relato.escreveu = project2.executeTransaction((compoundAction) => {
+                const kf = item.scaleParam.createKeyframe(alvo);
+                kf.position = time;
+                compoundAction.addAction(item.scaleParam.createAddKeyframeAction(kf));
+                compoundAction.addAction(
+                  item.scaleParam.createSetInterpolationAtKeyframeAction(
+                    time,
+                    ppro.Constants.InterpolationMode.LINEAR
+                  )
+                );
+              }, "Corrigir a cabeça do Zoom (escrever)");
+            });
+          } catch (cause) {
+            relato.erro = describeError$1(cause);
+            console.warn("[Zoom] a correção da cabeça não assentou:", cause);
+          }
+          const depois = await ler();
+          relato.depois = numberOf(depois) ?? depois;
+        } else {
+          relato.depois = relato.antes;
+        }
+        cabecas.push(relato);
       }
       let verifiedCount = 0;
       let unreadableCount = 0;
@@ -469,6 +1070,16 @@
           unreadableCount += 1;
         }
       }
+      relatorio.depois = {
+        cronometroLigado: clockCommitted,
+        keyframesDoHost,
+        hostLimpo: hostCleared,
+        cabecas,
+        keyframesDoPrimeiroClipe: readyScaleItems[0] ? await probeKeyframes(readyScaleItems[0].scaleParam) : "(nenhum item)",
+        clipesVerificados: verifiedCount,
+        clipesIlegiveis: unreadableCount
+      };
+      await dumpDiag(relatorio);
       if (verifiedCount === 0 && unreadableCount === 0) {
         rollbackAppends();
         return fail$2("Nenhum keyframe foi criado no Scale do Transform.");
@@ -487,6 +1098,34 @@
       rollbackAppends?.();
       return fail$2(`Zoom falhou: ${describeError$1(cause)}`);
     }
+  }
+  function placeKeyframes(ppro, options, baseFrom, baseTo, startTicks, endTicks, startSec, duration, ticksPerFrame) {
+    const placed = /* @__PURE__ */ new Map();
+    const delta = baseTo - baseFrom;
+    placed.set(startTicks, baseFrom);
+    placed.set(snapTicksToFrame(startTicks, ticksPerFrame), baseFrom);
+    if (!isLinear(options.ease)) {
+      for (let step2 = 1; step2 < CURVE_KEYS; step2++) {
+        const t = step2 / CURVE_KEYS;
+        const ticks = snapTicksToFrame(
+          ppro.TickTime.createWithSeconds(startSec + duration * t).ticks,
+          ticksPerFrame
+        );
+        placed.set(ticks, baseFrom + delta * options.ease(t));
+      }
+    }
+    placed.set(endTicks, baseTo);
+    placed.set(snapTicksToFrame(endTicks, ticksPerFrame), baseTo);
+    return placed;
+  }
+  function isLinear(ease) {
+    for (let step2 = 1; step2 < CURVE_KEYS; step2++) {
+      const t = step2 / CURVE_KEYS;
+      if (Math.abs(ease(t) - t) > 2e-3) {
+        return false;
+      }
+    }
+    return true;
   }
   async function resolveTransformMatchName(ppro) {
     let available = [];
@@ -535,6 +1174,13 @@
     }
     return { matchName: null, candidates: candidates2 };
   }
+  async function componentAtIndex(chain, index) {
+    try {
+      return await Promise.resolve(chain.getComponentAtIndex(index)) ?? null;
+    } catch {
+      return null;
+    }
+  }
   async function findTransformComponent(chain, expectedMatchName, appendIndex) {
     const count = await Promise.resolve(chain.getComponentCount());
     if (count === 0) {
@@ -575,26 +1221,16 @@
       console.error("[Zoom] getParamCount() threw on Transform component");
       return null;
     }
-    console.log(`[Zoom] Transform has ${count} params:`);
-    const rows = [];
-    for (let index = 0; index < count; index++) {
-      try {
-        const param = await Promise.resolve(component.getParam(index));
-        const name = safeDisplayName$1(param);
-        let kf = "?";
-        try {
-          kf = await param.areKeyframesSupported();
-        } catch {
-          kf = "error";
-        }
-        rows.push({ index, name, kf });
-      } catch {
-        rows.push({ index, name: "(error)", kf: "error" });
-      }
-    }
-    for (const row of rows) {
-      console.log(`  [${row.index}] "${row.name}" | keyframesSupported=${row.kf}`);
-    }
+    const params = await Promise.all(
+      Array.from(
+        { length: count },
+        (_, index) => Promise.resolve(component.getParam(index)).catch(() => null)
+      )
+    );
+    const rows = params.map((param, index) => ({
+      index,
+      name: param ? safeDisplayName$1(param) : "(error)"
+    }));
     for (const row of rows) {
       if (SCALE_PARAM_NAMES.has(row.name)) {
         try {
@@ -612,11 +1248,19 @@
         }
       }
     }
-    for (const row of rows) {
-      const mentionsScale = row.name.includes("scale") || row.name.includes("escala");
-      if (row.kf === true && mentionsScale && !row.name.includes("uniform")) {
+    const candidatos = rows.filter(
+      (row) => (row.name.includes("scale") || row.name.includes("escala")) && !row.name.includes("uniform")
+    );
+    const aceitaKeyframe = await Promise.all(
+      candidatos.map((row) => {
+        const param = params[row.index];
+        return param ? Promise.resolve(param.areKeyframesSupported()).catch(() => false) : Promise.resolve(false);
+      })
+    );
+    for (let at = 0; at < candidatos.length; at++) {
+      if (aceitaKeyframe[at] === true) {
         try {
-          return component.getParam(row.index);
+          return component.getParam(candidatos[at].index);
         } catch {
         }
       }
@@ -1435,9 +2079,6 @@
       const durationField = container.querySelector("[data-duration-field]");
       const durationRail = container.querySelector("[data-duration]");
       const durationOut = container.querySelector("[data-out-duration]");
-      const metaRange = container.querySelector("[data-meta-range]");
-      const metaSpan = container.querySelector("[data-meta-span]");
-      const metaHold = container.querySelector("[data-meta-hold]");
       const curveZone = container.querySelector("[data-curve-zone]");
       livePicker$1?.destroy();
       livePicker$1 = mountCurvePicker(curveZone, {
@@ -1462,16 +2103,6 @@
       }
       function draw() {
         livePicker$1?.refresh();
-        const [from, to] = direction === "in" ? ["100%", `${scalePercent}%`] : [`${scalePercent}%`, "100%"];
-        if (metaRange) {
-          metaRange.textContent = `${from} → ${to}`;
-        }
-        if (metaSpan) {
-          metaSpan.textContent = style === "full" ? "clipe inteiro" : `${punchDuration.toFixed(1)}s`;
-        }
-        if (metaHold) {
-          metaHold.hidden = style === "full";
-        }
         if (durationField) {
           durationField.hidden = style === "full";
         }
@@ -1609,8 +2240,9 @@
     const presetButtonsHtml = PUNCH_DURATION_PRESETS.map(
       (preset) => `<div class="preset-pill${Math.abs(preset - punchDuration) < 0.05 ? " is-active" : ""}" ${CONTROL} data-preset-dur="${preset}">${preset.toFixed(1)}s</div>`
     ).join("");
-    return `<div class="zones"><div class="zone"><div class="field"><span class="t-label">Direção</span><div class="seg" data-direction-seg><div class="seg-item" ${CONTROL} data-value="in" aria-pressed="${direction === "in"}">Zoom In</div><div class="seg-item" ${CONTROL} data-value="out" aria-pressed="${direction === "out"}">Zoom Out</div></div></div><div class="field"><span class="t-label">Comportamento</span><div class="seg" data-style-seg><div class="seg-item" ${CONTROL} data-style="punch" aria-pressed="${style === "punch"}">Punch Smooth</div><div class="seg-item" ${CONTROL} data-style="full" aria-pressed="${style === "full"}">Clipe inteiro</div></div></div><div class="field" data-duration-field${style === "full" ? " hidden" : ""}><div class="field-head"><span class="t-label">Duração do Punch</span><span class="field-val" data-out-duration>${punchDuration.toFixed(1)}s</span></div><div class="preset-rail">${presetButtonsHtml}</div><div class="slider-row"><div data-duration></div></div></div><div class="field"><div class="field-head"><span class="t-label">Intensidade (Escala Alvo)</span><span class="field-val" data-out-scale>${scalePercent}%</span></div><div class="slider-row"><div data-scale></div></div><p class="field-note">100% mantém o enquadramento; valores acima aumentam o corte com Transform.</p></div><div class="preview-meta"><b data-meta-range></b><span class="preview-meta-gap"></span><b data-meta-span></b><span data-meta-hold>segura até o fim</span></div></div><div class="zone" data-curve-zone></div></div>`;
+    return `<div class="zones"><div class="zone"><div class="field"><span class="t-label">Direção</span><div class="seg" data-direction-seg><div class="seg-item" ${CONTROL} data-value="in" aria-pressed="${direction === "in"}">Zoom In</div><div class="seg-item" ${CONTROL} data-value="out" aria-pressed="${direction === "out"}">Zoom Out</div></div></div><div class="field"><span class="t-label">Comportamento</span><div class="seg" data-style-seg><div class="seg-item" ${CONTROL} data-style="punch" aria-pressed="${style === "punch"}">Punch Smooth</div><div class="seg-item" ${CONTROL} data-style="full" aria-pressed="${style === "full"}">Clipe inteiro</div></div></div><div class="field" data-duration-field${style === "full" ? " hidden" : ""}><div class="field-head"><span class="t-label">Duração do Punch</span><span class="field-val" data-out-duration>${punchDuration.toFixed(1)}s</span></div><div class="preset-rail">${presetButtonsHtml}</div><div class="slider-row"><div data-duration></div></div></div><div class="field"><div class="field-head"><span class="t-label" title="100% mantém o enquadramento; valores acima aumentam o corte com Transform.">Intensidade (Escala Alvo)</span><span class="field-val" data-out-scale>${scalePercent}%</span></div><div class="slider-row"><div data-scale></div></div></div></div><div class="zone" data-curve-zone></div></div>`;
   }
+  const FLOW_DIAG_FILE = "flow-diag.json";
   const MAX_PARAMS = 40;
   const bakedByParam = /* @__PURE__ */ new Map();
   function bakedFor(key) {
@@ -1757,12 +2389,15 @@
       for (const [startTicks, endTicks] of pairs) {
         const inner = await innerTicks(param, startTicks, endTicks);
         if (inner.length > 0) {
+          const existing = (await keyframeTimes(param)).map((time) => time.ticks);
           plans.push({
             param,
             key: "",
             removeTicks: inner,
             add: [],
-            before: (await keyframeTimes(param)).length
+            before: existing.length,
+            existing,
+            anchors: []
           });
         }
       }
@@ -1790,7 +2425,8 @@
       const byKey = new Map(clips.map((ref) => [ref.key, ref.clip]));
       const context = {
         ticksPerFrame: await readTicksPerFrame(sequence),
-        notes: []
+        notes: [],
+        diag: []
       };
       const plans = [];
       let segments = 0;
@@ -1825,11 +2461,34 @@
       if (plans.length === 0) {
         return fail$1(withNotes("Nada a fazer nesses segmentos.", context.notes));
       }
+      const relatorio = {
+        quando: (/* @__PURE__ */ new Date()).toISOString(),
+        acao: undoLabel,
+        ticksPerFrame: context.ticksPerFrame === null ? null : context.ticksPerFrame.toString(),
+        alvos: targets.map((target) => ({
+          label: target.param.label,
+          segment: target.segment,
+          keyTicks: target.param.keyTicks,
+          anchorTicks: target.param.anchorTicks
+        })),
+        relogios: await clipClocks(byKey, targets),
+        trechos: context.diag,
+        planos: plans.map((plan) => ({
+          param: plan.descriptor?.label ?? safeDisplayName(plan.param),
+          remove: plan.removeTicks,
+          add: plan.add,
+          existentes: plan.existing
+        })),
+        antes: await keyframesByParam(plans, byKey),
+        notas: context.notes.slice()
+      };
+      await dumpDiag(relatorio, FLOW_DIAG_FILE);
       let committed = false;
       let added = 0;
       let refused = 0;
       let transactionError = null;
       const filed = [];
+      const toLinear = [];
       try {
         project2.lockedAccess(() => {
           committed = project2.executeTransaction((compoundAction) => {
@@ -1856,9 +2515,6 @@
             for (const plan of plans) {
               const record = { key: plan.key, added: [], removed: [] };
               filed.push(record);
-              if (plan.add.length > 0) {
-                push(() => plan.param.createSetTimeVaryingAction(true), false);
-              }
               for (const ticks of plan.removeTicks) {
                 const gone = push(
                   () => plan.param.createRemoveKeyframeAction(
@@ -1885,13 +2541,7 @@
                 }
               }
               for (const ticks of landed) {
-                push(
-                  () => plan.param.createSetInterpolationAtKeyframeAction(
-                    ppro.TickTime.createWithTicks(ticks),
-                    ppro.Constants.InterpolationMode.LINEAR
-                  ),
-                  false
-                );
+                toLinear.push({ param: plan.param, ticks });
               }
             }
           }, undoLabel);
@@ -1899,7 +2549,9 @@
       } catch (cause) {
         transactionError = describeError$1(cause);
       }
+      relatorio.transacao = { committed, added, refused, transactionError, filed };
       if (transactionError) {
+        await dumpDiag(relatorio, FLOW_DIAG_FILE);
         return fail$1(withNotes(`O Premiere recusou: ${transactionError}`, context.notes));
       }
       if (!committed) {
@@ -1922,6 +2574,35 @@
           bakedByParam.delete(record.key);
         }
       }
+      let linearCommitted = false;
+      let linearFiled = 0;
+      if (toLinear.length > 0) {
+        try {
+          project2.lockedAccess(() => {
+            linearCommitted = project2.executeTransaction((compoundAction) => {
+              for (const entry of toLinear) {
+                try {
+                  const action = entry.param.createSetInterpolationAtKeyframeAction(
+                    ppro.TickTime.createWithTicks(entry.ticks),
+                    ppro.Constants.InterpolationMode.LINEAR
+                  );
+                  if (action && compoundAction.addAction(action) !== false) {
+                    linearFiled += 1;
+                  }
+                } catch (cause) {
+                  console.warn("[Flow] interpolação recusada:", cause);
+                }
+              }
+            }, "Curva: interpolação linear");
+          });
+        } catch (cause) {
+          console.warn("[Flow] a transação de interpolação não assentou:", cause);
+        }
+        if (!linearCommitted) {
+          context.notes.push("O Premiere não aceitou a interpolação linear dos assados.");
+        }
+      }
+      relatorio.interpolacao = { pedidos: toLinear.length, aceitos: linearFiled, linearCommitted };
       const wanted = plans.reduce((total, plan) => total + plan.add.length, 0);
       if (wanted > 0 && added === 0) {
         return fail$1(
@@ -1936,7 +2617,28 @@
       const refreshedByKey = new Map(
         refreshedClips.map((ref) => [ref.key, ref.clip])
       );
+      const swept = await sweepStrays(ppro, project2, plans, filed, refreshedByKey);
+      if (swept > 0) {
+        context.notes.push(
+          `${swept} keyframe(s) que o Premiere criou sozinho foram removidos.`
+        );
+      }
+      const ancoras = await repairAnchors(ppro, project2, plans, refreshedByKey);
+      relatorio.ancoras = ancoras;
+      const reparados = ancoras.filter((row) => row.reparado).length;
+      if (reparados > 0) {
+        context.notes.push(
+          `${reparados} âncora(s) voltaram com valor errado e foram reescritos.`
+        );
+      }
       const verified = await verify(plans, refreshedByKey);
+      relatorio.depois = {
+        varridos: swept,
+        verificados: verified,
+        keyframes: await keyframesByParam(plans, refreshedByKey),
+        notas: context.notes.slice()
+      };
+      await dumpDiag(relatorio, FLOW_DIAG_FILE);
       if (wanted > 0 && verified === 0) {
         context.notes.push("Não consegui reler os keyframes — confira o Effect Controls.");
       }
@@ -1953,6 +2655,224 @@
     } catch (cause) {
       return fail$1(`Falhou: ${describeError$1(cause)}`);
     }
+  }
+  async function rawShapeAt(param, time) {
+    let raw;
+    try {
+      raw = await param.getValueAtTime(time);
+    } catch (cause) {
+      return `(erro: ${describeError$1(cause)})`;
+    }
+    const inner = raw && typeof raw === "object" ? raw.value : void 0;
+    return {
+      forma: describeShape(raw),
+      formaInterna: describeShape(inner),
+      valor: unwrapValue(raw)
+    };
+  }
+  async function clipClocks(byKey, targets) {
+    const out = {};
+    const read = async (get) => {
+      try {
+        const time = await Promise.resolve(get());
+        return time ? String(time.ticks) : "(vazio)";
+      } catch (cause) {
+        return `(erro: ${describeError$1(cause)})`;
+      }
+    };
+    for (const target of targets) {
+      const clip = byKey.get(target.param.clipKey);
+      if (!clip || out[target.param.clipKey]) {
+        continue;
+      }
+      out[target.param.clipKey] = {
+        sequenciaIn: await read(() => clip.getStartTime()),
+        sequenciaOut: await read(() => clip.getEndTime()),
+        mediaIn: await read(() => clip.getInPoint()),
+        mediaOut: await read(() => clip.getOutPoint())
+      };
+    }
+    return out;
+  }
+  async function keyframesByParam(plans, byKey) {
+    const out = {};
+    for (const plan of plans) {
+      const label = plan.descriptor?.label ?? safeDisplayName(plan.param);
+      if (out[label]) {
+        continue;
+      }
+      let param = null;
+      try {
+        param = plan.descriptor ? await resolveParam(byKey, plan.descriptor) : null;
+      } catch {
+        param = null;
+      }
+      out[label] = await probeKeyframes(param ?? plan.param);
+    }
+    return out;
+  }
+  function sameValue(a, b) {
+    if (b === null) {
+      return false;
+    }
+    if (typeof a === "number" || typeof b === "number") {
+      return typeof a === "number" && typeof b === "number" && Math.abs(a - b) < 1e-3;
+    }
+    return Math.abs(a.x - b.x) < 1e-4 && Math.abs(a.y - b.y) < 1e-4;
+  }
+  async function repairAnchors(ppro, project2, plans, byKey) {
+    const rows = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const plan of plans) {
+      let fresh = null;
+      try {
+        fresh = plan.descriptor ? await resolveParam(byKey, plan.descriptor) : null;
+      } catch {
+        fresh = null;
+      }
+      const handle = fresh ?? plan.param;
+      const label = plan.descriptor?.label ?? safeDisplayName(plan.param);
+      for (const anchor of plan.anchors) {
+        const id = `${plan.key}@${anchor.ticks}`;
+        if (seen.has(id)) {
+          continue;
+        }
+        seen.add(id);
+        const time = ppro.TickTime.createWithTicks(anchor.ticks);
+        const depois = await readValue(handle, time);
+        const row = {
+          param: label,
+          ticks: anchor.ticks,
+          antes: anchor.value,
+          depois,
+          reparado: false
+        };
+        rows.push(row);
+        if (sameValue(anchor.value, depois)) {
+          continue;
+        }
+        console.warn(`[Flow] ${label}: âncora em ${anchor.ticks} mudou de`, anchor.value, "para", depois);
+        try {
+          let apagou = false;
+          project2.lockedAccess(() => {
+            apagou = project2.executeTransaction((compoundAction) => {
+              compoundAction.addAction(
+                handle.createRemoveKeyframeAction(
+                  ppro.TickTime.createWithTicks(anchor.ticks),
+                  false
+                )
+              );
+            }, "Curva: repor âncora (apagar)");
+          });
+          let escreveu = false;
+          project2.lockedAccess(() => {
+            escreveu = project2.executeTransaction((compoundAction) => {
+              const keyframe = makeKeyframe(ppro, handle, anchor.value);
+              keyframe.position = ppro.TickTime.createWithTicks(anchor.ticks);
+              compoundAction.addAction(handle.createAddKeyframeAction(keyframe));
+            }, "Curva: repor âncora (escrever)");
+          });
+          row.reparado = apagou && escreveu;
+        } catch (cause) {
+          row.erro = describeError$1(cause);
+          console.warn("[Flow] a reposição do âncora não assentou:", cause);
+        }
+        row.depoisDoReparo = await readValue(handle, time);
+      }
+    }
+    return rows;
+  }
+  async function sweepStrays(ppro, project2, plans, filed, byKey) {
+    const normal = (ticks) => {
+      try {
+        return BigInt(ticks).toString();
+      } catch {
+        return ticks;
+      }
+    };
+    const expected = /* @__PURE__ */ new Map();
+    const paramOf = /* @__PURE__ */ new Map();
+    for (const plan of plans) {
+      let set = expected.get(plan.key);
+      if (!set) {
+        set = new Set(plan.existing.map(normal));
+        expected.set(plan.key, set);
+        paramOf.set(plan.key, { plan });
+      }
+    }
+    for (const record of filed) {
+      const set = expected.get(record.key);
+      if (!set) {
+        continue;
+      }
+      for (const ticks of record.removed) {
+        set.delete(normal(ticks));
+      }
+      for (const ticks of record.added) {
+        set.add(normal(ticks));
+      }
+    }
+    const strays = [];
+    for (const [key, set] of expected) {
+      const plan = paramOf.get(key)?.plan;
+      if (!plan) {
+        continue;
+      }
+      let param = null;
+      try {
+        param = plan.descriptor ? await resolveParam(byKey, plan.descriptor) : null;
+      } catch {
+        param = null;
+      }
+      const handle = param ?? plan.param;
+      const times = await keyframeTimes(handle);
+      const alien = times.filter((time) => !set.has(normal(time.ticks)));
+      if (alien.length > 0) {
+        strays.push({
+          param: handle,
+          times: alien,
+          label: plan.descriptor?.label ?? safeDisplayName(handle)
+        });
+      }
+    }
+    if (strays.length === 0) {
+      return 0;
+    }
+    for (const stray of strays) {
+      console.warn(
+        `[Flow] ${stray.label}: ${stray.times.length} keyframe(s) alheio(s) em`,
+        stray.times.map((time) => time.ticks).join(", ")
+      );
+    }
+    let removed = 0;
+    try {
+      project2.lockedAccess(() => {
+        const committed = project2.executeTransaction((compoundAction) => {
+          for (const stray of strays) {
+            for (const time of stray.times) {
+              try {
+                const action = stray.param.createRemoveKeyframeAction(
+                  ppro.TickTime.createWithTicks(time.ticks),
+                  false
+                );
+                if (action && compoundAction.addAction(action) !== false) {
+                  removed += 1;
+                }
+              } catch (cause) {
+                console.warn("[Flow] remoção de keyframe alheio recusada:", cause);
+              }
+            }
+          }
+        }, "Limpar keyframe alheio da curva");
+        if (!committed) {
+          removed = 0;
+        }
+      });
+    } catch (cause) {
+      console.warn("[Flow] a limpeza dos keyframes alheios não assentou:", cause);
+      return 0;
+    }
+    return removed;
   }
   async function verify(plans, byKey) {
     let changed = 0;
@@ -2062,16 +2982,35 @@
         }
       });
     }
+    build.diag.push({
+      param: safeDisplayName(param),
+      startTicks,
+      endTicks,
+      startSeconds,
+      endSeconds,
+      frames,
+      steps,
+      de: { forma: await rawShapeAt(param, startTime), lido: from },
+      para: { forma: await rawShapeAt(param, endTime), lido: to },
+      ease: [0, 0.1, 0.25, 0.5, 0.75, 0.9, 1].map((t) => [t, ease(t)]),
+      add
+    });
     if (add.length === 0) {
       build.notes.push("Nenhum frame livre entre os keyframes do trecho.");
       return null;
     }
+    const existing = (await keyframeTimes(param)).map((time) => time.ticks);
     return {
       param,
       key: "",
       removeTicks: await innerTicks(param, startTicks, endTicks),
       add,
-      before: (await keyframeTimes(param)).length
+      before: existing.length,
+      existing,
+      anchors: [
+        { ticks: startTicks, value: from },
+        { ticks: endTicks, value: to }
+      ]
     };
   }
   function frameSpan(startTicks, endTicks, ticksPerFrame) {
@@ -2452,7 +3391,7 @@
     const presets = DENSITY_PRESETS.map(
       (preset) => `<div class="preset-pill${preset === density ? " is-active" : ""}" ${CONTROL} data-density-preset="${preset}">${preset}</div>`
     ).join("");
-    return `<div class="zones"><div class="zone"><div class="field"><div class="field-head"><span class="t-label">Parâmetros animados</span><div class="field-action" ${CONTROL} data-rescan title="Reler os keyframes do clipe selecionado">Reler</div></div><div class="kf-list" data-param-list></div></div><div class="field"><div class="field-head"><span class="t-label">Densidade da assadura</span><span class="field-val" data-out-density>${density} kf</span></div><div class="preset-rail">${presets}</div><div class="slider-row"><div data-density></div></div><p class="field-note">Cada keyframe assado é um keyframe que você não retima mais. Use Linear para desfazer e reajustar o tempo.</p></div></div><div class="zone" data-curve-zone></div></div>`;
+    return `<div class="zones"><div class="zone"><div class="field"><div class="field-head"><span class="t-label">Parâmetros animados</span><div class="field-action" ${CONTROL} data-rescan title="Reler os keyframes do clipe selecionado">Reler</div></div><div class="kf-list" data-param-list></div></div><div class="field"><div class="field-head"><span class="t-label" title="Cada keyframe assado é um keyframe que você não retima mais. Use Linear para desfazer e reajustar o tempo.">Densidade da assadura</span><span class="field-val" data-out-density>${density} kf</span></div><div class="preset-rail">${presets}</div><div class="slider-row"><div data-density></div></div></div></div><div class="zone" data-curve-zone></div></div>`;
   }
   const MIN_REMOVAL_SECONDS$1 = 0.06;
   function planSegments(voiced, range, params, frameSeconds2) {
@@ -2695,7 +3634,7 @@
           end,
           filler: hasFillerTag(raw.tags),
           confidence: readConfidence(raw.confidence),
-          text: readText$1(raw)
+          text: readText(raw)
         });
       }
       const offset = anyBeforeSegment ? segmentStart : 0;
@@ -2742,7 +3681,7 @@
           end,
           filler: hasFillerTag(raw.tags),
           confidence: readConfidence(raw.confidence),
-          text: readText$1(raw)
+          text: readText(raw)
         });
       }
     }
@@ -2766,7 +3705,7 @@
     }
     return Math.min(1, Math.max(0, parsed));
   }
-  function readText$1(raw) {
+  function readText(raw) {
     for (const key of ["text", "word", "value"]) {
       const value = raw[key];
       if (typeof value === "string" && value.trim().length > 0) {
@@ -2933,253 +3872,6 @@
       confidence: 1
     };
   }
-  const WORK_FOLDER = "edit-toolbox-audio";
-  const PROBE_FILE = "write-probe.txt";
-  function uxpModule(name) {
-    if (typeof require !== "function") {
-      return null;
-    }
-    try {
-      return require(name) ?? null;
-    } catch {
-      return null;
-    }
-  }
-  function fsModule() {
-    return uxpModule("fs");
-  }
-  function shellModule() {
-    return uxpModule("uxp")?.shell ?? null;
-  }
-  function platform() {
-    try {
-      return uxpModule("os")?.platform() ?? "darwin";
-    } catch {
-      return "darwin";
-    }
-  }
-  function isWindows() {
-    return /^win/i.test(platform());
-  }
-  const UXP_SCHEME = /^[a-z][a-z0-9+.-]+:/i;
-  function join(base, ...parts) {
-    const separator = isWindows() && !UXP_SCHEME.test(base) ? "\\" : "/";
-    return [base.replace(/[\\/]+$/, ""), ...parts].join(separator);
-  }
-  let cached = null;
-  let attempts = [];
-  function workspaceAttempts() {
-    return attempts;
-  }
-  function forgetWorkspace() {
-    cached = null;
-    attempts = [];
-  }
-  async function workspace() {
-    if (cached) {
-      return cached;
-    }
-    const fs = fsModule();
-    if (!fs) {
-      throw new Error('require("fs") não resolveu');
-    }
-    attempts = [];
-    for (const candidate of await candidates()) {
-      const found = await tryCandidate(fs, candidate);
-      if (found) {
-        cached = found;
-        console.log(
-          `[Silêncios] pasta de trabalho: ${found.fsBase} (${found.origin}, ${found.sync ? "sync" : "async"}) → ${found.nativeBase}`
-        );
-        return found;
-      }
-    }
-    throw new Error(
-      `nenhum caminho gravável (${attempts.join(" · ") || "sem candidatos"})`
-    );
-  }
-  async function candidates() {
-    const list = [];
-    const storage = uxpModule("uxp")?.storage?.localFileSystem;
-    const dataNative = await nativePathOf(storage?.getDataFolder?.bind(storage), "getDataFolder");
-    if (dataNative) {
-      list.push({
-        fsBase: `plugin-data:/${WORK_FOLDER}`,
-        nativeBase: join(dataNative, WORK_FOLDER),
-        origin: "plugin-data + subpasta"
-      });
-      list.push({
-        fsBase: "plugin-data:",
-        nativeBase: dataNative,
-        origin: "plugin-data raiz"
-      });
-    }
-    const tempNative = await nativePathOf(
-      storage?.getTemporaryFolder?.bind(storage),
-      "getTemporaryFolder"
-    );
-    if (tempNative) {
-      list.push({
-        fsBase: `plugin-temp:/${WORK_FOLDER}`,
-        nativeBase: join(tempNative, WORK_FOLDER),
-        origin: "plugin-temp + subpasta"
-      });
-      list.push({
-        fsBase: "plugin-temp:",
-        nativeBase: tempNative,
-        origin: "plugin-temp raiz"
-      });
-    }
-    if (dataNative) {
-      list.push({
-        fsBase: join(dataNative, WORK_FOLDER),
-        nativeBase: join(dataNative, WORK_FOLDER),
-        origin: "caminho nativo (dados do plugin)"
-      });
-    }
-    try {
-      const home = uxpModule("os")?.homedir?.();
-      if (home) {
-        const base = isWindows() ? join(home, "AppData", "Local", "EditToolbox") : join(home, "Library", "Caches", "EditToolbox");
-        list.push({ fsBase: base, nativeBase: base, origin: "caminho nativo (home)" });
-      }
-    } catch (cause) {
-      attempts.push(`os.homedir: ${describe(cause)}`);
-    }
-    return list;
-  }
-  async function nativePathOf(read, label) {
-    if (typeof read !== "function") {
-      attempts.push(`${label}: ausente`);
-      return null;
-    }
-    try {
-      const folder = await read();
-      if (folder?.nativePath) {
-        return folder.nativePath;
-      }
-      attempts.push(`${label}: sem nativePath`);
-    } catch (cause) {
-      attempts.push(`${label}: ${describe(cause)}`);
-    }
-    return null;
-  }
-  async function tryCandidate(fs, candidate) {
-    try {
-      await fs.mkdir(candidate.fsBase, { recursive: true });
-    } catch {
-    }
-    const probe = join(candidate.fsBase, PROBE_FILE);
-    const stamp = "edit-toolbox";
-    for (const sync of [true, false]) {
-      try {
-        if (sync) {
-          fs.writeFileSync(probe, stamp, { encoding: "utf-8" });
-        } else {
-          await fs.writeFile(probe, stamp, { encoding: "utf-8" });
-        }
-        const back = String(fs.readFileSync(probe, { encoding: "utf-8" }));
-        if (back.trim() !== stamp) {
-          attempts.push(`${candidate.origin}: leu "${back.slice(0, 20)}"`);
-          continue;
-        }
-        return { ...candidate, sync };
-      } catch (cause) {
-        attempts.push(`${candidate.origin} ${sync ? "sync" : "async"}: ${describe(cause)}`);
-      }
-    }
-    return null;
-  }
-  function fsPath(space, name) {
-    return join(space.fsBase, name);
-  }
-  function nativePath(space, name) {
-    return join(space.nativeBase, name);
-  }
-  async function write(space, name, data, executable = false) {
-    const fs = fsModule();
-    if (!fs) {
-      throw new Error('require("fs") não resolveu');
-    }
-    const path = fsPath(space, name);
-    const attempts2 = executable ? [{ encoding: "utf-8", mode: 493 }, { encoding: "utf-8" }] : [{ encoding: "utf-8" }];
-    let lastError = null;
-    for (const options of attempts2) {
-      try {
-        if (space.sync) {
-          fs.writeFileSync(path, data, options);
-        } else {
-          await fs.writeFile(path, data, options);
-        }
-        return;
-      } catch (cause) {
-        lastError = cause;
-      }
-    }
-    throw lastError ?? new Error(`não foi possível escrever ${name}`);
-  }
-  async function ensureDir(space, relative) {
-    const fs = fsModule();
-    if (!fs) {
-      throw new Error('require("fs") não resolveu');
-    }
-    const parts = relative.split("/").filter(Boolean);
-    let path = space.fsBase;
-    for (const part of parts) {
-      path = join(path, part);
-      try {
-        await fs.mkdir(path);
-      } catch {
-      }
-    }
-  }
-  function exists(space, relative) {
-    const fs = fsModule();
-    if (!fs) {
-      return false;
-    }
-    try {
-      fs.readFileSync(join(space.fsBase, relative), { encoding: "utf-8" });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  function readText(space, name) {
-    const fs = fsModule();
-    if (!fs) {
-      return null;
-    }
-    try {
-      const raw = fs.readFileSync(fsPath(space, name), { encoding: "utf-8" });
-      const text2 = String(raw).trim();
-      return text2.length > 0 ? text2 : null;
-    } catch {
-      return null;
-    }
-  }
-  async function remove(space, name) {
-    const fs = fsModule();
-    if (!fs) {
-      return;
-    }
-    try {
-      await fs.unlink(fsPath(space, name));
-    } catch {
-    }
-  }
-  function describe(cause) {
-    return cause instanceof Error ? cause.message : String(cause);
-  }
-  function shellQuote(value) {
-    return `'${value.replace(/'/g, `'\\''`)}'`;
-  }
-  function batValue(value) {
-    return value.replace(/[\r\n"]/g, "").replace(/%/g, "%%");
-  }
-  function wait$1(ms) {
-    return new Promise((resolve2) => setTimeout(resolve2, ms));
-  }
   const AGENT_VERSION = "3";
   const ALIVE_FILE = "agent-alive.txt";
   const PANEL_FILE = "agent-panel.txt";
@@ -3197,7 +3889,7 @@
     await write(space, PANEL_FILE, String(nowSeconds()));
   }
   function agentState(space) {
-    const raw = readText(space, ALIVE_FILE);
+    const raw = readText$1(space, ALIVE_FILE);
     if (!raw) {
       return "gone";
     }
@@ -3211,7 +3903,7 @@
   async function agentStatus() {
     try {
       const space = await workspace();
-      const raw = readText(space, ALIVE_FILE) ?? "";
+      const raw = readText$1(space, ALIVE_FILE) ?? "";
       const arch = raw.split(/\s+/)[2] ?? "?";
       return { up: agentState(space) === "live", arch };
     } catch {
@@ -3274,6 +3966,12 @@
     };
     tick();
     heartbeat = window.setInterval(tick, PANEL_BEAT_MS);
+  }
+  function stopAgentHeartbeat() {
+    if (heartbeat !== null) {
+      window.clearInterval(heartbeat);
+      heartbeat = null;
+    }
   }
   async function ensureAgentBundle(space) {
     if (isWindows()) {
@@ -3509,7 +4207,7 @@
   async function readConfig$2() {
     const fallback = { ffmpegPath: "", mode: "waveform" };
     try {
-      const raw = readText(await workspace(), CONFIG_FILE$2);
+      const raw = readText$1(await workspace(), CONFIG_FILE$2);
       if (!raw) {
         return fallback;
       }
@@ -3573,7 +4271,7 @@
       }
       if (awaitingStamp && Date.now() > stampDeadline) {
         awaitingStamp = false;
-        if (!readText(space, runStarted)) {
+        if (!readText$1(space, runStarted)) {
           console.warn("[Silêncios] sem carimbo do agente — caindo para o Terminal.");
           await withdraw(sent.ticket);
           try {
@@ -3592,7 +4290,7 @@
         }
       }
       tick += 1;
-      const raw = readText(space, runResult);
+      const raw = readText$1(space, runResult);
       if (raw) {
         try {
           const parsed = JSON.parse(raw);
@@ -3625,7 +4323,7 @@
     await shell.openPath(space.nativeBase, "Abrir a pasta do script de extração.");
   }
   function readProgress$1(space, name) {
-    const text2 = readText(space, name);
+    const text2 = readText$1(space, name);
     if (!text2) {
       return null;
     }
@@ -3731,7 +4429,7 @@
     let answer = null;
     while (Date.now() < deadline && !answer) {
       await wait$1(POLL_MS$2);
-      answer = readText(space, "probe.json");
+      answer = readText$1(space, "probe.json");
     }
     if (!answer) {
       add(
@@ -4032,16 +4730,22 @@
     const byIdentity = /* @__PURE__ */ new Map();
     const loose = /* @__PURE__ */ new Set();
     const videoCount = await sequence.getVideoTrackCount();
+    const videoTracks = await Promise.all(
+      Array.from({ length: videoCount }, (_, index) => sequence.getVideoTrack(index))
+    );
     for (let index = 0; index < videoCount; index++) {
-      const track = await sequence.getVideoTrack(index);
+      const track = videoTracks[index];
       if (!track) {
         continue;
       }
-      for (const item of track.getTrackItems(ppro.Constants.TrackItemType.CLIP, false)) {
-        if (!await item.getIsSelected()) {
-          continue;
-        }
-        const key = await itemIdentity(item);
+      const itens = track.getTrackItems(ppro.Constants.TrackItemType.CLIP, false);
+      const marcados = await Promise.all(
+        itens.map((item) => Promise.resolve(item.getIsSelected()).catch(() => false))
+      );
+      const escolhidos = itens.filter((_, at) => marcados[at]);
+      const chaves = await Promise.all(escolhidos.map((item) => itemIdentity(item)));
+      escolhidos.forEach((item, at) => {
+        const key = chaves[at];
         const pair = {
           videoItem: item,
           audioItem: null,
@@ -4054,25 +4758,36 @@
         if (key) {
           byIdentity.set(key, pair);
         }
-      }
+      });
     }
     const audioCount = await sequence.getAudioTrackCount();
+    const audioTracks = await Promise.all(
+      Array.from({ length: audioCount }, (_, index) => sequence.getAudioTrack(index))
+    );
     for (let index = 0; index < audioCount; index++) {
-      const track = await sequence.getAudioTrack(index);
+      const track = audioTracks[index];
       if (!track) {
         continue;
       }
-      for (const item of track.getTrackItems(ppro.Constants.TrackItemType.CLIP, false)) {
-        if (!await item.getIsSelected()) {
-          if (byIdentity.size > 0) {
-            const orphan = await itemIdentity(item);
-            if (orphan) {
-              loose.add(orphan);
-            }
+      const itens = track.getTrackItems(ppro.Constants.TrackItemType.CLIP, false);
+      const marcados = await Promise.all(
+        itens.map((item) => Promise.resolve(item.getIsSelected()).catch(() => false))
+      );
+      const precisaDosSoltos = byIdentity.size > 0;
+      const chaves = await Promise.all(
+        itens.map(
+          (item, at) => marcados[at] || precisaDosSoltos ? itemIdentity(item) : Promise.resolve(null)
+        )
+      );
+      for (let at = 0; at < itens.length; at++) {
+        const item = itens[at];
+        const key = chaves[at];
+        if (!marcados[at]) {
+          if (precisaDosSoltos && key) {
+            loose.add(key);
           }
           continue;
         }
-        const key = await itemIdentity(item);
         const linked = key ? byIdentity.get(key) : void 0;
         if (linked && linked.trackAudio === -1) {
           linked.audioItem = item;
@@ -5521,15 +6236,15 @@
   };
   function markup$4(params) {
     const presets = SILENCE_PRESETS.map(
-      (preset) => `<div class="preset-pill" ${CONTROL} data-preset="${preset.id}">${preset.name}</div>`
+      (preset) => `<div class="preset-pill" ${CONTROL} data-preset="${preset.id}" title="${escapeHtml(preset.note)}">${preset.name}</div>`
     ).join("");
-    const sliderFor = (spec) => `<div class="field" data-field="${spec.key}" hidden><div class="field-head"><span class="t-label">${spec.label}</span><span class="field-val" data-out="${spec.key}">${formatParam(
+    const sliderFor = (spec) => `<div class="field" data-field="${spec.key}" hidden><div class="field-head"><span class="t-label" title="${escapeHtml(spec.note)}">${spec.label}</span><span class="field-val" data-out="${spec.key}">${formatParam(
       spec,
       params[spec.key]
-    )}</span></div><div class="slider-row"><div data-slider="${spec.key}"></div></div><p class="field-note">${escapeHtml(spec.note)}</p></div>`;
+    )}</span></div><div class="slider-row"><div data-slider="${spec.key}"></div></div></div>`;
     const coreSliders = ["minSilence", "padIn", "padOut"].map((k) => SLIDERS.find((s) => s.key === k)).filter((s) => Boolean(s)).map(sliderFor).join("");
     const advSliders = ["minKeep", "noiseIsland", "dbMargin", "dbThreshold", "minConfidence"].map((k) => SLIDERS.find((s) => s.key === k)).filter((s) => Boolean(s)).map(sliderFor).join("");
-    return `<div class="zones"><div class="zone"><div class="field"><span class="t-label">Ritmo de Corte</span><div class="preset-rail" data-preset-rail>${presets}</div><p class="field-note" data-preset-note></p></div></div><div class="zone">${coreSliders}</div><div class="zone is-wide"><div class="sil-empty" data-empty><p class="sil-empty-title">Pronto para analisar</p><p class="sil-empty-desc">Selecione os clipes na timeline e analise para visualizar o corte.</p></div><div class="sil-scan-row"><div class="org-scan" ${CONTROL} data-scan>Analisar Seleção</div></div><div class="sil-manual" data-manual hidden></div><div class="sil-report" data-report></div></div><div class="sil-advanced"><div class="sil-advanced-summary" ${CONTROL} data-adv-toggle><span class="sil-advanced-title">⚙️ Ajustes Avançados</span><span class="sil-advanced-icon" data-adv-icon>▾</span></div><div class="sil-advanced-content" data-adv-content hidden><div class="field"><span class="t-label">Método de Detecção</span><div class="seg" data-mode-seg><div class="seg-item" ${CONTROL} data-mode="waveform">Onda (ffmpeg)</div><div class="seg-item" ${CONTROL} data-mode="transcript">Transcrição</div></div></div><div class="field" data-filler-field hidden><span class="t-label">Muletas de Fala</span><div class="seg" data-filler-seg><div class="seg-item" ${CONTROL} data-filler="off">Manter</div><div class="seg-item" ${CONTROL} data-filler="on">Remover</div></div></div><div class="field" data-auto-field hidden><span class="t-label">Calibração de Ruído</span><div class="seg" data-auto-seg><div class="seg-item" ${CONTROL} data-auto="on">Automático</div><div class="seg-item" ${CONTROL} data-auto="off">Fixo</div></div></div>` + advSliders + `<div class="sil-ffmpeg-group" data-ffmpeg-field hidden><div class="field"><span class="t-label">Caminho do FFmpeg</span><input type="text" class="sil-path" data-ffmpeg-path spellcheck="false" placeholder="Padrão do sistema (automático)"></div><div class="field"><div class="field-head"><span class="t-label">Diagnóstico</span><span class="field-action" ${CONTROL} data-diag>Testar FFmpeg</span></div><div class="sil-diag" data-diag-out></div></div></div></div></div></div>`;
+    return `<div class="zones"><div class="zone"><div class="field"><span class="t-label">Ritmo de Corte</span><div class="preset-rail preset-rail--2x2" data-preset-rail>${presets}</div></div></div><div class="zone">${coreSliders}</div><div class="zone is-wide"><div class="sil-empty" data-empty><p class="sil-empty-title">Pronto para analisar</p><p class="sil-empty-desc">Selecione os clipes na timeline e analise para visualizar o corte.</p></div><div class="sil-scan-row"><div class="org-scan" ${CONTROL} data-scan>Analisar Seleção</div></div><div class="sil-manual" data-manual hidden></div><div class="sil-report" data-report></div></div><div class="sil-advanced"><div class="sil-advanced-summary" ${CONTROL} data-adv-toggle><span class="sil-advanced-title">Ajustes avançados</span><span class="sil-advanced-icon" data-adv-icon>▾</span></div><div class="sil-advanced-content" data-adv-content hidden><div class="field"><span class="t-label">Método de Detecção</span><div class="seg" data-mode-seg><div class="seg-item" ${CONTROL} data-mode="waveform">Onda (ffmpeg)</div><div class="seg-item" ${CONTROL} data-mode="transcript">Transcrição</div></div></div><div class="field" data-filler-field hidden><span class="t-label">Muletas de Fala</span><div class="seg" data-filler-seg><div class="seg-item" ${CONTROL} data-filler="off">Manter</div><div class="seg-item" ${CONTROL} data-filler="on">Remover</div></div></div><div class="field" data-auto-field hidden><span class="t-label">Calibração de Ruído</span><div class="seg" data-auto-seg><div class="seg-item" ${CONTROL} data-auto="on">Automático</div><div class="seg-item" ${CONTROL} data-auto="off">Fixo</div></div></div>` + advSliders + `<div class="sil-ffmpeg-group" data-ffmpeg-field hidden><div class="field"><span class="t-label">Caminho do FFmpeg</span><input type="text" class="sil-path" data-ffmpeg-path spellcheck="false" placeholder="Padrão do sistema (automático)"></div><div class="field"><div class="field-head"><span class="t-label">Diagnóstico</span><span class="field-action" ${CONTROL} data-diag>Testar FFmpeg</span></div><div class="sil-diag" data-diag-out></div></div></div></div></div></div>`;
   }
   function renderBars(scan) {
     const drawable = scan.clips.filter((clip) => clip.plan && clip.durationSeconds > 0);
@@ -5598,6 +6313,157 @@
   }
   function doneMarkup(message) {
     return `<div class="org-done"><p class="org-done-title">Silêncios cortados ✓</p><p class="org-done-desc">${escapeHtml(message)}</p><p class="org-done-desc" style="opacity: 0.7; font-size: 10.5px;">Dica: Selecione o espaço vazio na timeline e use <b>Shift+Delete</b> (Ripple Delete) para fechar os cortes.</p></div>`;
+  }
+  const TOKEN_RE = /\[[^\]]*\]|\([^)]*\)|\{[^}]*\}|[^\s\-_–—]+/g;
+  function tokenizeName(name) {
+    const tokens = [];
+    TOKEN_RE.lastIndex = 0;
+    let match;
+    while ((match = TOKEN_RE.exec(name)) !== null) {
+      tokens.push({
+        text: match[0],
+        start: match.index,
+        end: match.index + match[0].length
+      });
+    }
+    return tokens;
+  }
+  const VARIANT_RE = /^(?:\d{1,4}|[A-Za-z]|[A-Za-z]{1,3}\d{1,3}|\d{1,3}[A-Za-z]{1,2})$/;
+  function isVariantToken(text2) {
+    const bare = text2.replace(/^[[({]/, "").replace(/[\])}]$/, "").trim();
+    return bare.length > 0 && VARIANT_RE.test(bare);
+  }
+  const MIN_KEY_CHARS = 3;
+  function labelWithout(name, token) {
+    return (name.slice(0, token.start) + name.slice(token.end)).replace(/([-_–—])\s*\1/g, "$1").replace(/\s{2,}/g, " ").replace(/^\s*[-_–—]\s*/, "").replace(/\s*[-_–—]\s*$/, "").trim();
+  }
+  function groupByVariantToken(names) {
+    const candidates2 = /* @__PURE__ */ new Map();
+    names.forEach((name, index) => {
+      const tokens = tokenizeName(name);
+      if (tokens.length < 2) {
+        return;
+      }
+      tokens.forEach((token, position) => {
+        if (!isVariantToken(token.text)) {
+          return;
+        }
+        const rest = tokens.filter((_, other) => other !== position);
+        const keyChars = rest.reduce((total, part) => total + part.text.length, 0);
+        if (keyChars < MIN_KEY_CHARS) {
+          return;
+        }
+        const key = rest.map((part) => part.text.toLowerCase()).join("\0");
+        const existing = candidates2.get(key);
+        if (existing) {
+          if (!existing.labels.has(index)) {
+            existing.members.push(index);
+            existing.labels.set(index, labelWithout(name, token));
+          }
+          return;
+        }
+        candidates2.set(key, {
+          labels: /* @__PURE__ */ new Map([[index, labelWithout(name, token)]]),
+          members: [index],
+          weight: keyChars
+        });
+      });
+    });
+    const ordered = [...candidates2.values()].filter((candidate) => candidate.members.length >= 2).sort((a, b) => b.weight - a.weight || b.members.length - a.members.length);
+    const taken = /* @__PURE__ */ new Set();
+    const groups = [];
+    for (const candidate of ordered) {
+      const free = candidate.members.filter((index) => !taken.has(index));
+      if (free.length < 2) {
+        continue;
+      }
+      for (const index of free) {
+        taken.add(index);
+      }
+      groups.push({
+        label: candidate.labels.get(free[0]) ?? "",
+        members: free
+      });
+    }
+    return groups.filter((group) => group.label !== "");
+  }
+  function normalizeChannels(value) {
+    const text2 = value.toLowerCase();
+    if (/(^|[^a-z])mono([^a-z]|$)|monaural|1\s*(ch|canal)/.test(text2)) {
+      return "mono";
+    }
+    if (/(^|[^a-z])(stereo|st[eé]reo|est[eé]reo)([^a-z]|$)|2\s*(ch|canais)/.test(text2)) {
+      return "stereo";
+    }
+    if (/5\.1|7\.1|multi|surround/.test(text2)) {
+      return "multi";
+    }
+    return null;
+  }
+  const XMP_PATTERNS = [
+    /<[\w:.-]*audioChannelType[^>]*>([^<]{1,40})</i,
+    /[\w:.-]*audioChannelType\s*=\s*["']([^"']{1,40})["']/i,
+    /"[\w:.-]*audioChannelType"\s*:\s*"([^"]{1,40})"/i
+  ];
+  const COLUMN_PATTERNS = [
+    /<[^>]*audio\.?info[^>]*>([^<]{1,120})</i,
+    /"[^"]*audio\.?info[^"]*"\s*:\s*"([^"]{1,120})"/i
+  ];
+  function firstMatch(raw, patterns) {
+    for (const pattern of patterns) {
+      const found = pattern.exec(raw);
+      if (found?.[1]) {
+        const verdict = normalizeChannels(found[1]);
+        if (verdict) {
+          return verdict;
+        }
+      }
+    }
+    return null;
+  }
+  function parseChannelsFromXmp(raw) {
+    return raw ? firstMatch(raw, XMP_PATTERNS) : null;
+  }
+  function parseChannelsFromColumns(raw) {
+    return raw ? firstMatch(raw, COLUMN_PATTERNS) : null;
+  }
+  const PROBE_LIMIT = 2;
+  const PROBE_CHARS = 1200;
+  let probesLeft = PROBE_LIMIT;
+  function resetChannelProbe() {
+    probesLeft = PROBE_LIMIT;
+  }
+  function probe(name, source, raw) {
+    if (probesLeft <= 0) {
+      return;
+    }
+    probesLeft -= 1;
+    console.log(
+      `[Organize] sonda de metadados (${source}) de "${name}" — ${raw.length} caracteres, primeiros ${PROBE_CHARS}:
+` + raw.slice(0, PROBE_CHARS)
+    );
+  }
+  async function readAudioChannels(ppro, item, name) {
+    const metadata = ppro.Metadata;
+    if (!metadata) {
+      return null;
+    }
+    try {
+      const raw = await metadata.getXMPMetadata(item) ?? "";
+      probe(name, "xmp", raw);
+      const verdict = parseChannelsFromXmp(raw);
+      if (verdict) {
+        return verdict;
+      }
+    } catch {
+    }
+    try {
+      const raw = await metadata.getProjectColumnsMetadata(item) ?? "";
+      probe(name, "colunas", raw);
+      return parseChannelsFromColumns(raw);
+    } catch {
+      return null;
+    }
   }
   function commitTransaction$1(project2, label, build) {
     let committed = false;
@@ -5725,11 +6591,20 @@
   }
   const SFX_HINTS = /(^|[^a-z])(sfx|fx|efeito|efeitos|effects?|foley|whoosh|swoosh|impact|riser|braam|stinger|transition|ambien(ce|te)|hit)([^a-z]|$)/i;
   const MUSIC_HINTS = /(^|[^a-z])(music|m[uú]sica|musicas|trilha|soundtrack|score|song|beat|instrumental|bgm)([^a-z]|$)/i;
+  const VOICE_HINTS = /(^|[^a-z])(loc[uú][cç][aã]o|locucao|narra[cç][aã]o|narracao|narration|narrador|voice[ _-]?over|voiceover|vocal|dublagem|dubbing|avatar|talking[ _-]?head)([^a-z]|$)/i;
+  const VOICE_TOKENS = /* @__PURE__ */ new Set(["vo", "vox", "nar", "loc"]);
+  function hasVoiceToken(text2) {
+    return text2.toLowerCase().split(/[^a-z0-9À-ſ]+/).some((token) => VOICE_TOKENS.has(token));
+  }
   const MUSIC_MIN_SECONDS = 45;
   const SFX_MAX_SECONDS = 8;
   function folderPartOf(mediaPath) {
     const cut = Math.max(mediaPath.lastIndexOf("/"), mediaPath.lastIndexOf("\\"));
     return cut > 0 ? mediaPath.slice(0, cut) : "";
+  }
+  function baseNameOf(mediaPath) {
+    const cut = Math.max(mediaPath.lastIndexOf("/"), mediaPath.lastIndexOf("\\"));
+    return cut >= 0 ? mediaPath.slice(cut + 1) : mediaPath;
   }
   const MUSIC_LEANING_EXTS = /* @__PURE__ */ new Set(["mp3", "m4a", "aac", "ogg", "opus", "wma"]);
   async function audioSeconds(ppro, clip) {
@@ -5754,14 +6629,30 @@
       return null;
     }
   }
-  async function audioKindOf(ppro, clip, name, mediaPath) {
+  function stemOf(name) {
+    const cut = name.lastIndexOf(".");
+    const stem = cut > 0 ? name.slice(0, cut) : name;
+    return stem.trim().toLowerCase();
+  }
+  async function audioKindOf(ctx) {
+    const { ppro, item, clip, name, mediaPath, sequenceNames } = ctx;
     const folder = folderPartOf(mediaPath);
     const seconds2 = await audioSeconds(ppro, clip);
-    const decided = (() => {
+    const namesAPiece = sequenceNames.has(stemOf(name)) || mediaPath !== "" && sequenceNames.has(stemOf(baseNameOf(mediaPath)));
+    let channels = null;
+    const decided = await (async () => {
       if (SFX_HINTS.test(folder)) return "sfx";
       if (MUSIC_HINTS.test(folder)) return "music";
+      if (VOICE_HINTS.test(folder)) return "voice";
       if (SFX_HINTS.test(name)) return "sfx";
       if (MUSIC_HINTS.test(name)) return "music";
+      if (VOICE_HINTS.test(name) || hasVoiceToken(name)) return "voice";
+      if (namesAPiece) return "voice";
+      channels = await readAudioChannels(ppro, item, name);
+      if (channels === "mono") {
+        if (seconds2 === null) return null;
+        return seconds2 <= SFX_MAX_SECONDS ? "sfx" : "voice";
+      }
       if (seconds2 !== null) {
         if (seconds2 >= MUSIC_MIN_SECONDS) return "music";
         if (seconds2 <= SFX_MAX_SECONDS) return "sfx";
@@ -5771,14 +6662,61 @@
       return MUSIC_LEANING_EXTS.has(ext) ? "music" : null;
     })();
     console.log(
-      `[Organize] audio "${name}" | ${seconds2 === null ? "duração ilegível" : `${seconds2.toFixed(1)}s`} | pasta "${folder}" | -> ${decided ?? "solto em Audio"}`
+      `[Organize] audio "${name}" | ${seconds2 === null ? "duração ilegível" : `${seconds2.toFixed(1)}s`} | canais ${channels ?? "?"} | nome de sequência: ${namesAPiece ? "sim" : "não"} | pasta "${folder}" | -> ${decided ?? "solto em Audio"}`
     );
     return decided;
   }
   const AUDIO_KIND_LABELS = {
+    voice: "Locucao",
     music: "Musicas",
     sfx: "SFX"
   };
+  const AUDIO_KIND_ALIASES = {
+    voice: [
+      "locucao",
+      "narracao",
+      "narrador",
+      "narration",
+      "voz",
+      "vozes",
+      "vo",
+      "voice",
+      "voices",
+      "voiceover",
+      "voice over",
+      "avatar",
+      "avatares",
+      "dublagem",
+      "fala",
+      "falas"
+    ],
+    music: [
+      "musicas",
+      "musica",
+      "trilha",
+      "trilhas",
+      "trilha sonora",
+      "music",
+      "musics",
+      "soundtrack",
+      "bgm",
+      "score"
+    ],
+    sfx: [
+      "sfx",
+      "fx",
+      "efeito",
+      "efeitos",
+      "efeitos sonoros",
+      "sound effects",
+      "sounds",
+      "foley"
+    ]
+  };
+  function normalizeBinName(name) {
+    return name.normalize("NFD").replace(/[̀-ͯ]/g, "").trim().toLowerCase();
+  }
+  const AUDIO_KIND_ORDER = ["voice", "music", "sfx"];
   const TOP_CATEGORY_LABELS = {
     sequence: "Sequencias",
     video: "Videos",
@@ -5837,6 +6775,7 @@
     if (!project2) {
       throw new Error("Nenhum projeto aberto.");
     }
+    resetChannelProbe();
     const rootFolder = await project2.getRootItem();
     const rootLooseItems = await collectRootLooseItems(ppro, rootFolder);
     const projectSequenceGuids = /* @__PURE__ */ new Set();
@@ -5857,6 +6796,9 @@
     } catch {
     }
     const hasProjectSequenceList = projectSequenceGuids.size > 0 || projectSequenceNames.size > 0;
+    const sequenceNamesLower = new Set(
+      [...projectSequenceNames].map((seqName) => seqName.trim().toLowerCase())
+    );
     const nestedDetection = await detectNestedSequences(
       ppro,
       projectSequences,
@@ -5940,7 +6882,14 @@
         mediaPathForKind = mediaPath;
       }
       if (category === "audio") {
-        audioKind = await audioKindOf(ppro, clip, name, mediaPathForKind);
+        audioKind = await audioKindOf({
+          ppro,
+          item,
+          clip,
+          name,
+          mediaPath: mediaPathForKind,
+          sequenceNames: sequenceNamesLower
+        });
       }
       diagnostics.push(
         `  ${category.padEnd(16)} ${name}
@@ -5969,7 +6918,7 @@
       premiere: 0,
       other: 0
     };
-    const audioKindCounts = { sfx: 0, music: 0 };
+    const audioKindCounts = { voice: 0, sfx: 0, music: 0 };
     for (const c of classified) {
       counts[c.category]++;
       if (c.audioKind) {
@@ -5998,17 +6947,70 @@
     const sequenceGroups = [];
     const standalonePrincipal = [];
     const standaloneNested = [];
+    const leftovers = [];
     for (const [base, members] of seqMap) {
       if (members.length >= 2 && !isNestedSequenceName(base)) {
         sequenceGroups.push({ base, items: members });
       } else {
-        for (const member of members) {
-          if (member.category === "sequence-nested") {
-            standaloneNested.push(member);
-          } else {
-            standalonePrincipal.push(member);
-          }
+        leftovers.push(...members);
+      }
+    }
+    const variantGroups = groupByVariantToken(leftovers.map((item) => item.name));
+    const grouped = /* @__PURE__ */ new Set();
+    const groupByBase = /* @__PURE__ */ new Map();
+    for (const group of sequenceGroups) {
+      groupByBase.set(group.base.toLowerCase(), group);
+    }
+    for (const variant of variantGroups) {
+      const members = variant.members.map((index) => leftovers[index]);
+      const existing = groupByBase.get(variant.label.toLowerCase());
+      if (existing) {
+        existing.items.push(...members);
+      } else {
+        const group = { base: variant.label, items: members };
+        sequenceGroups.push(group);
+        groupByBase.set(group.base.toLowerCase(), group);
+      }
+      for (const index of variant.members) {
+        grouped.add(index);
+      }
+    }
+    const groupOfSequence = /* @__PURE__ */ new Map();
+    for (const group of sequenceGroups) {
+      for (const member of group.items) {
+        groupOfSequence.set(member.name.trim().toLowerCase(), group);
+      }
+    }
+    const homeForNested = (item) => {
+      const parents = /* @__PURE__ */ new Set([
+        ...nestedDetection.parentsById.get(item.id) ?? [],
+        ...nestedDetection.parentsByName.get(item.name.trim().toLowerCase()) ?? []
+      ]);
+      let home = null;
+      for (const parent of parents) {
+        const group = groupOfSequence.get(parent.trim().toLowerCase());
+        if (!group) continue;
+        if (home && home !== group) return null;
+        home = group;
+      }
+      return home;
+    };
+    for (const [index, member] of leftovers.entries()) {
+      if (grouped.has(index)) continue;
+      if (member.category === "sequence-nested") {
+        const home = homeForNested(member);
+        if (home) {
+          home.items.push(member);
+          continue;
         }
+        standaloneNested.push(member);
+      } else {
+        standalonePrincipal.push(member);
+      }
+    }
+    for (const group of sequenceGroups) {
+      for (const member of group.items) {
+        member.sequenceBase = group.base;
       }
     }
     return {
@@ -6054,8 +7056,19 @@
     const ids = /* @__PURE__ */ new Set();
     const names = /* @__PURE__ */ new Set();
     const guids = /* @__PURE__ */ new Set();
+    const parentsById = /* @__PURE__ */ new Map();
+    const parentsByName = /* @__PURE__ */ new Map();
+    const noteParent = (map, key, parentName) => {
+      if (!key || !parentName) return;
+      const known2 = map.get(key);
+      if (known2) {
+        known2.add(parentName);
+      } else {
+        map.set(key, /* @__PURE__ */ new Set([parentName]));
+      }
+    };
     const verdicts = /* @__PURE__ */ new Map();
-    const scanTrack = async (track) => {
+    const scanTrack = async (track, parentName) => {
       if (!track) return;
       try {
         const items = track.getTrackItems(
@@ -6093,8 +7106,10 @@
             }
             if (isSub) {
               ids.add(id);
+              noteParent(parentsById, id, parentName);
               if (piName) {
                 names.add(piName.toLowerCase());
+                noteParent(parentsByName, piName.toLowerCase(), parentName);
               }
               try {
                 const clip = ppro.ClipProjectItem.cast(pi);
@@ -6112,19 +7127,25 @@
       }
     };
     for (const seq of sequences) {
+      let parentName = "";
+      try {
+        parentName = (seq.name ?? "").trim();
+      } catch {
+        parentName = "";
+      }
       try {
         const videoTrackCount = await seq.getVideoTrackCount();
         for (let t = 0; t < videoTrackCount; t++) {
-          await scanTrack(await seq.getVideoTrack(t));
+          await scanTrack(await seq.getVideoTrack(t), parentName);
         }
         const audioTrackCount = await seq.getAudioTrackCount();
         for (let t = 0; t < audioTrackCount; t++) {
-          await scanTrack(await seq.getAudioTrack(t));
+          await scanTrack(await seq.getAudioTrack(t), parentName);
         }
       } catch {
       }
     }
-    return { ids, names, guids };
+    return { ids, names, guids, parentsById, parentsByName };
   }
   async function organizeProject(scan) {
     const ppro = getPremiere();
@@ -6209,14 +7230,14 @@
               plannedSub += 1;
             }
             for (const group of scan.sequenceGroups) {
-              if (!hadSeqGroups.has(group.base)) {
+              if (!hadSeqGroups.has(normalizeBinName(group.base))) {
                 tx.addAction(seqBin.createBinAction(group.base, true));
                 plannedSub += 1;
               }
             }
           }
           if (audioBin) {
-            for (const kind of ["music", "sfx"]) {
+            for (const kind of AUDIO_KIND_ORDER) {
               if (scan.audioKindCounts[kind] > 0 && !hadAudioKinds.has(kind)) {
                 tx.addAction(audioBin.createBinAction(AUDIO_KIND_LABELS[kind], true));
                 plannedSub += 1;
@@ -6249,7 +7270,7 @@
           if (id) snapshot.createdBinIds.push(id);
         }
       }
-      for (const kind of ["music", "sfx"]) {
+      for (const kind of AUDIO_KIND_ORDER) {
         const folder = layout.audioKind.get(kind);
         if (folder && !hadAudioKinds.has(kind)) {
           const id = layout.ids.get(folder);
@@ -6269,8 +7290,9 @@
           let targetBin;
           const seqTop = layout.top.get("sequence");
           if (category === "sequence" || category === "sequence-nested") {
-            if (sequenceBase && layout.seqGroups.has(sequenceBase)) {
-              targetBin = layout.seqGroups.get(sequenceBase);
+            const groupKey = sequenceBase ? normalizeBinName(sequenceBase) : "";
+            if (groupKey && layout.seqGroups.has(groupKey)) {
+              targetBin = layout.seqGroups.get(groupKey);
             } else if (category === "sequence-nested") {
               targetBin = layout.seqNested ?? seqTop;
             } else {
@@ -6488,8 +7510,11 @@
         }
         layout.ids.set(subFolder, sub.getId());
         if (category === "audio") {
-          for (const kind of ["music", "sfx"]) {
-            if (sub.name === AUDIO_KIND_LABELS[kind]) {
+          const normalized = normalizeBinName(sub.name);
+          for (const kind of AUDIO_KIND_ORDER) {
+            if (normalized === normalizeBinName(AUDIO_KIND_LABELS[kind])) {
+              layout.audioKind.set(kind, subFolder);
+            } else if (!layout.audioKind.has(kind) && AUDIO_KIND_ALIASES[kind].includes(normalized)) {
               layout.audioKind.set(kind, subFolder);
             }
           }
@@ -6498,7 +7523,7 @@
         } else if (sub.name === "Nested") {
           layout.seqNested = subFolder;
         } else {
-          layout.seqGroups.set(sub.name, subFolder);
+          layout.seqGroups.set(normalizeBinName(sub.name), subFolder);
         }
       }
     }
@@ -6544,7 +7569,7 @@
     id: "organize",
     name: "Organizar Pastas",
     summary: "Organização automática do projeto por tipo",
-    hint: "Organiza apenas os arquivos e sequências soltos na raiz do projeto. Suas pastas pessoais e pastas criadas por plugins (Animation Composer, etc.) são 100% preservadas e intocadas.",
+    hint: "Organiza apenas os arquivos e sequências soltos na raiz do projeto. Suas pastas pessoais e pastas criadas por plugins (Animation Composer, etc.) são 100% preservadas e intocadas. Se você já tem uma pasta de áudio com o seu nome (Avatar, Locução, Trilha…), ela é usada como está.",
     category: "projeto",
     glyph: "folder",
     available: true,
@@ -6668,8 +7693,11 @@
             html += `<span class="org-cat-count">${count}</span>`;
             html += `</div>`;
             const items = scan.items.filter((i) => i.category === cat);
-            if (cat === "audio" && (scan.audioKindCounts.music > 0 || scan.audioKindCounts.sfx > 0)) {
-              for (const kind of ["music", "sfx"]) {
+            const anyAudioKind = AUDIO_KIND_ORDER.some(
+              (kind) => scan.audioKindCounts[kind] > 0
+            );
+            if (cat === "audio" && anyAudioKind) {
+              for (const kind of AUDIO_KIND_ORDER) {
                 const group = items.filter((i) => i.audioKind === kind);
                 if (group.length === 0) continue;
                 html += `<div class="org-group">`;
@@ -6779,11 +7807,12 @@
   const PROGRESS_FILE = "dl-progress.txt";
   const LOG_FILE = "dl-log.txt";
   const FILES_FILE = "dl-files.txt";
+  const FILE_MARKER = "FRAMELAB_FILE:";
+  const FILE_PRINT = `after_move:${FILE_MARKER}%(filepath)j`;
   const STARTED_FILE$1 = "dl-started.txt";
   const CONFIG_FILE$1 = "download-config.json";
   const SCRIPT_FILE$1 = "download.command";
   const SCRIPT_FILE_WIN$1 = "download.bat";
-  const LOCAL_BIN = "yt-dlp";
   const LOCAL_BIN_WIN = "yt-dlp.exe";
   function infoFile(index) {
     return `dl-info-${index}.json`;
@@ -6805,7 +7834,7 @@
   };
   async function readConfig$1() {
     try {
-      const raw = readText(await workspace(), CONFIG_FILE$1);
+      const raw = readText$1(await workspace(), CONFIG_FILE$1);
       if (!raw) {
         return { ...DEFAULT_CONFIG };
       }
@@ -6860,7 +7889,7 @@
       return `bv*${NO_WATERMARK}+ba/b${NO_WATERMARK}/bv*+ba/b`;
     }
     const ceiling = quality.height * 2;
-    const cap = `[width<=${ceiling}][height<=${ceiling}]`;
+    const cap = `[width<=?${ceiling}][height<=?${ceiling}]`;
     return `bv*${NO_WATERMARK}${cap}+ba/b${NO_WATERMARK}${cap}/bv*${NO_WATERMARK}+ba/b${NO_WATERMARK}/b`;
   }
   function sortArg(quality) {
@@ -6921,7 +7950,8 @@
         hadWatermarked = true;
         continue;
       }
-      const hasVideo = text$1(format.vcodec) !== "none" && text$1(format.vcodec) !== "";
+      const hasDimensions = shortSide(format) !== null;
+      const hasVideo = hasDimensions || text$1(format.vcodec) !== "none" && text$1(format.vcodec) !== "";
       const bytes = estimateBytes(format, duration);
       if (!hasVideo) {
         if (bytes > bestAudioBytes) {
@@ -6975,14 +8005,28 @@
     return 0;
   }
   function availableQualities(probes) {
-    const ok = probes.filter((probe) => probe.ok);
+    const ok = probes.filter((probe2) => probe2.ok);
     if (ok.length === 0) {
       return [...QUALITIES];
     }
-    const tallest = Math.max(...ok.map((probe) => probe.resolutions[0] ?? 0));
+    const tallest = Math.max(...ok.map((probe2) => probe2.resolutions[0] ?? 0));
     return QUALITIES.filter(
       (quality) => quality.height === null || quality.height <= tallest
     );
+  }
+  function parseDownloadedFiles(log) {
+    const files = [];
+    for (const line of log.split(/\r?\n/)) {
+      if (!line.startsWith(FILE_MARKER)) continue;
+      try {
+        const path = JSON.parse(line.slice(FILE_MARKER.length));
+        if (typeof path === "string" && /^(?:\/|[a-z]:[\\/]|\\\\)/i.test(path)) {
+          files.push(path);
+        }
+      } catch {
+      }
+    }
+    return [...new Set(files)];
   }
   let previousRunFiles = [];
   async function run(launch) {
@@ -7039,7 +8083,7 @@
       }
       if (awaitingStamp && Date.now() > stampDeadline) {
         awaitingStamp = false;
-        if (!readText(space, runFiles.started)) {
+        if (!readText$1(space, runFiles.started)) {
           console.warn("[Download] sem carimbo do agente — caindo para o Terminal.");
           await withdraw(sent.ticket);
           try {
@@ -7060,7 +8104,7 @@
           launch.onProgress(done, launch.total, percent, log);
         }
       }
-      const raw = readText(space, runFiles.result);
+      const raw = readText$1(space, runFiles.result);
       if (raw) {
         try {
           const parsed = JSON.parse(raw);
@@ -7071,7 +8115,10 @@
             scriptPath,
             failed: typeof parsed.failed === "number" ? parsed.failed : 0,
             log: tail(space, runFiles.log),
-            filesFile: runFiles.files
+            filesFile: runFiles.files,
+            // Leia o log completo uma vez: num lote os primeiros arquivos
+            // podem ter saído há muito mais de 12 linhas.
+            downloadedFiles: parseDownloadedFiles(readText$1(space, runFiles.log) ?? "")
           };
         } catch {
         }
@@ -7087,17 +8134,17 @@
     return { ok: false, error, ytdlpPath: null, scriptPath, failed: 0, log: "" };
   }
   function readProgress(space, name) {
-    const raw = readText(space, name);
+    const raw = readText$1(space, name);
     const parsed = Number.parseInt(raw?.split("/")[0] ?? "", 10);
     return Number.isFinite(parsed) ? parsed : 0;
   }
   function tail(space, name, lines = 12) {
-    const raw = readText(space, name);
+    const raw = readText$1(space, name);
     if (!raw) {
       return "";
     }
     const slice = raw.length > 4096 ? raw.slice(-4096) : raw;
-    return slice.split(/\r?\n/).slice(-lines).join("\n");
+    return slice.split(/\r?\n/).filter((line) => !line.startsWith(FILE_MARKER)).slice(-lines).join("\n");
   }
   function readPercent(log) {
     const matches = log.match(/(\d{1,3}(?:\.\d)?)%/g);
@@ -7146,7 +8193,7 @@
     const space = await workspace();
     const complaints = complaintsByIndex(urls, result.log);
     const probes = urls.map((url, index) => {
-      const raw = readText(space, infoFile(index));
+      const raw = readText$1(space, infoFile(index));
       if (!raw) {
         return {
           url,
@@ -7186,8 +8233,12 @@
       purpose: "Baixar os vídeos dos links informados."
     });
     const space = await workspace();
-    const listed = readText(space, result.filesFile ?? FILES_FILE);
-    const files = listed ? listed.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0) : [];
+    const listed = readText$1(space, result.filesFile ?? FILES_FILE);
+    const directFiles = listed ? listed.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0) : [];
+    const files = [.../* @__PURE__ */ new Set([...directFiles, ...result.downloadedFiles ?? []])];
+    if (result.ok && files.length === 0) {
+      return { ...result, ok: false, error: "missing-files", files };
+    }
     return { ...result, files };
   }
   async function installYtdlp(onManual) {
@@ -7236,6 +8287,31 @@
       '  if [ -n "$candidate" ] && [ -x "$candidate" ]; then YTDLP="$candidate"; break; fi',
       "done",
       'if [ -z "$YTDLP" ]; then YTDLP="$(command -v yt-dlp 2>/dev/null || true)"; fi',
+      // Binário de arquivo único (ou nenhum)? Troca pelo onedir — ver
+      // ONEDIR_DIR para o porquê. Um script Python (Homebrew, pip) começa
+      // com `#!` e não tem o problema; esse fica como está.
+      `ONEDIR="$WORK/${ONEDIR_DIR}"`,
+      'if [ -z "$YTDLP" ] || [ "$(head -c 2 "$YTDLP" 2>/dev/null)" != "#!" ]; then',
+      `  if [ ! -x "$ONEDIR/${ONEDIR_BIN}" ]; then`,
+      '    echo "Preparando o downloader rapido (so na primeira vez)..."',
+      `    echo "Preparando o downloader rapido (so na primeira vez)..." >> "$WORK/${LOG_FILE}"`,
+      '    rm -rf "$ONEDIR.tmp" "$ONEDIR.zip"',
+      `    if curl -fsSL --retry 3 -o "$ONEDIR.zip" ${q$1(RELEASE_MAC_ONEDIR)} 2>> "$WORK/${LOG_FILE}" &&`,
+      `      unzip -q -o "$ONEDIR.zip" -d "$ONEDIR.tmp" >> "$WORK/${LOG_FILE}" 2>&1; then`,
+      '      xattr -dr com.apple.quarantine "$ONEDIR.tmp" >/dev/null 2>&1 || true',
+      // Esta primeira execução é a que o XProtect escaneia, e o `mv`
+      // depois não a desfaz (medido). É também a prova de que o build
+      // roda antes de ele vencer a busca de todo script futuro.
+      `      if "$ONEDIR.tmp/${ONEDIR_BIN}" --version >/dev/null 2>&1; then`,
+      '        rm -rf "$ONEDIR"',
+      '        mv "$ONEDIR.tmp" "$ONEDIR"',
+      "      fi",
+      "    fi",
+      '    rm -rf "$ONEDIR.tmp" "$ONEDIR.zip"',
+      "  fi",
+      // Falhou? Segue com o de arquivo único: lento, mas funciona.
+      `  if [ -x "$ONEDIR/${ONEDIR_BIN}" ]; then YTDLP="$ONEDIR/${ONEDIR_BIN}"; fi`,
+      "fi",
       // Não achou? Baixa e segue na MESMA execução. O usuário final não
       // instala ferramenta: o painel se prepara sozinho na primeira vez.
       'if [ -z "$YTDLP" ]; then',
@@ -7325,10 +8401,11 @@
     lines.push("FAILED=0");
     urls.forEach((url, index) => {
       const target = `"$WORK/${infoFile(index)}"`;
+      const extra = extraSiteArgs(url);
       lines.push(
         `echo "[${index + 1}/${urls.length}] consultando…"`,
         `printf '%s/%s' ${index + 1} ${urls.length} > "$WORK/${PROGRESS_FILE}"`,
-        `if "$YTDLP" --no-warnings --no-playlist --ignore-config --extractor-retries 5 --retry-sleep extractor:3 \${DENO:+--js-runtimes "deno:$DENO"} ${cookiesArg(config)}-J ${q$1(url)} > ${target}.tmp 2>> "$WORK/${LOG_FILE}"; then`,
+        `if "$YTDLP" --no-warnings --no-playlist --ignore-config --extractor-retries 5 --retry-sleep extractor:3 \${DENO:+--js-runtimes "deno:$DENO"} ${cookiesArg(config)}${extra}-J ${q$1(url)} > ${target}.tmp 2>> "$WORK/${LOG_FILE}"; then`,
         `  mv ${target}.tmp ${target}`,
         "else",
         "  FAILED=$((FAILED+1))",
@@ -7364,7 +8441,7 @@
         "fi"
       );
     });
-    const shared = `--newline --no-mtime --no-playlist --ignore-config --windows-filenames --trim-filenames 120 --retries 5 --fragment-retries 10 --extractor-retries 5 --retry-sleep extractor:3 \${DENO:+--js-runtimes "deno:$DENO"} -o ${q$1("%(title)s [%(id)s].%(ext)s")} --print-to-file after_move:filepath ${q$1(FILES_FILE)} ` + cookiesArg(config);
+    const shared = `--newline --no-mtime --no-playlist --ignore-config --windows-filenames --trim-filenames 120 --retries 5 --fragment-retries 10 --extractor-retries 5 --retry-sleep extractor:3 \${DENO:+--js-runtimes "deno:$DENO"} -o ${q$1("%(title)s [%(id)s].%(ext)s")} --print ${q$1(FILE_PRINT)} --no-simulate --no-quiet --progress ` + cookiesArg(config);
     const sort = sortArg(quality);
     const media = quality.audioOnly ? `-x --audio-format mp3 --audio-quality 0 -f ${q$1(formatSelector(quality))}` : (
       // mp4 porque o destino é uma timeline do Premiere, e um webm/vp9
@@ -7373,26 +8450,18 @@
     );
     urls.forEach((url, index) => {
       const step2 = direct.length + index + 1;
+      const extra = extraSiteArgs(url);
       lines.push(
         `echo "[${step2}/${total}] ${escapeEcho(url)}"`,
+        `printf '%s\\n' ${q$1(`[${step2}/${total}] ${url}`)} >> "$WORK/${LOG_FILE}"`,
         `printf '%s/%s' ${step2} ${total} > "$WORK/${PROGRESS_FILE}"`,
         // `${FFDIR:+…}` some inteiro quando não há ffmpeg, em vez de
         // passar uma flag com valor vazio — que o yt-dlp recusa.
-        `"$YTDLP" ${shared} ${media} -P "$DEST" \${FFDIR:+--ffmpeg-location "$FFDIR"} ${q$1(url)} 2>&1 | tee -a "$WORK/${LOG_FILE}"`,
-        // `tee` sempre devolve 0; quem falhou foi o yt-dlp, e é o status
-        // dele que o PIPESTATUS guarda.
+        `"$YTDLP" ${shared} ${media} ${extra}-P "$DEST" \${FFDIR:+--ffmpeg-location "$FFDIR"} ${q$1(url)} 2>&1 | tee -a "$WORK/${LOG_FILE}"`,
         'if [ "${PIPESTATUS[0]}" -ne 0 ]; then FAILED=$((FAILED+1)); fi'
       );
     });
     lines.push(
-      // O caminho relativo do --print-to-file é à prova do sanitizador,
-      // mas o yt-dlp o resolve contra a pasta de destino (-P), não
-      // contra o cwd — medido num download real. A colheita cobre os
-      // dois comportamentos e não deixa arquivo de controle no destino.
-      `if [ -f "$DEST/${FILES_FILE}" ]; then`,
-      `  cat "$DEST/${FILES_FILE}" >> "$WORK/${FILES_FILE}"`,
-      `  rm -f "$DEST/${FILES_FILE}"`,
-      "fi",
       'if [ "$FAILED" -eq 0 ]; then',
       `  printf '{"ok":true,"ytdlp":"%s","failed":0}' "$YTDLP" > "$WORK/${RESULT_FILE$1}.tmp"`,
       "else",
@@ -7404,6 +8473,9 @@
     return lines.join("\n") + "\n";
   }
   const RELEASE_MAC = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos";
+  const RELEASE_MAC_ONEDIR = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos.zip";
+  const ONEDIR_DIR = "yt-dlp-onedir";
+  const ONEDIR_BIN = "yt-dlp_macos";
   const RELEASE_WIN = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe";
   const FFMPEG_MAC_ARM = "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip";
   const FFMPEG_MAC_INTEL = "https://ffmpeg.martin-riedl.de/redirect/latest/macos/amd64/release/ffmpeg.zip";
@@ -7419,34 +8491,43 @@
       // install no Terminal, os dois curl brigando pelo mesmo .tmp.
       ...unixBase(folder),
       `echo "Baixando o yt-dlp oficial…"`,
-      // Sem tee: o `if` precisa medir o CURL, e `curl | tee` mede o
-      // tee, que nunca falha — um download pela metade seguia o
-      // caminho feliz e instalava um binário truncado.
-      `if curl -fSL --retry 3 -o "$WORK/${LOCAL_BIN}.tmp" ${q$1(RELEASE_MAC)} 2>> "$WORK/${LOG_FILE}"; then`,
-      `  chmod +x "$WORK/${LOCAL_BIN}.tmp"`,
-      `  mv "$WORK/${LOCAL_BIN}.tmp" "$WORK/${LOCAL_BIN}"`,
+      // O onedir, não o arquivo único: ver ONEDIR_DIR. Sem tee: o `if`
+      // precisa medir o CURL, e `curl | tee` mede o tee, que nunca
+      // falha — um download pela metade seguia o caminho feliz e
+      // instalava um binário truncado.
+      `ONEDIR="$WORK/${ONEDIR_DIR}"`,
+      'rm -rf "$ONEDIR.tmp" "$ONEDIR.zip"',
+      `if curl -fSL --retry 3 -o "$ONEDIR.zip" ${q$1(RELEASE_MAC_ONEDIR)} 2>> "$WORK/${LOG_FILE}" &&`,
+      `  unzip -q -o "$ONEDIR.zip" -d "$ONEDIR.tmp" >> "$WORK/${LOG_FILE}" 2>&1; then`,
       // O binário do macOS vem sem assinatura reconhecida pelo
       // Gatekeeper; sem tirar a quarentena, a primeira execução morre
       // num diálogo que o painel nunca veria.
-      `  xattr -d com.apple.quarantine "$WORK/${LOCAL_BIN}" >/dev/null 2>&1 || true`,
-      `  if "$WORK/${LOCAL_BIN}" --version >/dev/null 2>&1; then`,
-      `    printf '{"ok":true,"ytdlp":"%s"}' "$WORK/${LOCAL_BIN}" > "$WORK/${RESULT_FILE$1}.tmp"`,
+      '  xattr -dr com.apple.quarantine "$ONEDIR.tmp" >/dev/null 2>&1 || true',
+      `  if "$ONEDIR.tmp/${ONEDIR_BIN}" --version >/dev/null 2>&1; then`,
+      '    rm -rf "$ONEDIR"',
+      '    mv "$ONEDIR.tmp" "$ONEDIR"',
+      `    printf '{"ok":true,"ytdlp":"%s"}' "$ONEDIR/${ONEDIR_BIN}" > "$WORK/${RESULT_FILE$1}.tmp"`,
       "  else",
       // O que não executa não pode ficar: um yt-dlp quebrado em
       // $WORK vence a busca de TODO script futuro.
-      `    rm -f "$WORK/${LOCAL_BIN}"`,
       `    printf '{"ok":false,"error":"install-unusable"}' > "$WORK/${RESULT_FILE$1}.tmp"`,
       "  fi",
       "else",
-      `  rm -f "$WORK/${LOCAL_BIN}.tmp"`,
       `  printf '{"ok":false,"error":"install-failed"}' > "$WORK/${RESULT_FILE$1}.tmp"`,
       "fi",
+      'rm -rf "$ONEDIR.tmp" "$ONEDIR.zip"',
       `mv "$WORK/${RESULT_FILE$1}.tmp" "$WORK/${RESULT_FILE$1}"`,
       ...UNIX_CLOSE
     ].join("\n") + "\n";
   }
   function cookiesArg(config) {
     return config.cookies === "none" ? "" : `--cookies-from-browser ${config.cookies} `;
+  }
+  function extraSiteArgs(url, _isWin = false) {
+    if (/pornhub\.com/i.test(url)) {
+      return '--add-header "Cookie:age_verified=1" --referer "https://www.pornhub.com/" ';
+    }
+    return "";
   }
   function escapeEcho(value) {
     return value.replace(/["`$\\]/g, "").slice(0, 90);
@@ -7498,10 +8579,11 @@
     const lines = [...winBase(folder), ...winYtdlpSetup(config)];
     urls.forEach((url, index) => {
       const target = `"%WORK%\\${infoFile(index)}"`;
+      const extra = extraSiteArgs(url, true);
       lines.push(
         `echo [${index + 1}/${urls.length}] consultando...`,
         `>"%WORK%\\${PROGRESS_FILE}" echo ${index + 1}/${urls.length}`,
-        `"%YTDLP%" --no-warnings --no-playlist --ignore-config --extractor-retries 5 --retry-sleep extractor:3 %JSARGS% ${cookiesArg(config)}-J ${bq(url)} > ${target} 2>>"%WORK%\\${LOG_FILE}"`,
+        `"%YTDLP%" --no-warnings --no-playlist --ignore-config --extractor-retries 5 --retry-sleep extractor:3 %JSARGS% ${cookiesArg(config)}${extra}-J ${bq(url)} > ${target} 2>>"%WORK%\\${LOG_FILE}"`,
         "if errorlevel 1 set /a FAILED+=1"
       );
     });
@@ -7555,23 +8637,20 @@
         'if "%FFLOC%"=="CUSTOM" (set FFARGS=--ffmpeg-location "%FFCUSTOM%") else if not "%FFLOC%"=="" set FFARGS=--ffmpeg-location "%FFLOC%"'
       );
     }
-    const shared = `--newline --no-mtime --no-playlist --ignore-config --windows-filenames --trim-filenames 120 --retries 5 --fragment-retries 10 -o ${bq("%(title)s [%(id)s].%(ext)s")} --print-to-file after_move:filepath ${bq(FILES_FILE)} ` + cookiesArg(config);
+    const shared = `--newline --no-mtime --no-playlist --ignore-config --windows-filenames --trim-filenames 120 --retries 5 --fragment-retries 10 -o ${bq("%(title)s [%(id)s].%(ext)s")} --print ${bq(FILE_PRINT)} --no-simulate --no-quiet --progress ` + cookiesArg(config);
     const sort = sortArg(quality);
     const media = quality.audioOnly ? `-x --audio-format mp3 --audio-quality 0 -f ${bq(formatSelector(quality))}` : `-f ${bq(formatSelector(quality))} ${sort ? `-S ${bq(sort)} ` : ""}--merge-output-format mp4`;
     urls.forEach((url, index) => {
       const step2 = direct.length + index + 1;
+      const extra = extraSiteArgs(url, true);
       lines.push(
         `echo [${step2}/${total}]`,
         `>"%WORK%\\${PROGRESS_FILE}" echo ${step2}/${total}`,
-        `"%YTDLP%" ${shared} ${media} -P "%DEST%" %FFARGS% %JSARGS% ${bq(url)} >>"%WORK%\\${LOG_FILE}" 2>&1`,
+        `"%YTDLP%" ${shared} ${media} ${extra}-P "%DEST%" %FFARGS% %JSARGS% ${bq(url)} >>"%WORK%\\${LOG_FILE}" 2>&1`,
         "if errorlevel 1 set /a FAILED+=1"
       );
     });
     lines.push(
-      `if exist "%DEST%\\${FILES_FILE}" (`,
-      `  type "%DEST%\\${FILES_FILE}" >> "%WORK%\\${FILES_FILE}"`,
-      `  del /q "%DEST%\\${FILES_FILE}"`,
-      ")",
       'if "%FAILED%"=="0" (',
       `  >"%WORK%\\${RESULT_FILE$1}.tmp" echo {"ok":true,"ytdlp":"%YTDLP%","failed":0}`,
       ") else (",
@@ -7609,6 +8688,8 @@
         return "O downloader não conseguiu se preparar sozinho — sem acesso ao GitHub para baixar o yt-dlp. Confira a internet e tente de novo.";
       case "ytdlp-failed":
         return diagnoseLog(log);
+      case "missing-files":
+        return "O yt-dlp terminou, mas não informou o arquivo salvo. Confira a pasta de destino e tente novamente.";
       case "install-failed":
         return "Não foi possível baixar o yt-dlp. Verifique a conexão e tente de novo.";
       case "install-unusable":
@@ -7813,7 +8894,7 @@
     }
     return { lfs, binary: storage?.formats?.binary };
   }
-  function fileUrl(nativePathValue) {
+  function fileUrl$2(nativePathValue) {
     return "file://" + nativePathValue.replace(/\\/g, "/").split("/").map((part) => encodeURIComponent(part)).join("/");
   }
   async function destinationFolder(destination, token) {
@@ -7830,7 +8911,7 @@
     }
     try {
       try {
-        const folder = await api.lfs.getEntryWithUrl(fileUrl(destination));
+        const folder = await api.lfs.getEntryWithUrl(fileUrl$2(destination));
         return { folder, binary: api.binary };
       } catch {
       }
@@ -7839,7 +8920,7 @@
       if (cut <= 0) {
         throw new Error("sem pasta-mãe");
       }
-      const parent = await api.lfs.getEntryWithUrl(fileUrl(normalized.slice(0, cut)));
+      const parent = await api.lfs.getEntryWithUrl(fileUrl$2(normalized.slice(0, cut)));
       const leaf = normalized.slice(cut + 1);
       try {
         const folder = await parent.createFolder(leaf);
@@ -8129,12 +9210,12 @@
               showManual
             );
             result = { ...result, ...scripted.result };
-            scripted.probes.forEach((probe, at) => byIndex.set(slowAt[at], probe));
+            scripted.probes.forEach((probe2, at) => byIndex.set(slowAt[at], probe2));
           }
           probes = list.map((_, index) => byIndex.get(index)).filter((p) => !!p);
           renderList();
           renderQualities();
-          const ok = probes.filter((probe) => probe.ok).length;
+          const ok = probes.filter((probe2) => probe2.ok).length;
           showLog(ok === probes.length && result.ok ? "" : result.log);
           if (ok === 0) {
             context.setStatus(describeRunError(result.error ?? "ytdlp-failed", result.log), "error");
@@ -8342,7 +9423,7 @@
           listEl.innerHTML = "";
           return;
         }
-        listEl.innerHTML = probes.map((probe) => probeRow(probe, config.quality)).join("");
+        listEl.innerHTML = probes.map((probe2) => probeRow(probe2, config.quality)).join("");
       }
       function renderFiles(files) {
         if (!listEl || files.length === 0) return;
@@ -8508,7 +9589,7 @@
     };
   }
   function qualityMeta(quality, probes) {
-    const ok = probes.filter((probe) => probe.ok);
+    const ok = probes.filter((probe2) => probe2.ok);
     if (ok.length === 0) {
       return "";
     }
@@ -8516,36 +9597,36 @@
       return "só o áudio";
     }
     const size = formatBytes(
-      ok.reduce((sum2, probe) => sum2 + estimateFor(probe, quality), 0)
+      ok.reduce((sum2, probe2) => sum2 + estimateFor(probe2, quality), 0)
     );
-    const delivered = new Set(ok.map((probe) => effectiveResolution(probe, quality)));
+    const delivered = new Set(ok.map((probe2) => effectiveResolution(probe2, quality)));
     const single = delivered.size === 1 ? [...delivered][0] : null;
     const shown = single !== null && single !== quality.height ? `${single}p` : "";
     return [shown, size].filter((part) => part.length > 0).join(" · ");
   }
-  function estimateFor(probe, quality) {
-    const chosen = effectiveResolution(probe, quality);
-    return chosen === null ? 0 : probe.sizeByResolution[chosen] ?? 0;
+  function estimateFor(probe2, quality) {
+    const chosen = effectiveResolution(probe2, quality);
+    return chosen === null ? 0 : probe2.sizeByResolution[chosen] ?? 0;
   }
-  function effectiveResolution(probe, quality) {
-    const list = probe.resolutions;
+  function effectiveResolution(probe2, quality) {
+    const list = probe2.resolutions;
     if (list.length === 0) {
       return null;
     }
     return quality.height === null ? list[0] : list.find((value) => value <= quality.height) ?? list[list.length - 1];
   }
-  function probeRow(probe, qualityId) {
-    if (!probe.ok) {
-      return `<div class="dl-row is-bad"><span class="dl-row-name">${escapeHtml(shorten(probe.url))}</span><span class="dl-row-meta">${escapeHtml(probe.error ?? "não foi possível ler")}</span></div>`;
+  function probeRow(probe2, qualityId) {
+    if (!probe2.ok) {
+      return `<div class="dl-row is-bad"><span class="dl-row-name">${escapeHtml(shorten(probe2.url))}</span><span class="dl-row-meta">${escapeHtml(probe2.error ?? "não foi possível ler")}</span></div>`;
     }
     const quality = findQuality(qualityId);
-    const size = formatBytes(estimateFor(probe, quality));
-    const clock = formatClock(probe.durationSeconds);
-    const top = probe.resolutions[0] ? `${probe.resolutions[0]}p` : "";
-    const meta = [probe.site, clock, top, size].filter((part) => part.length > 0).join(" · ");
-    return `<div class="dl-row"><span class="dl-row-name" title="${escapeHtml(probe.title)}">${escapeHtml(
-      probe.title
-    )}</span><span class="dl-row-meta">${escapeHtml(meta)}</span>` + (probe.hadWatermarked ? `<span class="dl-row-tag">sem marca d'água</span>` : "") + "</div>";
+    const size = formatBytes(estimateFor(probe2, quality));
+    const clock = formatClock(probe2.durationSeconds);
+    const top = probe2.resolutions[0] ? `${probe2.resolutions[0]}p` : "";
+    const meta = [probe2.site, clock, top, size].filter((part) => part.length > 0).join(" · ");
+    return `<div class="dl-row"><span class="dl-row-name" title="${escapeHtml(probe2.title)}">${escapeHtml(
+      probe2.title
+    )}</span><span class="dl-row-meta">${escapeHtml(meta)}</span>` + (probe2.hadWatermarked ? `<span class="dl-row-tag">sem marca d'água</span>` : "") + "</div>";
   }
   function shorten(value) {
     return value.length > 64 ? `${value.slice(0, 61)}…` : value;
@@ -8555,7 +9636,7 @@
     return parts[parts.length - 1] || path;
   }
   function markup$3() {
-    return `<div class="zones"><div class="zone"><div class="field"><div class="field-head"><span class="t-label">Links</span></div><textarea class="dl-urls" data-urls spellcheck="false" rows="3" placeholder="Cole os links do YouTube ou do TikTok — um por linha"></textarea><div class="sil-scan-row"><div class="org-scan" ${CONTROL} data-scan>Analisar links</div></div><div class="sil-manual" data-manual hidden></div><div class="dl-list" data-list></div><div class="dl-progress" data-progress hidden></div><pre class="dl-log" data-log hidden></pre></div></div><div class="zone"><div class="field"><span class="t-label">Qualidade</span><div data-quality-pick></div></div></div><div class="zone"><div class="field"><div class="field-head"><span class="t-label">Destino</span><span class="field-action" ${CONTROL} data-pick>Escolher…</span></div><p class="dl-dest" data-dest></p></div><div class="field"><span class="t-label">Importar para o projeto</span><div class="seg" data-import-seg><div class="seg-item" ${CONTROL} data-import="on">Sim</div><div class="seg-item" ${CONTROL} data-import="off">Não</div></div></div></div><div class="sil-advanced"><div class="sil-advanced-summary" ${CONTROL} data-adv-toggle><span class="sil-advanced-title">⚙️ Ajustes Avançados</span><span class="sil-advanced-icon" data-adv-icon>▾</span></div><div class="sil-advanced-content" data-adv-content hidden><div class="field"><span class="t-label">Cookies do navegador</span><div data-cookies-pick></div><p class="field-note">Para vídeo com restrição de idade ou quando o site pede login. Use o navegador onde você já está logado.</p></div><div class="field"><div class="field-head"><span class="t-label">Caminho do yt-dlp</span><span class="field-action" ${CONTROL} data-open-folder>Abrir pasta</span></div><div class="sil-ffmpeg-group"><input type="text" class="sil-path" data-ytdlp-path spellcheck="false" placeholder="deixe vazio para procurar sozinho"><div class="org-scan" ${CONTROL} data-install>Reinstalar yt-dlp</div></div><p class="field-note">Não precisa instalar nada: na primeira vez o painel baixa sozinho o yt-dlp e o ffmpeg oficiais para a pasta do plugin. Este botão só força uma reinstalação, se algum dia precisar atualizar.</p></div></div></div></div>`;
+    return `<div class="zones"><div class="zone is-wide"><div class="field"><div class="field-head"><span class="t-label">Links</span></div><textarea class="dl-urls" data-urls spellcheck="false" rows="3" placeholder="Cole os links do YouTube ou do TikTok — um por linha"></textarea><div class="sil-scan-row"><div class="org-scan" ${CONTROL} data-scan>Analisar links</div></div><div class="sil-manual" data-manual hidden></div><div class="dl-list" data-list></div><div class="dl-progress" data-progress hidden></div><pre class="dl-log" data-log hidden></pre></div></div><div class="zone"><div class="field"><span class="t-label">Qualidade</span><div data-quality-pick></div></div></div><div class="zone"><div class="field"><div class="field-head"><span class="t-label">Destino</span><span class="field-action" ${CONTROL} data-pick>Escolher…</span></div><p class="dl-dest" data-dest></p></div><div class="field"><span class="t-label">Importar para o projeto</span><div class="seg" data-import-seg><div class="seg-item" ${CONTROL} data-import="on">Sim</div><div class="seg-item" ${CONTROL} data-import="off">Não</div></div></div></div><div class="sil-advanced"><div class="sil-advanced-summary" ${CONTROL} data-adv-toggle><span class="sil-advanced-title">Ajustes avançados</span><span class="sil-advanced-icon" data-adv-icon>▾</span></div><div class="sil-advanced-content" data-adv-content hidden><div class="field"><span class="t-label" title="Para vídeo com restrição de idade ou quando o site pede login. Use o navegador onde você já está logado.">Cookies do navegador</span><div data-cookies-pick></div></div><div class="field"><div class="field-head"><span class="t-label" title="Não precisa instalar nada: na primeira vez o painel baixa sozinho o yt-dlp e o ffmpeg oficiais para a pasta do plugin.">Caminho do yt-dlp</span><span class="field-action" ${CONTROL} data-open-folder>Abrir pasta</span></div><div class="sil-ffmpeg-group"><input type="text" class="sil-path" data-ytdlp-path spellcheck="false" placeholder="deixe vazio para procurar sozinho"><div class="org-scan" ${CONTROL} data-install>Reinstalar yt-dlp</div></div></div></div></div></div>`;
   }
   const FILLER_DEFAULTS = {
     useTags: true,
@@ -8976,7 +10057,7 @@
     }
   };
   function markup$2(params) {
-    return `<div class="zones"><div class="zone"><div class="field"><div class="field-head"><span class="t-label">Margem ao redor</span><span class="field-val" data-out-pad>${params.padSeconds.toFixed(2)}s</span></div><div class="slider-row"><div data-pad></div></div><p class="field-note">Quanto de ar cai junto com cada muleta. A margem avança pelo silêncio vizinho e para na palavra ao lado — nunca morde fala.</p></div><div class="field"><div class="field-head"><span class="t-label">Esticado a partir de</span><span class="field-val" data-out-stretch>${params.stretchedSeconds.toFixed(2)}s</span></div><div class="slider-row"><div data-stretch></div></div><p class="field-note">Um "é" ou "ah" mais longo que isso é hesitação, não palavra. Zero desliga — aí só sons inequívocos (ééé, hum) e a tag cortam.</p></div><div class="field"><span class="t-label">Tag da transcrição (né, tipo…)</span><div class="seg" data-tag-seg><div class="seg-item" ${CONTROL} data-tag="on">Cortar</div><div class="seg-item" ${CONTROL} data-tag="off">Manter</div></div><p class="field-note">O que o próprio Premiere marcou como muleta. Desligue se o "né" faz parte do jeito de falar do vídeo.</p></div></div><div class="zone is-wide"><div class="sil-empty" data-empty><p class="sil-empty-title">Pronto para analisar</p><p class="sil-empty-desc">Selecione os clipes falados na timeline. É preciso que estejam transcritos (janela Texto → Transcrever sequência).</p></div><div class="sil-scan-row"><div class="org-scan" ${CONTROL} data-scan>Analisar Seleção</div></div><div class="sil-report" data-report></div></div></div>`;
+    return `<div class="zones"><div class="zone"><div class="field"><div class="field-head"><span class="t-label" title="Quanto de ar cai junto com cada muleta. A margem avança pelo silêncio vizinho e para na palavra ao lado — nunca morde fala.">Margem ao redor</span><span class="field-val" data-out-pad>${params.padSeconds.toFixed(2)}s</span></div><div class="slider-row"><div data-pad></div></div></div><div class="field"><div class="field-head"><span class="t-label" title="Um &quot;é&quot; ou &quot;ah&quot; mais longo que isso é hesitação, não palavra. Zero desliga — aí só sons inequívocos (ééé, hum) e a tag cortam.">Esticado a partir de</span><span class="field-val" data-out-stretch>${params.stretchedSeconds.toFixed(2)}s</span></div><div class="slider-row"><div data-stretch></div></div></div><div class="field"><span class="t-label" title="O que o próprio Premiere marcou como muleta. Desligue se o &quot;né&quot; faz parte do jeito de falar do vídeo.">Tag da transcrição (né, tipo…)</span><div class="seg" data-tag-seg><div class="seg-item" ${CONTROL} data-tag="on">Cortar</div><div class="seg-item" ${CONTROL} data-tag="off">Manter</div></div></div></div><div class="zone is-wide"><div class="sil-empty" data-empty><p class="sil-empty-title">Pronto para analisar</p><p class="sil-empty-desc">Selecione os clipes falados na timeline. É preciso que estejam transcritos (janela Texto → Transcrever sequência).</p></div><div class="sil-scan-row"><div class="org-scan" ${CONTROL} data-scan>Analisar Seleção</div></div><div class="sil-report" data-report></div></div></div>`;
   }
   function isMarker(text2) {
     return /^\[_.*_?\]$/.test(text2.trim()) || /^<\|.*\|>$/.test(text2.trim());
@@ -9228,6 +10309,7 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
   const STAGE_FILE = "cc-stage.txt";
   const WHISPER_LOG = "cc-whisper.log";
   const STARTED_FILE = "cc-started.txt";
+  const TIMING_FILE = "cc-timing.txt";
   const OUT_BASE = "cc-out";
   const SCRIPT_FILE = "captions.command";
   const SCRIPT_FILE_WIN = "captions.bat";
@@ -9247,7 +10329,8 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
       note: "181 MB · o mais rápido, erra mais em nome próprio",
       file: "ggml-small-q5_1.bin",
       url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin",
-      megabytes: 181
+      megabytes: 181,
+      beamSize: 5
     },
     {
       id: "turbo",
@@ -9255,15 +10338,17 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
       note: "547 MB · o recomendado — 10 min de vídeo em ~3 min",
       file: "ggml-large-v3-turbo-q5_0.bin",
       url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
-      megabytes: 547
+      megabytes: 547,
+      beamSize: 3
     },
     {
       id: "large",
       label: "Máxima",
-      note: "1 GB · 2,4x mais lento, mesma precisão nos testes",
+      note: "1 GB · bem mais lento, e nos testes não acertou mais que o Equilibrado",
       file: "ggml-large-v3-q5_0.bin",
       url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-q5_0.bin",
-      megabytes: 1031
+      megabytes: 1031,
+      beamSize: 2
     }
   ];
   const LANGUAGES = [
@@ -9287,6 +10372,12 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
   function findModel(id) {
     return MODELS.find((model) => model.id === id) ?? MODELS[1];
   }
+  function readTiming(space) {
+    const raw = readText$1(space, TIMING_FILE);
+    if (!raw) return null;
+    const [gasto, audio] = raw.split(/\s+/).map((n) => Number.parseFloat(n));
+    return Number.isFinite(gasto) && Number.isFinite(audio) ? { elapsedSeconds: gasto, audioSeconds: audio } : null;
+  }
   async function transcribe(job, model, language, prompt, onStage, cancelled, onManual) {
     const shell = shellModule();
     if (!shell) {
@@ -9295,7 +10386,7 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
     const space = await workspace();
     const scriptPath = nativePath(space, scriptName());
     const outJson = `${OUT_BASE}.json`;
-    for (const name of [RESULT_FILE, STAGE_FILE, STARTED_FILE, WHISPER_LOG, outJson, "cc-audio.wav"]) {
+    for (const name of [RESULT_FILE, STAGE_FILE, STARTED_FILE, WHISPER_LOG, TIMING_FILE, outJson, "cc-audio.wav"]) {
       await remove(space, name);
     }
     const script = isWindows() ? windowsScript(job, model, language, space.nativeBase, prompt) : unixScript(job, model, language, space.nativeBase, prompt);
@@ -9322,7 +10413,7 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
       }
       if (awaitingStamp && Date.now() > stampDeadline) {
         awaitingStamp = false;
-        if (!readText(space, STARTED_FILE)) {
+        if (!readText$1(space, STARTED_FILE)) {
           await withdraw(sent.ticket);
           try {
             await shell.openPath(scriptPath, PURPOSE);
@@ -9332,14 +10423,14 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
           }
         }
       }
-      const stage = readText(space, STAGE_FILE);
+      const stage = readText$1(space, STAGE_FILE);
       const percent = stage?.startsWith("Transcrevendo") ? whisperProgress(space) : null;
       const shown = percent === null ? stage : `${stage} ${percent}%`;
       if (shown && shown !== lastStage) {
         lastStage = shown;
         onStage?.(shown);
       }
-      const raw = readText(space, RESULT_FILE);
+      const raw = readText$1(space, RESULT_FILE);
       if (raw) {
         try {
           const parsed = JSON.parse(raw);
@@ -9356,7 +10447,8 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
             ok: true,
             error: null,
             json: readJson(space, outJson),
-            scriptPath
+            scriptPath,
+            timing: readTiming(space)
           };
         } catch {
         }
@@ -9371,7 +10463,7 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
     };
   }
   function whisperProgress(space) {
-    const log = readText(space, WHISPER_LOG);
+    const log = readText$1(space, WHISPER_LOG);
     if (!log) return null;
     const hits = log.match(/progress\s*=\s*(\d+)%/g);
     if (!hits) return null;
@@ -9379,7 +10471,7 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
     return last ? Number.parseInt(last[1], 10) : null;
   }
   function readJson(space, name) {
-    const raw = readText(space, name);
+    const raw = readText$1(space, name);
     if (!raw) {
       console.error("[Legendas] whisper terminou mas não deixou JSON.");
       return null;
@@ -9445,7 +10537,13 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
        */
       ...language === "auto" ? [] : [
         'stage "Conferindo o idioma…"',
-        `DET=$("$WHISPER" -m "$MODEL" -f "$WORK/cc-audio.wav" -dl 2>&1 || true)`,
+        // O `-dl` só olha os primeiros 30s, mas LÊ o arquivo inteiro
+        // antes de decidir isso: numa faixa de uma hora são ~115 MB
+        // de PCM carregados para usar meio por cento deles. Um
+        // recorte custa centésimos de segundo e poupa a leitura.
+        `"$FFMPEG" -v error -y -t 30 -i "$WORK/cc-audio.wav" -c copy "$WORK/cc-probe.wav" 2>/dev/null || cp "$WORK/cc-audio.wav" "$WORK/cc-probe.wav"`,
+        `DET=$("$WHISPER" -m "$MODEL" -f "$WORK/cc-probe.wav" -dl 2>&1 || true)`,
+        'rm -f "$WORK/cc-probe.wav"',
         `DETLANG=$(printf '%s' "$DET" | sed -n 's/.*auto-detected language: \\([a-z][a-z]*\\).*/\\1/p' | head -1)`,
         `DETP=$(printf '%s' "$DET" | sed -n 's/.*p = \\([0-9.]*\\).*/\\1/p' | head -1)`,
         // A probabilidade entra como VARIÁVEL do awk. Escrita como
@@ -9475,13 +10573,29 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
       // eficiência atrasam o conjunto. Fora do macOS cai para o total.
       "THREADS=$(sysctl -n hw.perflevel0.physicalcpu 2>/dev/null || sysctl -n hw.physicalcpu 2>/dev/null || echo 4)",
       /*
+       * Flash attention: de graça, quando o binário tem.
+       *
+       * Nas builds recentes do whisper.cpp o `-fa` acelera a atenção no
+       * Metal sem mexer no resultado. Nas antigas ele não existe — e um
+       * argumento desconhecido não é ignorado, o whisper MORRE nele. Daí
+       * a pergunta ao `--help` antes: quem tem, usa; quem não tem, roda
+       * como rodava.
+       */
+      `FA=""; "$WHISPER" --help 2>&1 | grep -q -- "-fa" && FA="-fa"`,
+      // O relógio de parede desta etapa, para o painel poder dizer
+      // "3 min para 10 min de áudio" em vez de só "demorou".
+      "T0=$(date +%s)",
+      /*
        * `-pp` é uma BANDEIRA. Escrito `-pp false`, o `false` virava um
        * segundo arquivo de entrada ("input file not found 'false'") — o
        * whisper reclamava e seguia, mas o progresso nunca chegou ao
        * painel. O stderr vai para o log, não para o nada: é dele que
        * saem o percentual e o diagnóstico de lentidão.
        */
-      `"$WHISPER" -m "$MODEL" -f "$WORK/cc-audio.wav" -l ${q(language)} -t "$THREADS" -bs 5 -bo 5 -sns -et 2.4 -lpt -1.0 ` + (prompt ? `--prompt ${q(prompt)} ` : "") + `-ojf -of "$WORK/${OUT_BASE}" -pp >/dev/null 2>"$WORK/${WHISPER_LOG}" || fail whisper-failed`,
+      `"$WHISPER" -m "$MODEL" -f "$WORK/cc-audio.wav" -l ${q(language)} -t "$THREADS" $FA -bs ${model.beamSize} -bo ${model.beamSize} -sns -et 2.4 -lpt -1.0 ` + (prompt ? `--prompt ${q(prompt)} ` : "") + `-ojf -of "$WORK/${OUT_BASE}" -pp >/dev/null 2>"$WORK/${WHISPER_LOG}" || fail whisper-failed`,
+      // Quanto levou, e para quantos segundos de áudio. É o número que
+      // transforma "está lento" em algo que dá para conferir.
+      `printf '%s %s' "$(( $(date +%s) - T0 ))" ${q(job.durationSeconds.toFixed(1))} > "$WORK/${TIMING_FILE}"`,
       `if [ ! -f "$WORK/${OUT_BASE}.json" ]; then fail no-output; fi`,
       // O WAV de 16 kHz de uma hora de fala são ~115 MB; some assim que
       // vira transcrição.
@@ -9805,11 +10919,13 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
     language: "pt",
     glossary: "",
     track: "all",
-    srt: { ...SRT_DEFAULTS }
+    srt: { ...SRT_DEFAULTS },
+    srtDestination: "",
+    srtDestinationToken: ""
   };
   async function readConfig() {
     try {
-      const raw = readText(await workspace(), CONFIG_FILE);
+      const raw = readText$1(await workspace(), CONFIG_FILE);
       if (!raw) {
         return { ...DEFAULTS };
       }
@@ -9819,7 +10935,9 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
         language: typeof parsed.language === "string" ? parsed.language : DEFAULTS.language,
         glossary: typeof parsed.glossary === "string" ? parsed.glossary : "",
         track: typeof parsed.track === "number" || parsed.track === "all" ? parsed.track : "all",
-        srt: readSrt(parsed.srt)
+        srt: readSrt(parsed.srt),
+        srtDestination: typeof parsed.srtDestination === "string" ? parsed.srtDestination : "",
+        srtDestinationToken: typeof parsed.srtDestinationToken === "string" ? parsed.srtDestinationToken : ""
       };
     } catch {
       return { ...DEFAULTS };
@@ -9857,7 +10975,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
   const SNAPSHOT_FILE = "captions-written.json";
   async function readSnapshots() {
     try {
-      const raw = readText(await workspace(), SNAPSHOT_FILE);
+      const raw = readText$1(await workspace(), SNAPSHOT_FILE);
       return raw ? JSON.parse(raw) : {};
     } catch {
       return {};
@@ -9881,7 +10999,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
   const LAST_RUN_FILE = "captions-last-run.json";
   async function readLastRun() {
     try {
-      const raw = readText(await workspace(), LAST_RUN_FILE);
+      const raw = readText$1(await workspace(), LAST_RUN_FILE);
       if (!raw) {
         return null;
       }
@@ -10234,6 +11352,12 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       return null;
     }
   }
+  function describeTiming(t) {
+    const min = (sec) => sec >= 60 ? `${Math.round(sec / 60)} min` : `${Math.round(sec)}s`;
+    const fator = t.elapsedSeconds > 0 ? t.audioSeconds / t.elapsedSeconds : 0;
+    const ritmo = fator > 0 ? ` · ${fator.toFixed(1)}x tempo real` : "";
+    return `${min(t.elapsedSeconds)} para ${min(t.audioSeconds)} de áudio${ritmo}`;
+  }
   function clipsFor(scan, track) {
     const chosen = track === "all" ? scan.tracks : scan.tracks.filter((entry) => entry.index === track);
     return chosen.flatMap((entry) => entry.clips);
@@ -10304,7 +11428,9 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       sequenceWide,
       options.srt ?? SRT_DEFAULTS,
       scan.fps,
-      stages
+      stages,
+      options.destination,
+      options.destinationToken
     );
     const { srtPath, cues } = emitted;
     const srtInProject = emitted.inProject;
@@ -10385,28 +11511,82 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       };
     }
     const head = `${imported} ${imported === 1 ? "clipe transcrito" : "clipes transcritos"}`;
-    const comoAplicar = srtInProject ? ` · ${cues} legendas no .srt dentro do projeto — arraste para a timeline` : cues > 0 ? ` · .srt salvo em ${srtPath}` : "";
+    const quanto = result.timing ? ` · ${describeTiming(result.timing)}` : "";
+    const comoAplicar = srtInProject ? options.destination ? ` · ${cues} legendas salvas em ${srtPath} e no projeto` : ` · ${cues} legendas no .srt dentro do projeto — arraste para a timeline` : cues > 0 ? ` · .srt salvo em ${srtPath}` : "";
     return {
       ok: failures.length === 0,
-      message: `${head}${comoAplicar}`,
+      message: `${head}${comoAplicar}${quanto}`,
       imported,
       stages,
       srtPath,
       cues
     };
   }
-  async function emitSrt(project2, transcript, options, fps, stages) {
+  function fileUrl$1(nativePathValue) {
+    return "file://" + nativePathValue.replace(/\\/g, "/").split("/").map((part) => encodeURIComponent(part)).join("/");
+  }
+  async function writeSrtToDestination(destination, token, fileName, content) {
+    const storage = uxpModule("uxp")?.storage;
+    const lfs = storage?.localFileSystem;
+    if (!lfs) {
+      throw new Error("storage do UXP indisponível");
+    }
+    let folder = null;
+    if (token && typeof lfs.getEntryForPersistentToken === "function") {
+      try {
+        folder = await lfs.getEntryForPersistentToken(token);
+      } catch (cause) {
+        console.warn("[Legendas] token persistente da pasta expirou ou falhou:", cause);
+      }
+    }
+    if (!folder && typeof lfs.getEntryWithUrl === "function") {
+      try {
+        folder = await lfs.getEntryWithUrl(fileUrl$1(destination));
+      } catch (cause) {
+        console.warn("[Legendas] getEntryWithUrl falhou:", cause);
+      }
+    }
+    if (!folder) {
+      throw new Error(`não foi possível acessar a pasta "${destination}"`);
+    }
+    const file = await folder.createFile(fileName, { overwrite: true });
+    await file.write(content);
+    return file.nativePath ?? `${destination.replace(/[\\/]+$/, "")}/${fileName}`;
+  }
+  async function emitSrt(project2, transcript, options, fps, stages, destination, destinationToken) {
     let srtPath = null;
     let cues = 0;
     try {
       const built = buildCues(transcript, options, fps);
       cues = built.length;
       if (cues > 0) {
-        const space = await workspace();
-        const name = `legendas-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}-${Date.now().toString(36)}.srt`;
-        await write(space, name, cuesToSrt(built));
-        srtPath = nativePath(space, name);
-        stages.push(`legendas no .srt: ${cues}`);
+        let seqName = "";
+        try {
+          const activeSeq = await project2.getActiveSequence();
+          if (activeSeq?.name) {
+            seqName = activeSeq.name.replace(/[/\\?%*:|"<>]/g, "-").trim();
+          }
+        } catch {
+        }
+        const prefix = seqName ? `${seqName}-` : "";
+        const name = `${prefix}legendas-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}-${Date.now().toString(36)}.srt`;
+        const srtContent = cuesToSrt(built);
+        if (destination) {
+          try {
+            srtPath = await writeSrtToDestination(destination, destinationToken, name, srtContent);
+            stages.push(`legendas salvas no destino escolhido: ${srtPath}`);
+          } catch (destErr) {
+            stages.push(
+              `falha ao salvar no destino escolhido (${describeError$1(destErr)}), usando pasta padrão`
+            );
+          }
+        }
+        if (!srtPath) {
+          const space = await workspace();
+          await write(space, name, srtContent);
+          srtPath = nativePath(space, name);
+          stages.push(`legendas no .srt: ${cues}`);
+        }
       }
     } catch (cause) {
       stages.push(`falha ao gerar o .srt: ${describeError$1(cause)}`);
@@ -10422,7 +11602,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
     }
     return { srtPath, cues, inProject };
   }
-  async function rebuildSrt(options) {
+  async function rebuildSrt(options, destination, destinationToken) {
     const last = await readLastRun();
     if (!last) {
       return {
@@ -10443,7 +11623,9 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       last.transcript,
       options,
       last.fps,
-      stages
+      stages,
+      destination,
+      destinationToken
     );
     if (cues === 0) {
       return {
@@ -10455,7 +11637,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
     }
     return {
       ok: true,
-      message: `${cues} legendas refeitas de ${last.label}. ` + (inProject ? "O .srt novo está no seu projeto — arraste para a timeline." : `Arquivo salvo: ${srtPath}`),
+      message: `${cues} legendas refeitas de ${last.label}. ` + (inProject ? destination ? `Salvo em ${srtPath} e no seu projeto.` : "O .srt novo está no seu projeto — arraste para a timeline." : `Arquivo salvo: ${srtPath}`),
       srtPath,
       cues
     };
@@ -10627,18 +11809,21 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
     {
       key: "maxLineChars",
       label: "Comprimento máximo",
+      note: "Quantidade máxima de caracteres por linha antes de quebrar ou criar nova legenda.",
       step: 1,
       format: (value) => `${Math.round(value)} caracteres`
     },
     {
       key: "minCueSeconds",
       label: "Duração mínima",
+      note: "Tempo mínimo que cada legenda permanece visível em tela.",
       step: 0.1,
       format: asSeconds
     },
     {
       key: "gapFrames",
       label: "Intervalo entre legendas",
+      note: "Espaço em quadros entre legendas. 0 quadros entra imediatamente sem piscar.",
       step: 1,
       format: (value) => {
         const v = Math.round(value);
@@ -10648,16 +11833,30 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
     {
       key: "readingCps",
       label: "Velocidade de leitura",
+      note: "Caracteres por segundo para garantir conforto visual na leitura.",
       step: 1,
       // 0 não é "zero caracteres por segundo", é a regra desligada — e
       // mostrar "0 car/s" faria parecer defeito.
       format: (value) => value <= 0 ? "desligada" : `${Math.round(value)} car/s`
     },
-    { key: "maxCueSeconds", label: "Duração máxima", step: 0.25, format: asSeconds },
-    { key: "gapSeconds", label: "Pausa para silêncio", step: 0.05, format: asSeconds }
+    {
+      key: "maxCueSeconds",
+      label: "Duração máxima",
+      note: "Tempo máximo permitido para um único bloco de legenda.",
+      step: 0.25,
+      format: asSeconds
+    },
+    {
+      key: "gapSeconds",
+      label: "Pausa para silêncio",
+      note: "Tempo de pausa na fala que encerra a legenda em vez de emendar na próxima.",
+      step: 0.05,
+      format: asSeconds
+    }
   ];
   let cancelActiveRun = null;
   let releaseDocument$1 = null;
+  let releaseTimer = null;
   let releaseSliders = null;
   const captionsTool = {
     id: "captions",
@@ -10674,7 +11873,9 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
         language: "pt",
         glossary: "",
         track: "all",
-        srt: { ...SRT_DEFAULTS }
+        srt: { ...SRT_DEFAULTS },
+        srtDestination: "",
+        srtDestinationToken: ""
       };
       let scan = null;
       const capSliders = /* @__PURE__ */ new Map();
@@ -10688,6 +11889,9 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       const trackHost = container.querySelector("[data-track-pick]");
       const langHost = container.querySelector("[data-lang-pick]");
       const modelSeg = container.querySelector("[data-model-seg]");
+      const srtDestEl = container.querySelector("[data-srt-dest]");
+      const srtDestPick = container.querySelector("[data-srt-dest-pick]");
+      const srtDestReset = container.querySelector("[data-srt-dest-reset]");
       const glossaryEl = container.querySelector("[data-glossary]");
       const glossaryNote = container.querySelector("[data-glossary-note]");
       const manualEl = container.querySelector("[data-manual]");
@@ -10751,6 +11955,12 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       };
       document.addEventListener("click", onDocumentPointer, true);
       document.addEventListener("keydown", onDocumentKey, true);
+      releaseTimer = () => {
+        if (timerInterval !== null) {
+          window.clearInterval(timerInterval);
+          timerInterval = null;
+        }
+      };
       releaseDocument$1 = () => {
         document.removeEventListener("click", onDocumentPointer, true);
         document.removeEventListener("keydown", onDocumentKey, true);
@@ -10768,6 +11978,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
         syncModel();
         syncGlossaryNote();
         syncCaptionFormat();
+        renderDestination();
         await runScan(true);
       })();
       function persist() {
@@ -10785,6 +11996,70 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
         persist();
         syncModel();
       });
+      function renderDestination() {
+        if (srtDestEl) {
+          if (config.srtDestination) {
+            srtDestEl.textContent = config.srtDestination;
+            srtDestEl.title = `${config.srtDestination} (clique para abrir no Finder/Explorer)`;
+            srtDestEl.style.cursor = "pointer";
+          } else {
+            srtDestEl.textContent = "(pasta padrão do plugin)";
+            srtDestEl.title = "Pasta interna de trabalho do plugin. Clique em 'Escolher…' para definir uma pasta no seu computador.";
+            srtDestEl.style.cursor = "default";
+          }
+        }
+        if (srtDestReset) {
+          srtDestReset.hidden = !config.srtDestination;
+        }
+      }
+      srtDestPick?.addEventListener("click", () => void pickDestination());
+      srtDestReset?.addEventListener("click", () => {
+        config.srtDestination = "";
+        config.srtDestinationToken = "";
+        persist();
+        renderDestination();
+        context.setStatus("Destino redefinido para a pasta padrão do plugin.", "idle");
+      });
+      srtDestEl?.addEventListener("click", async () => {
+        try {
+          const shell = shellModule();
+          if (!shell?.openPath) return;
+          if (config.srtDestination) {
+            await shell.openPath(config.srtDestination, "Abrir pasta de destino das legendas");
+          } else {
+            const space = await workspace();
+            await shell.openPath(space.nativeBase, "Abrir pasta de trabalho do plugin");
+          }
+        } catch (cause) {
+          console.warn("[Legendas] não foi possível abrir a pasta:", cause);
+        }
+      });
+      async function pickDestination() {
+        const picker = uxpModule("uxp")?.storage?.localFileSystem;
+        if (typeof picker?.getFolder !== "function") {
+          context.setStatus("Este build do Premiere não abre o seletor de pastas.", "error");
+          return;
+        }
+        try {
+          const folder = await picker.getFolder();
+          if (!folder?.nativePath) {
+            return;
+          }
+          config.srtDestination = folder.nativePath;
+          if (typeof picker.createPersistentToken === "function") {
+            try {
+              config.srtDestinationToken = await picker.createPersistentToken(folder) ?? "";
+            } catch {
+              config.srtDestinationToken = "";
+            }
+          }
+          persist();
+          renderDestination();
+          context.setStatus(`Pasta de destino definida: ${folder.nativePath}`, "done");
+        } catch (cause) {
+          console.log("[Legendas] seleção de pasta encerrada:", cause);
+        }
+      }
       function setSrt(key, value) {
         if (!Number.isFinite(value)) return;
         const [low, high] = SRT_RANGE[key];
@@ -10878,7 +12153,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
           redoBtn.textContent = "Gerando…";
         }
         try {
-          const result = await rebuildSrt(config.srt);
+          const result = await rebuildSrt(config.srt, config.srtDestination, config.srtDestinationToken);
           context.setStatus(result.message, result.ok ? "done" : "error");
         } catch (cause) {
           context.setStatus(describeError$1(cause), "error");
@@ -10984,6 +12259,8 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
             glossaryText: config.glossary,
             track: config.track,
             srt: config.srt,
+            destination: config.srtDestination,
+            destinationToken: config.srtDestinationToken,
             onStage: (text2) => {
               showProgress(text2);
               context.setStatus(`${findLanguage(config.language).label} · ${text2}`);
@@ -11125,6 +12402,8 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
     unmount() {
       cancelActiveRun?.();
       cancelActiveRun = null;
+      releaseTimer?.();
+      releaseTimer = null;
       releaseDocument$1?.();
       releaseDocument$1 = null;
       releaseSliders?.();
@@ -11136,7 +12415,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       (model) => `<div class="seg-item" ${CONTROL} data-model="${model.id}" title="${escapeHtml(model.note)}">${escapeHtml(model.label)}</div>`
     ).join("");
     const srtPresets = SRT_PRESETS.map(
-      (preset) => `<div class="preset-pill" ${CONTROL} data-preset="${preset.id}">${escapeHtml(preset.name)}</div>`
+      (preset) => `<div class="preset-pill" ${CONTROL} data-preset="${preset.id}" title="${escapeHtml(preset.note)}">${escapeHtml(preset.name)}</div>`
     ).join("");
     const lineCounts = [1, 2, 3].map(
       (count) => `<div class="seg-item" ${CONTROL} data-lines="${count}">${count} ${count === 1 ? "linha" : "linhas"}</div>`
@@ -11144,9 +12423,13 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
     const capSlider = (key) => {
       const spec = CAP_SLIDERS.find((entry) => entry.key === key);
       if (!spec) return "";
-      return `<div class="field"><div class="field-head"><span class="t-label">${spec.label}</span><span class="field-val" data-cap-out="${key}">${spec.format(SRT_DEFAULTS[key])}</span></div><div class="slider-row"><div data-cap="${key}"></div></div></div>`;
+      return `<div class="field"><div class="field-head"><span class="t-label" title="${escapeHtml(spec.note ?? "")}">${spec.label}</span><span class="field-val" data-cap-out="${key}">${spec.format(SRT_DEFAULTS[key])}</span></div><div class="slider-row"><div data-cap="${key}"></div></div></div>`;
     };
-    return `<div class="zones"><div class="zone"><div class="field"><span class="t-label">Faixa de áudio</span><div data-track-pick></div><p class="field-note">A faixa vai inteira para o motor, com os silêncios entre os clipes — é o que faz uma frase cortada no meio sair inteira.</p></div><div class="field"><span class="t-label">Idioma</span><div data-lang-pick></div></div><div class="field"><span class="t-label">Qualidade</span><div class="seg" data-model-seg>${models}</div><p class="field-note">O modelo baixa sozinho na primeira vez.</p></div></div><div class="zone"><div class="field"><span class="t-label">Formato da legenda</span><div class="preset-rail" data-srt-rail>${srtPresets}</div><p class="field-note" data-srt-note></p></div><div class="field"><span class="t-label">Linhas</span><div class="seg" data-lines-seg>${lineCounts}</div></div>` + capSlider("maxLineChars") + capSlider("minCueSeconds") + capSlider("gapFrames") + `<p class="field-note">Com 0 quadros de intervalo, a legenda seguinte entra imediatamente sem piscar tela preta, exceto quando houver momento de silêncio na fala.</p><div data-cap-preview></div><div class="cc-redo" ${CONTROL} data-redo hidden>Refazer o .srt com estes ajustes</div><div class="sil-advanced"><div class="sil-advanced-summary" ${CONTROL} data-cap-adv-toggle><span class="sil-advanced-title">Ajustes adicionais</span><span class="sil-advanced-icon" data-cap-adv-icon>▾</span></div><div class="sil-advanced-content" data-cap-adv-content hidden>` + capSlider("readingCps") + capSlider("maxCueSeconds") + capSlider("gapSeconds") + `<p class="field-note"><b>Pausa para silêncio</b> é o tempo de silêncio na fala que encerra uma legenda em vez de emendar na próxima. <b>Velocidade de leitura</b> garante tempo de leitura aos olhos.</p></div></div></div><div class="zone"><div class="field"><div class="field-head"><span class="t-label">Glossário do projeto</span></div><textarea class="dl-urls" data-glossary spellcheck="false" rows="4" placeholder="Framelab&#10;Sidy Furtado&#10;nome do cliente"></textarea><p class="field-note" data-glossary-note></p></div></div><div class="zone"><div class="cc-heads-up"><p class="cc-heads-up-title">Na primeira vez o macOS vai perguntar duas coisas</p><p class="cc-heads-up-body"><b>Pasta da sua mídia</b> (Google Drive, Documentos…): <b>permita</b> — é de onde o áudio é lido.<br><b>Microfone</b>: <b>pode negar</b>. O plugin nunca grava áudio; o pedido vem de uma biblioteca que o conversor de áudio carrega e não usa. Negando, tudo funciona igual.</p></div></div><div class="zone is-wide"><div class="sil-empty" data-empty><p class="sil-empty-title">Pronto para transcrever</p><p class="sil-empty-desc">Escolha a faixa acima e transcreva. O resultado vira um .srt no seu projeto, pronto para arrastar para a timeline.</p></div><div class="cc-actions"><div class="org-scan" ${CONTROL} data-scan>Reler a sequência</div><div class="cc-learn" ${CONTROL} data-learn title="Compara o que o plugin escreveu com o que você corrigiu à mão">Aprender com minhas correções</div></div><div class="sil-manual" data-manual hidden></div><div class="cc-progress" data-progress hidden></div><div class="sil-report" data-report></div></div></div>`;
+    return `<div class="zones"><div class="zone"><div class="field"><span class="t-label" title="A faixa vai inteira para o motor, com os silêncios entre os clipes — é o que faz uma frase cortada no meio sair inteira.">Faixa de áudio</span><div data-track-pick></div></div><div class="field"><span class="t-label">Idioma</span><div data-lang-pick></div></div><div class="field"><span class="t-label" title="O modelo baixa sozinho na primeira vez.">Qualidade</span><div class="seg" data-model-seg>${models}</div></div><div class="field"><div class="field-head"><span class="t-label" title="Pasta onde o .srt é salvo no disco. O arquivo também entra no seu projeto.">Destino do .srt</span><span class="field-action" ${CONTROL} data-srt-dest-pick>Escolher…</span><span class="field-action" ${CONTROL} data-srt-dest-reset hidden>Padrão</span></div><p class="dl-dest" data-srt-dest></p></div></div><div class="zone"><div class="field"><span class="t-label">Formato da legenda</span><div class="preset-rail" data-srt-rail>${srtPresets}</div></div><div class="field"><span class="t-label">Linhas</span><div class="seg" data-lines-seg>${lineCounts}</div></div>` + capSlider("maxLineChars") + capSlider("minCueSeconds") + capSlider("gapFrames") + // A prévia fica ENCOSTADA nos controles principais. Mais
+    // abaixo, num painel de 320px, ela sai da tela justamente
+    // enquanto o deslizador está sendo arrastado — que é o único
+    // momento em que ela serve para alguma coisa.
+    `<div data-cap-preview></div><div class="cc-redo" ${CONTROL} data-redo hidden>Refazer o .srt com estes ajustes</div><div class="sil-advanced"><div class="sil-advanced-summary" ${CONTROL} data-cap-adv-toggle><span class="sil-advanced-title">Ajustes adicionais</span><span class="sil-advanced-icon" data-cap-adv-icon>▾</span></div><div class="sil-advanced-content" data-cap-adv-content hidden>` + capSlider("readingCps") + capSlider("maxCueSeconds") + capSlider("gapSeconds") + `</div></div></div><div class="zone"><div class="field"><div class="field-head"><span class="t-label">Glossário do projeto</span></div><textarea class="dl-urls" data-glossary spellcheck="false" rows="3" placeholder="Framelab&#10;Sidy Furtado&#10;nome do cliente" title="Um termo por linha: nomes, marcas, jargão. Já vem com o vocabulário de edição de fábrica."></textarea></div></div><div class="zone is-wide"><div class="sil-empty" data-empty><p class="sil-empty-title">Pronto para transcrever</p><p class="sil-empty-desc">Escolha a faixa acima e transcreva. O resultado vira um .srt no seu projeto, pronto para arrastar para a timeline.</p></div><div class="cc-actions"><div class="org-scan" ${CONTROL} data-scan>Reler a sequência</div><div class="cc-learn" ${CONTROL} data-learn title="Compara o que o plugin escreveu com o que você corrigiu à mão">Aprender com minhas correções</div></div><div class="sil-manual" data-manual hidden></div><div class="cc-progress" data-progress hidden></div><div class="sil-report" data-report></div></div></div>`;
   }
   const TIMING = /^\s*(-?\d{1,3}:\d{2}:\d{2}[,.]\d{1,3}|\d{1,3}:\d{2}[,.]\d{1,3})\s*-->\s*/;
   function measureStyle(doc) {
@@ -11229,6 +12512,14 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
     const lotes = [];
     let atual = [];
     for (const texto of textos) {
+      if (montarUrl(base, [texto]).length > maxUrl) {
+        if (atual.length > 0) {
+          lotes.push(atual);
+          atual = [];
+        }
+        lotes.push([texto]);
+        continue;
+      }
       const tentativa = [...atual, texto];
       if (atual.length > 0 && (tentativa.length > maxItens || montarUrl(base, tentativa).length > maxUrl)) {
         lotes.push(atual);
@@ -11494,21 +12785,36 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
     const achado = SOURCE_LANGUAGES.find((l) => l.id === id);
     return achado?.label ?? id.toUpperCase();
   }
+  function localFs() {
+    return uxpModule("uxp")?.storage?.localFileSystem ?? null;
+  }
   async function pickSrtFile() {
-    const storage = uxpModule("uxp")?.storage;
-    const lfs = storage?.localFileSystem;
+    const lfs = localFs();
     if (!lfs?.getFileForOpening) {
-      throw new Error("Este build do Premiere não expõe o seletor de arquivos do UXP.");
+      throw new Error("este build do Premiere não expõe o seletor de arquivos do UXP");
     }
-    const escolhido = await lfs.getFileForOpening({ types: ["srt", ".srt", "vtt", ".vtt"] });
-    const entrada = Array.isArray(escolhido) ? escolhido[0] : escolhido;
+    let entrada = null;
+    let primeiraFalha = null;
+    const tentativas = [{ types: ["srt", "vtt"] }, {}];
+    for (const opcoes of tentativas) {
+      try {
+        const escolhido = await lfs.getFileForOpening(opcoes);
+        entrada = (Array.isArray(escolhido) ? escolhido[0] : escolhido) ?? null;
+        if (entrada || !opcoes.types) break;
+      } catch (cause) {
+        primeiraFalha = primeiraFalha ?? cause;
+      }
+    }
     if (!entrada) {
+      if (primeiraFalha) {
+        throw new Error(`o seletor de arquivos não abriu (${describe(primeiraFalha)})`);
+      }
       return null;
     }
     return {
       name: entrada.name,
       nativePath: entrada.nativePath ?? null,
-      text: await entrada.read()
+      text: String(await entrada.read())
     };
   }
   async function findSrtInProject() {
@@ -11563,7 +12869,41 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
   const COPY_SCRIPT = "translate-copy.command";
   const COPY_OUT = "tr-input.srt";
   const COPY_DONE = "tr-copy-done.txt";
+  function fileUrl(caminho) {
+    return "file://" + caminho.replace(/\\/g, "/").split("/").map((parte) => encodeURIComponent(parte)).join("/");
+  }
   async function readAnyPath(nativePath2) {
+    const falhas = [];
+    const lfs = localFs();
+    if (typeof lfs?.getEntryWithUrl === "function") {
+      for (const alvo of [fileUrl(nativePath2), nativePath2]) {
+        try {
+          const entrada = await lfs.getEntryWithUrl(alvo);
+          const texto = String(await entrada.read());
+          if (texto.trim()) return texto;
+          falhas.push("getEntryWithUrl: veio vazio");
+        } catch (cause) {
+          falhas.push(`getEntryWithUrl: ${describe(cause)}`);
+        }
+      }
+    } else {
+      falhas.push("getEntryWithUrl: ausente");
+    }
+    const fs = fsModule();
+    if (fs) {
+      for (const alvo of [nativePath2, fileUrl(nativePath2)]) {
+        try {
+          const texto = String(fs.readFileSync(alvo, { encoding: "utf-8" }));
+          if (texto.trim()) return texto;
+        } catch (cause) {
+          falhas.push(`fs: ${describe(cause)}`);
+        }
+      }
+    }
+    return await copyViaAgent(nativePath2, falhas);
+  }
+  async function copyViaAgent(nativePath2, falhas) {
+    const resumo = falhas.length ? ` (${falhas.join(" · ")})` : "";
     const space = await workspace();
     for (const nome of [COPY_OUT, COPY_DONE]) {
       await remove(space, nome);
@@ -11573,33 +12913,38 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       "# Gerado pelo Framelab — traz a legenda para dentro. Pode apagar.",
       "set -u",
       `WORK=${shellQuote(space.nativeBase)}`,
-      `if cp ${shellQuote(nativePath2)} "$WORK/${COPY_OUT}" 2>/dev/null; then`,
+      `if ERR=$(cp ${shellQuote(nativePath2)} "$WORK/${COPY_OUT}" 2>&1); then`,
       `  printf ok > "$WORK/${COPY_DONE}"`,
       "else",
-      `  printf falhou > "$WORK/${COPY_DONE}"`,
+      `  printf 'falhou %s' "$ERR" > "$WORK/${COPY_DONE}"`,
       "fi",
       ""
     ].join("\n");
     await write(space, COPY_SCRIPT, script, true);
     const enviado = await dispatch(COPY_SCRIPT);
     if (enviado.mode === "denied") {
-      throw new Error("o assistente não pôde ser iniciado para ler o arquivo");
+      throw new Error(
+        `o assistente não pôde ser iniciado para ler o arquivo${resumo}`
+      );
     }
     const limite = Date.now() + 15e3;
     while (Date.now() < limite) {
-      const estado = readText(space, COPY_DONE);
+      const estado = readText$1(space, COPY_DONE);
       if (estado === "ok") {
-        const texto = readText(space, COPY_OUT);
+        const texto = readText$1(space, COPY_OUT);
         if (texto) return texto;
         throw new Error("o arquivo foi copiado mas veio vazio");
       }
-      if (estado === "falhou") {
-        throw new Error("não consegui ler esse arquivo — ele ainda está no lugar?");
+      if (estado?.startsWith("falhou")) {
+        const motivo = estado.slice("falhou".length).trim();
+        throw new Error(
+          motivo ? `não consegui ler esse arquivo: ${motivo}` : `não consegui ler esse arquivo${resumo}`
+        );
       }
       await wait$1(200);
     }
     await withdraw(enviado.ticket);
-    throw new Error("a leitura do arquivo passou do tempo");
+    throw new Error(`a leitura do arquivo passou do tempo${resumo}`);
   }
   let releaseDocument = null;
   let cancelActive = null;
@@ -11684,12 +13029,21 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
         );
       }
       importarEl?.addEventListener("click", () => {
+        if (busy) return;
         void (async () => {
+          busy = true;
+          context.setStatus("Abrindo o seletor de arquivos…");
           try {
             const escolhido = await pickSrtFile();
-            if (escolhido) carregar(escolhido.name, escolhido.text);
+            if (escolhido) {
+              carregar(escolhido.name, escolhido.text);
+            } else {
+              context.setStatus("Nenhum arquivo escolhido.", "idle");
+            }
           } catch (cause) {
             context.setStatus(describeError$1(cause), "error");
+          } finally {
+            busy = false;
           }
         })();
       });
@@ -11866,7 +13220,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
     }
   }
   function markup() {
-    return `<div class="zones"><div class="zone"><div class="field"><span class="t-label">A legenda</span><div class="tr-acts" data-empty><div class="tr-btn" ${CONTROL} data-import>Importar arquivo…</div><div class="tr-btn" ${CONTROL} data-project>Buscar no projeto</div></div><div class="tr-file" data-file hidden></div><div class="tr-list" data-list hidden></div></div></div><div class="zone"><div class="field"><span class="t-label">Traduzir de</span><div data-from></div></div><div class="field"><span class="t-label">Para</span><div data-to></div><p class="field-note">Os tempos de cada bloco saem idênticos aos que entraram — só o texto muda. O arquivo novo entra no seu projeto ao lado do original.</p></div></div><div class="zone is-wide"><div class="tr-prev" data-preview hidden></div></div></div>`;
+    return `<div class="zones"><div class="zone"><div class="field"><span class="t-label">A legenda</span><div class="tr-acts" data-empty><div class="tr-btn" ${CONTROL} data-import>Importar arquivo…</div><div class="tr-btn" ${CONTROL} data-project>Buscar no projeto</div></div><div class="tr-file" data-file hidden></div><div class="tr-list" data-list hidden></div></div></div><div class="zone"><div class="field"><span class="t-label">Traduzir de</span><div data-from></div></div><div class="field"><span class="t-label" title="Os tempos de cada bloco saem idênticos aos que entraram — só o texto muda. O arquivo novo entra no seu projeto ao lado do original.">Para</span><div data-to></div></div></div><div class="zone is-wide"><div class="tr-prev" data-preview hidden></div></div></div>`;
   }
   const categories = [
     { id: "edicao", name: "Edição" },
@@ -11900,21 +13254,48 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
     );
   }
   const PATHS = {
-    zoom: '<circle cx="6.2" cy="6.2" r="3.8"/><path d="M9.2 9.2 12 12"/><path d="M4.7 6.2h3M6.2 4.7v3"/>',
-    curve: '<path d="M2 11c3.4 0 3.4-8 5-8s2.6 4.5 5 4.5"/>',
-    cut: '<path d="M2 7h10"/><path d="M4.5 3v8M9.5 3v8"/>',
-    frame: '<rect x="2" y="3.5" width="10" height="7"/><rect x="4.6" y="5.6" width="4.8" height="2.8"/>',
-    wave: '<path d="M2 7h1.6M4.4 4.4v5.2M6.4 2.6v8.8M8.4 5v4M10.4 6.2v1.6M12 7h.4"/>',
-    meter: '<path d="M2.4 10.6h9.2"/><path d="M3.8 10.6V7.4M6.2 10.6V4.6M8.6 10.6V6M11 10.6V8.2"/>',
-    caption: '<rect x="2" y="3.6" width="10" height="6.8"/><path d="M4.2 6.4h3.2M4.2 8.2h5.6"/>',
-    folder: '<path d="M2 4.2h3.6l1 1.4H12v5.2H2z"/>',
-    text: '<path d="M2.6 3.6h8.8M7 3.6v7.2M4.8 10.8h4.4"/>',
-    download: '<path d="M7 2.4v6.4"/><path d="M4.2 6.2 7 9l2.8-2.8"/><path d="M2.6 11.4h8.8"/>',
-    speech: '<path d="M2 3h10v6H8l-2.6 2.2V9H2z"/><path d="M4.2 6h.9M6.6 6h.9M9 6h.9"/>'
+    /* Zoom: quatro cantos abrindo o quadro, como o maximizar da prévia. */
+    zoom: '<path d="M1.2 1.2h4.6v1.6h-3v3H1.2z"/><path d="M8.2 1.2h4.6v4.6h-1.6v-3h-3z"/><path d="M1.2 8.2h1.6v3h3v1.6H1.2z"/><path d="M11.2 8.2h1.6v4.6H8.2v-1.6h3z"/>',
+    /* Curvas: dois keyframes diamante conectados pela rampa de uma aceleração (easing S-curve). */
+    curve: '<path d="M2.5 9.2L4.5 11.2L2.5 13.2L0.5 11.2Z"/><path d="M11.5 0.8L13.5 2.8L11.5 4.8L9.5 2.8Z"/><path d="M4.1 10.4c1.2-.2 1.5-1 2-2.6l.7-2.1c.6-2 1.5-3.1 3.1-3.5l.4 1.5c-1 .3-1.4 1-1.9 2.5l-.7 2.1c-.7 2.2-1.6 3.4-3.3 3.7z"/>',
+    /*
+     * Corte: dois blocos e o vão entre eles.
+     *
+     * A primeira versão era uma barra vertical entre dois traços
+     * horizontais — que a 13px lê como um sinal de MAIS, ou seja, o
+     * oposto do que a ferramenta faz. O que diz "corte" é o vão: dois
+     * pedaços de clipe separados, com a lâmina fina no meio.
+     */
+    cut: '<path d="M1 3.8h4.3v6.4H1z"/><path d="M8.7 3.8H13v6.4H8.7z"/><path d="M6.6 2.4h0.8v9.2h-0.8z"/>',
+    /* Quadro: a marca de reserva, e a base do Zoom sem o recorte. */
+    frame: '<path fill-rule="evenodd" d="M1 2.2h12v9.6H1V2.2Zm1.5 1.5v6.6h9V3.7h-9Z"/>',
+    /* Onda: a forma de um som. */
+    wave: '<path d="M1 6.4h1.2v1.2H1z"/><path d="M3.4 4.2h1.2v5.6H3.4z"/><path d="M5.8 2.2h1.2v9.6H5.8z"/><path d="M8.2 4.8h1.2v4.4H8.2z"/><path d="M10.6 6.1h1.2v1.8h-1.2z"/>',
+    /* Medidor: quatro colunas sobre a linha de base. */
+    meter: '<path d="M1.6 10.4h10.8v1.4H1.6z"/><path d="M2.6 6.8h1.6v2.9H2.6z"/><path d="M5.4 4.4h1.6v5.3H5.4z"/><path d="M8.2 5.8h1.6v3.9H8.2z"/><path d="M11 7.6h1.4v2.1H11z"/>',
+    /* Legenda: a tarja, com as duas linhas abertas nela. */
+    caption: '<path fill-rule="evenodd" d="M1 2.6h12v8.8H1V2.6Zm2.2 2.6v1.4h4.2V5.2H3.2Zm0 3v1.4h7.6V8.2H3.2Z"/>',
+    /* Pasta: a aba e o corpo, numa silhueta só. */
+    folder: '<path d="M1.2 2.6h4.3l1.1 1.5h6.2v7.3H1.2V2.6Z"/>',
+    /* Texto: o T da letra — a marca de traduzir. */
+    text: '<path d="M2.2 2.6h9.6v1.9H8.1v7H5.9v-7H2.2z"/>',
+    /* Baixar: a seta e o chão onde ela pousa. */
+    download: '<path d="M5.9 1.8h2.2v4.1h2.6L7 9.9 3.3 5.9h2.6z"/><path d="M2.2 10.8h9.6v1.5H2.2z"/>',
+    /*
+     * Muletas: o balão de fala, com as reticências abertas nele.
+     *
+     * O rabicho é o que o separa da tarja de Legendas — sem ele, as
+     * duas marcas viram o mesmo retângulo com linhas dentro. Por isso
+     * ele é largo e desce fundo, em vez de ser um detalhe no canto.
+     */
+    speech: '<path fill-rule="evenodd" d="M1 2h12v7.2H7.9L4.3 12.4V9.2H1V2Zm2.7 2.9v1.4h1.3V4.9H3.7Zm2.65 0v1.4h1.3V4.9H6.35Zm2.65 0v1.4h1.3V4.9H9Z"/>'
   };
   function glyph(name) {
-    const path = PATHS[name] ?? PATHS.frame;
-    return '<svg viewBox="0 0 14 14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.1" stroke-linecap="square">' + path + "</svg>";
+    const shapes = (PATHS[name] ?? PATHS.frame).replace(
+      /<path /g,
+      '<path fill="currentColor" '
+    );
+    return '<svg viewBox="0 0 14 14" aria-hidden="true" fill="currentColor">' + shapes + "</svg>";
   }
   const GITHUB_REPO = "SidyFurtado/framelab";
   const VERSION_MANIFEST_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/main/version.json`;
@@ -12120,9 +13501,14 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
   }
   const PRODUCT_NAME = "Framelab";
   const PRODUCT_TAGLINE = "Premiere";
-  const VERSION = "0.4.0";
+  const VERSION = "0.4.1";
+  const NAV_PREFERENCE = "framelab.navigation.collapsed";
   class ProductShell {
     constructor(root) {
+      this.navPreference = null;
+      this.navCompact = false;
+      this.narrow = false;
+      this.onResize = () => this.updateLayout();
       this.updateBadgeEl = null;
       this.updateModalEl = null;
       this.latestManifest = null;
@@ -12135,7 +13521,6 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       this.refreshTimer = null;
       this.refreshInFlight = false;
       this.refreshQueued = false;
-      this.collapsed = /* @__PURE__ */ new Set();
       this.query = "";
       this.selection = null;
       this.hostGaps = false;
@@ -12143,10 +13528,20 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       this.root = root;
       this.root.innerHTML = "";
       this.root.className = "shell";
+      try {
+        const saved = localStorage.getItem(NAV_PREFERENCE);
+        this.navPreference = saved === "true" ? true : saved === "false" ? false : null;
+      } catch {
+      }
       const topbar = document.createElement("header");
       topbar.className = "topbar";
-      topbar.innerHTML = '<div class="brand"><span class="brand-mark">' + brandMark() + `</span><span class="brand-name"><b>${escapeHtml(PRODUCT_NAME)}</b><span>${escapeHtml(PRODUCT_TAGLINE)}</span></span></div><label class="search">` + searchGlyph() + `<input type="text" placeholder="Buscar ferramenta…" aria-label="Buscar ferramenta" spellcheck="false"></label><span class="version">v${VERSION}</span>`;
+      topbar.innerHTML = `<div class="brand" aria-label="${escapeHtml(PRODUCT_NAME)}"><b>${escapeHtml(PRODUCT_NAME.toLowerCase())}</b><span aria-hidden="true">/</span></div><label class="search">` + searchGlyph() + `<input type="text" placeholder="Buscar ferramenta…" aria-label="Buscar ferramenta" spellcheck="false"></label><span class="version" title="build ${"2026-09-20 13:19:38"}">v${VERSION}</span>`;
       this.topbarEl = topbar;
+      this.navToggle = createControl("nav-toggle");
+      this.navToggle.innerHTML = panelToggleGlyph();
+      this.navToggle.setAttribute("aria-controls", "tool-navigation");
+      this.navToggle.addEventListener("click", () => this.setNavCompact(!this.navCompact));
+      topbar.insertBefore(this.navToggle, topbar.firstChild);
       this.searchInput = topbar.querySelector("input");
       this.searchInput.addEventListener("input", () => {
         this.query = this.searchInput.value;
@@ -12154,61 +13549,115 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       });
       this.navEl = document.createElement("nav");
       this.navEl.className = "nav";
+      this.navEl.id = "tool-navigation";
+      this.navEl.setAttribute("aria-label", "Ferramentas");
       this.navScroll = document.createElement("div");
       this.navScroll.className = "nav-scroll";
       const empty2 = document.createElement("p");
       empty2.className = "nav-empty";
       empty2.textContent = "Nenhuma ferramenta encontrada.";
-      this.navEl.append(this.navScroll, empty2);
+      const navFooter = document.createElement("div");
+      navFooter.className = "nav-footer";
+      navFooter.innerHTML = `<span class="nav-footer-mark" aria-hidden="true">${premiereGlyph()}</span><span>${escapeHtml(PRODUCT_TAGLINE)} Pro</span><span class="nav-footer-version" title="build ${"2026-09-20 13:19:38"}">v${VERSION}</span>`;
+      this.navEl.append(this.navScroll, empty2, navFooter);
       const work = document.createElement("div");
       work.className = "work";
       const header = document.createElement("div");
       header.className = "work-head";
       this.titleEl = document.createElement("span");
       this.titleEl.className = "work-title";
+      this.subtitleEl = document.createElement("span");
+      this.subtitleEl.className = "work-subtitle";
       this.chipEl = document.createElement("span");
       this.chipEl.className = "work-chip";
       const refresh = createControl("work-refresh");
+      this.refreshButton = refresh;
       refresh.title = "Reler a seleção da timeline";
       refresh.setAttribute("aria-label", "Reler a seleção da timeline");
       refresh.innerHTML = refreshGlyph();
       refresh.addEventListener("click", () => void this.refreshSelection());
-      header.append(this.titleEl, this.chipEl, refresh);
+      const heading = document.createElement("div");
+      heading.className = "work-heading";
+      heading.append(this.chipEl, this.titleEl, this.subtitleEl);
+      this.helpToggle = createControl("work-help");
+      this.helpToggle.innerHTML = helpGlyph();
+      this.helpToggle.title = "Como usar esta ferramenta";
+      this.helpToggle.setAttribute("aria-label", "Como usar esta ferramenta");
+      this.helpToggle.setAttribute("aria-controls", "tool-help");
+      this.helpToggle.setAttribute("aria-expanded", "false");
+      this.helpToggle.addEventListener("click", () => {
+        if (this.hostGaps) return;
+        this.calloutEl.hidden = !this.calloutEl.hidden;
+        this.helpToggle.setAttribute("aria-expanded", String(!this.calloutEl.hidden));
+      });
+      header.append(heading, this.helpToggle, refresh);
       this.stateEl = document.createElement("div");
       this.stateEl.className = "work-state";
       this.calloutEl = document.createElement("p");
       this.calloutEl.className = "callout";
-      this.stripEl = document.createElement("div");
-      this.stripEl.className = "strip";
+      this.calloutEl.id = "tool-help";
+      this.calloutEl.hidden = true;
       this.bodyEl = document.createElement("div");
       this.bodyEl.className = "work-body";
       const actions = document.createElement("div");
       actions.className = "actions";
+      const actionDescription = document.createElement("div");
+      actionDescription.className = "action-description";
+      this.actionSelectionEl = document.createElement("span");
+      this.actionSelectionEl.className = "action-selection";
+      this.actionSummaryEl = document.createElement("span");
+      this.actionSummaryEl.className = "action-summary";
+      actionDescription.append(this.actionSelectionEl, this.actionSummaryEl);
       this.resetButton = createControl("btn-reset", "Limpar");
       this.resetButton.hidden = true;
       this.resetButton.addEventListener("click", () => this.resetHandler?.());
       this.applyButton = createControl("btn-apply");
+      this.applyLabelEl = document.createElement("span");
+      this.applyLabelEl.className = "btn-apply-label";
+      this.applyButton.append(this.applyLabelEl);
+      this.applyButton.insertAdjacentHTML("beforeend", arrowGlyph());
       setDisabled(this.applyButton, true);
       this.applyButton.addEventListener("click", () => void this.runApply());
-      actions.append(this.resetButton, this.applyButton);
-      work.append(
-        header,
-        this.stateEl,
-        this.calloutEl,
-        this.stripEl,
-        this.bodyEl,
-        actions
-      );
+      actions.append(actionDescription, this.resetButton, this.applyButton);
+      this.scrollEl = document.createElement("div");
+      this.scrollEl.className = "work-scroll";
+      this.scrollEl.append(this.stateEl, this.calloutEl, this.bodyEl);
+      work.append(header, this.scrollEl, actions);
       const main = document.createElement("div");
       main.className = "main";
-      main.append(this.navEl, work);
+      const scrim = createControl("nav-scrim");
+      scrim.setAttribute("aria-label", "Recolher navegação");
+      scrim.addEventListener("click", () => this.setNavCompact(true));
+      main.append(this.navEl, scrim, work);
       this.statusEl = document.createElement("footer");
       this.statusEl.className = "statusbar";
+      this.statusEl.setAttribute("role", "status");
+      this.statusEl.setAttribute("aria-live", "polite");
       this.statusToolEl = document.createElement("span");
       this.statusToolEl.className = "statusbar-tool";
       this.root.append(topbar, main, this.statusEl);
       this.navScroll.addEventListener("click", (event) => this.onNavClick(event));
       bindKeyboard(this.root);
+      this.root.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && this.narrow && !this.navCompact) {
+          this.setNavCompact(true);
+          this.navToggle.focus();
+        }
+        if (event.key === "Tab" && this.narrow && !this.navCompact) {
+          const controls = [
+            ...this.topbarEl.querySelectorAll('input, button, [tabindex="0"]'),
+            ...this.navEl.querySelectorAll('[tabindex="0"]')
+          ].filter((element) => element.getBoundingClientRect().width > 0);
+          const current = controls.indexOf(document.activeElement);
+          const next = (current + (event.shiftKey ? -1 : 1) + controls.length) % controls.length;
+          if (controls[next]) {
+            event.preventDefault();
+            controls[next].focus();
+          }
+        }
+      });
+      this.updateLayout();
+      window.addEventListener("resize", this.onResize);
     }
     start() {
       startAgentHeartbeat();
@@ -12220,6 +13669,20 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       }
       void this.refreshSelection();
       window.addEventListener("focus", () => this.scheduleRefresh());
+      window.addEventListener("beforeunload", () => {
+        window.removeEventListener("resize", this.onResize);
+        stopAgentHeartbeat();
+        if (this.refreshTimer !== null) {
+          clearTimeout(this.refreshTimer);
+          this.refreshTimer = null;
+        }
+        try {
+          if (this.activeToolId) {
+            findTool(this.activeToolId)?.unmount?.();
+          }
+        } catch {
+        }
+      });
       setTimeout(() => {
         void this.checkUpdates();
       }, 600);
@@ -12347,8 +13810,36 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       this.calloutEl.classList.add("is-error");
       this.calloutEl.textContent = `Esta versão do Premiere não expõe: ${check.missing.join(", ")}. As ferramentas podem falhar. Atualize o Premiere.`;
       this.hostGaps = true;
+      this.calloutEl.hidden = false;
+      this.helpToggle.hidden = true;
     }
     // ── navigator ────────────────────────────────────────────
+    setNavCompact(compact) {
+      this.navPreference = compact;
+      try {
+        localStorage.setItem(NAV_PREFERENCE, String(compact));
+      } catch {
+      }
+      this.updateLayout();
+    }
+    updateLayout() {
+      const width = this.root.clientWidth || window.innerWidth;
+      const previousCompact = this.navCompact;
+      this.narrow = width < 600;
+      this.navCompact = this.navPreference ?? this.narrow;
+      this.root.classList.toggle("is-narrow", this.narrow);
+      this.root.classList.toggle("is-nav-compact", this.navCompact);
+      const workWidth = width - (this.navCompact || this.narrow ? 56 : 212);
+      this.root.classList.toggle("is-work-wide", workWidth >= 640);
+      this.root.classList.toggle("is-work-small", workWidth < 330);
+      const label = this.navCompact ? "Expandir navegação" : "Recolher navegação";
+      this.navToggle.title = label;
+      this.navToggle.setAttribute("aria-label", label);
+      this.navToggle.setAttribute("aria-expanded", String(!this.navCompact));
+      if (previousCompact !== this.navCompact || !this.navScroll.firstChild) {
+        this.renderNav();
+      }
+    }
     renderNav() {
       const searching = this.query.trim().length > 0;
       const results = searching ? searchTools(this.query) : [];
@@ -12363,13 +13854,12 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
         if (list.length === 0) {
           return "";
         }
-        const open = !this.collapsed.has(category.id);
-        return `<div class="nav-cat" ${CONTROL} data-category="${category.id}" aria-expanded="${open}"><span class="caret"></span><span class="nav-cat-name">${escapeHtml(category.name)}</span></div>` + (open ? `<div class="nav-tools">${list.map((tool) => this.toolMarkup(tool)).join("")}</div>` : "");
+        return `<div class="nav-group"><div class="nav-cat"><span class="nav-cat-name">${escapeHtml(category.name)}</span></div><div class="nav-tools">${list.map((tool) => this.toolMarkup(tool)).join("")}</div></div>`;
       }).join("");
     }
     toolMarkup(tool) {
       const active = tool.id === this.activeToolId;
-      return `<div class="nav-tool${active ? " is-active" : ""}" ${CONTROL} data-tool="${tool.id}" data-available="${tool.available}" title="${escapeHtml(tool.name)}"><span class="nav-glyph">${glyph(tool.glyph)}</span><span class="nav-text"><span class="nav-name">${escapeHtml(tool.name)}</span><span class="nav-summary">${escapeHtml(tool.summary)}</span></span></div>`;
+      return `<div class="nav-tool${active ? " is-active" : ""}" ${CONTROL} data-tool="${tool.id}" data-available="${tool.available}" aria-label="${escapeHtml(tool.name)}" aria-pressed="${active}" title="${escapeHtml(tool.name)} — ${escapeHtml(tool.summary)}"><span class="nav-glyph" aria-hidden="true">${glyph(tool.glyph)}</span><span class="nav-text"><span class="nav-name">${escapeHtml(tool.name)}</span></span></div>`;
     }
     onNavClick(event) {
       const target = event.target;
@@ -12379,17 +13869,11 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       const toolButton = target.closest("[data-tool]");
       if (toolButton?.dataset.tool) {
         this.selectTool(toolButton.dataset.tool);
-        return;
-      }
-      const categoryButton = target.closest("[data-category]");
-      const categoryId = categoryButton?.dataset.category;
-      if (categoryId) {
-        if (this.collapsed.has(categoryId)) {
-          this.collapsed.delete(categoryId);
-        } else {
-          this.collapsed.add(categoryId);
+        if (this.narrow && !this.navCompact) {
+          this.setNavCompact(true);
         }
-        this.renderNav();
+        this.navScroll.querySelector(`[data-tool="${toolButton.dataset.tool}"]`)?.focus();
+        return;
       }
     }
     // ── workspace ────────────────────────────────────────────
@@ -12417,18 +13901,23 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       this.refreshHandler = null;
       this.resetButton.hidden = true;
       this.resetButton.textContent = "Limpar";
-      this.applyButton.textContent = "Aplicar";
+      this.applyLabelEl.textContent = "Aplicar";
       setDisabled(this.applyButton, true);
       this.titleEl.textContent = tool.name;
+      this.subtitleEl.textContent = tool.summary;
       const category = categories.find((entry) => entry.id === tool.category);
       this.chipEl.textContent = category?.name ?? "";
       if (!this.hostGaps) {
         this.calloutEl.textContent = tool.hint;
+        this.calloutEl.hidden = true;
+        this.helpToggle.setAttribute("aria-expanded", "false");
       }
+      this.stateEl.hidden = tool.usesSelection === false;
+      this.refreshButton.hidden = tool.usesSelection === false;
       this.statusToolEl.textContent = tool.name;
       this.setStatus("", "idle");
       this.renderNav();
-      this.bodyEl.scrollTop = 0;
+      this.scrollEl.scrollTop = 0;
       this.bodyEl.innerHTML = "";
       tool.mount(this.bodyEl, this.createContext());
       this.renderApplyCount();
@@ -12439,7 +13928,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       return {
         setApplyLabel: (label) => {
           if (!live()) return;
-          this.applyButton.textContent = label;
+          this.applyLabelEl.textContent = sentenceCase(label);
           this.renderApplyCount();
         },
         setApplyEnabled: (enabled) => {
@@ -12495,6 +13984,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       }
     }
     setStatus(text2, tone) {
+      this.statusEl.hidden = !text2;
       this.statusEl.className = `statusbar${tone === "done" ? " is-done" : tone === "error" ? " is-error" : ""}`;
       this.statusEl.innerHTML = "";
       if (text2) {
@@ -12502,6 +13992,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
         message.textContent = text2;
         this.statusEl.append(message);
       }
+      this.statusToolEl.hidden = !!text2;
       this.statusEl.append(this.statusToolEl);
     }
     // ── selection ────────────────────────────────────────────
@@ -12530,7 +14021,6 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       try {
         this.selection = await readSelection();
         this.renderState();
-        this.renderStrip();
         this.renderApplyCount();
         try {
           this.refreshHandler?.();
@@ -12557,68 +14047,38 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       this.stateEl.className = "work-state";
       this.stateEl.innerHTML = `<span class="dot"></span><span>${count} ${count === 1 ? "clipe" : "clipes"} selecionado${count === 1 ? "" : "s"}${where} · ${formatDuration(summary?.selectedSeconds ?? 0)}</span>`;
     }
-    renderStrip() {
-      const summary = this.selection;
-      this.stripEl.innerHTML = "";
-      if (!summary || summary.selectedCount === 0) {
-        this.stripEl.hidden = true;
-        return;
-      }
-      this.stripEl.hidden = false;
-      const base = document.createElement("span");
-      base.className = "strip-base";
-      this.stripEl.append(base);
-      const span = summary.rangeEnd - summary.rangeStart;
-      if (!(span > 0)) {
-        return;
-      }
-      const clips = document.createElement("span");
-      clips.className = "strip-clips";
-      for (const clip of summary.clips) {
-        const item = document.createElement("span");
-        item.className = `strip-clip${clip.selected ? " is-selected" : ""}`;
-        item.style.left = `${((clip.startSeconds - summary.rangeStart) / span * 100).toFixed(3)}%`;
-        item.style.width = `${((clip.endSeconds - clip.startSeconds) / span * 100).toFixed(3)}%`;
-        if (clip.selected) {
-          const block = document.createElement("span");
-          block.className = "strip-block";
-          item.append(block);
-        }
-        clips.append(item);
-      }
-      this.stripEl.append(clips);
-      if (summary.playheadRatio !== null) {
-        const head = document.createElement("span");
-        head.className = "strip-head";
-        head.style.left = `${(summary.playheadRatio * 100).toFixed(2)}%`;
-        this.stripEl.append(head);
-      }
-    }
     renderApplyCount() {
-      this.applyButton.querySelector(".btn-apply-count")?.remove();
       const count = this.selection?.selectedCount ?? 0;
       const tool = this.activeToolId ? findTool(this.activeToolId) : void 0;
-      if (isDisabled(this.applyButton) || count === 0 || tool?.usesSelection === false) {
-        return;
-      }
-      const badge = document.createElement("span");
-      badge.className = "btn-apply-count";
-      badge.textContent = `${count} ${count === 1 ? "clipe" : "clipes"}`;
-      this.applyButton.append(badge);
+      this.actionSelectionEl.textContent = tool?.usesSelection === false ? "Pronto para executar" : count === 0 ? "Nenhum clipe selecionado" : `${count} ${count === 1 ? "clipe selecionado" : "clipes selecionados"}`;
+      this.actionSummaryEl.textContent = tool?.summary ?? "";
     }
+  }
+  function sentenceCase(label) {
+    const normalized = label.trim().toLocaleLowerCase("pt-BR");
+    return normalized ? normalized[0].toLocaleUpperCase("pt-BR") + normalized.slice(1) : "";
   }
   function formatDuration(seconds2) {
     const whole = Math.max(0, Math.round(seconds2));
     return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
   }
-  function brandMark() {
-    return '<svg viewBox="0 0 100 100" aria-hidden="true" fill="none"><path d="M12 34V14h22" stroke="currentColor" stroke-width="8" stroke-linecap="square"/><path d="M66 14h22v20" stroke="currentColor" stroke-width="8" stroke-linecap="square"/><path d="M88 66v20H66" stroke="currentColor" stroke-width="8" stroke-linecap="square"/><path d="M34 86H12V66" stroke="currentColor" stroke-width="8" stroke-linecap="square"/><rect x="34" y="34" width="32" height="32" fill="#E39B3C"/></svg>';
-  }
   function searchGlyph() {
-    return '<svg viewBox="0 0 14 14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.2"><circle cx="6" cy="6" r="4"/><path d="M9.2 9.2 12.4 12.4"/></svg>';
+    return '<svg viewBox="0 0 14 14" aria-hidden="true" fill="currentColor"><path fill="currentColor" fill-rule="evenodd" d="M1.2 1.2h8.4v8.4H1.2V1.2Zm1.5 1.5v5.4h5.4V2.7H2.7Z"/><path fill="currentColor" d="M9.3 10.4 10.4 9.3l2.4 2.4-1.1 1.1z"/></svg>';
   }
   function refreshGlyph() {
-    return '<svg viewBox="0 0 14 14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="square"><path d="M11.6 7a4.6 4.6 0 1 1-1.5-3.4"/><path d="M11.8 1.6v3.2H8.6"/></svg>';
+    return '<svg viewBox="0 0 14 14" aria-hidden="true" fill="currentColor"><path fill="currentColor" fill-rule="evenodd" d="M2 2h10v3.2h-1.6V3.6H3.6v6.8h6.8V8.8H12V12H2V2Z"/><path fill="currentColor" d="M7.6 7h5.2l-2.6 3.2z"/></svg>';
+  }
+  function panelToggleGlyph() {
+    return '<svg class="panel-toggle-glyph" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M1.5 2h13v12h-13V2Zm1.5 1.5v9h2.5v-9H3Zm4 0v9h6v-9H7Z"/><path class="panel-toggle-arrow" fill="currentColor" d="m8.2 6 2 2-2 2V6Z"/></svg>';
+  }
+  function premiereGlyph() {
+    return '<svg viewBox="0 0 14 14" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M1.5 1.5h11v11h-11v-11ZM4 4v6h1.5V8.2h1.2C8.2 8.2 9 7.4 9 6.1S8.2 4 6.7 4H4Zm1.5 1.3h1.1c.6 0 .9.3.9.7s-.3.7-.9.7H5.5V5.8Z"/></svg>';
+  }
+  function helpGlyph() {
+    return '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13Zm0 1.5a5 5 0 1 1 0 10A5 5 0 0 1 8 3Z"/><path fill="currentColor" d="M7.2 10.8h1.6v1.4H7.2zM5.9 6.3c.1-1.4 1-2.2 2.4-2.2 1.3 0 2.2.8 2.2 2 0 .9-.4 1.4-1.3 2-.7.4-.8.7-.8 1.3H7c0-1.1.3-1.7 1.2-2.3.6-.4.8-.6.8-1s-.3-.7-.8-.7c-.6 0-.9.3-.9.9H5.9Z"/></svg>';
+  }
+  function arrowGlyph() {
+    return '<svg class="btn-apply-arrow" viewBox="0 0 14 14" aria-hidden="true"><path fill="currentColor" d="M3 2h9v9h-1.7V4.9L3.6 11.6l-1.2-1.2L9.1 3.7H3V2Z"/></svg>';
   }
   function bootstrap() {
     const root = document.getElementById("root");
@@ -12626,6 +14086,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       return;
     }
     try {
+      console.log(`[Framelab] build ${"2026-09-20 13:19:38"}`);
       new ProductShell(root).start();
     } catch (cause) {
       console.error("[Framelab] falha ao iniciar:", cause);

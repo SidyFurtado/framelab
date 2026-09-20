@@ -389,30 +389,24 @@ function markup(params: FillerParams): string {
       '<div class="zone">' +
         '<div class="field">' +
           '<div class="field-head">' +
-            '<span class="t-label">Margem ao redor</span>' +
+            '<span class="t-label" title="Quanto de ar cai junto com cada muleta. A margem avança pelo silêncio vizinho e para na palavra ao lado — nunca morde fala.">Margem ao redor</span>' +
             `<span class="field-val" data-out-pad>${params.padSeconds.toFixed(2)}s</span>` +
           "</div>" +
           '<div class="slider-row"><div data-pad></div></div>' +
-          '<p class="field-note">Quanto de ar cai junto com cada muleta. A margem ' +
-          "avança pelo silêncio vizinho e para na palavra ao lado — nunca morde fala.</p>" +
         "</div>" +
         '<div class="field">' +
           '<div class="field-head">' +
-            '<span class="t-label">Esticado a partir de</span>' +
+            '<span class="t-label" title="Um &quot;é&quot; ou &quot;ah&quot; mais longo que isso é hesitação, não palavra. Zero desliga — aí só sons inequívocos (ééé, hum) e a tag cortam.">Esticado a partir de</span>' +
             `<span class="field-val" data-out-stretch>${params.stretchedSeconds.toFixed(2)}s</span>` +
           "</div>" +
           '<div class="slider-row"><div data-stretch></div></div>' +
-          '<p class="field-note">Um "é" ou "ah" mais longo que isso é hesitação, não ' +
-          "palavra. Zero desliga — aí só sons inequívocos (ééé, hum) e a tag cortam.</p>" +
         "</div>" +
         '<div class="field">' +
-          '<span class="t-label">Tag da transcrição (né, tipo…)</span>' +
+          '<span class="t-label" title="O que o próprio Premiere marcou como muleta. Desligue se o &quot;né&quot; faz parte do jeito de falar do vídeo.">Tag da transcrição (né, tipo…)</span>' +
           '<div class="seg" data-tag-seg>' +
             `<div class="seg-item" ${CONTROL} data-tag="on">Cortar</div>` +
             `<div class="seg-item" ${CONTROL} data-tag="off">Manter</div>` +
           "</div>" +
-          '<p class="field-note">O que o próprio Premiere marcou como muleta. Desligue ' +
-          'se o "né" faz parte do jeito de falar do vídeo.</p>' +
         "</div>" +
       "</div>" +
 

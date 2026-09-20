@@ -19,6 +19,7 @@ import type {
   Keyframe,
   PointF,
   premierepro,
+  Project,
   TickTime,
   VideoClipTrackItem,
 } from "@adobe/premierepro";
@@ -30,6 +31,14 @@ import {
   snapTicksToFrame,
 } from "../../bridge/premiere";
 import type { EasingCurve } from "../../curves/easing";
+import { dumpDiag, probeKeyframes, unwrapValue } from "../zoom/diag";
+
+/**
+ * O relatório do Curvas, em disco — `flow-diag.json`, ao lado do do Zoom.
+ * Mesmo motivo: o console do UXP mora dentro do Premiere, e o que foi
+ * lido, calculado e escrito precisa chegar inteiro a quem conserta.
+ */
+const FLOW_DIAG_FILE = "flow-diag.json";
 
 export interface FlowResult {
   ok: boolean;
@@ -305,12 +314,15 @@ export async function clearToLinear(targets: FlowTarget[]): Promise<FlowResult> 
     for (const [startTicks, endTicks] of pairs) {
       const inner = await innerTicks(param, startTicks, endTicks);
       if (inner.length > 0) {
+        const existing = (await keyframeTimes(param)).map((time) => time.ticks);
         plans.push({
           param,
           key: "",
           removeTicks: inner,
           add: [],
-          before: (await keyframeTimes(param)).length,
+          before: existing.length,
+          existing,
+          anchors: [],
         });
       }
     }
@@ -333,6 +345,18 @@ interface SegmentPlan {
   add: BakedKey[];
   /** Keyframe count before the bake, so the commit can be verified. */
   before: number;
+  /**
+   * Every keyframe tick the parameter had before the commit. With
+   * `removeTicks` and `add` it says exactly what the parameter should
+   * hold afterwards — anything else on it was planted by the host.
+   */
+  existing: string[];
+  /**
+   * Os dois âncoras do trecho com o valor que tinham ANTES do commit.
+   * O bake não os toca — e mesmo assim o host devolveu o do tick 0
+   * zerado. É contra isto que eles são conferidos depois.
+   */
+  anchors: Array<{ ticks: string; value: number | { x: number; y: number } }>;
   /** Re-resolved after the commit, since the built handle may be stale. */
   descriptor?: AnimatedParam;
 }
@@ -342,6 +366,8 @@ interface BuildContext {
   /** Frame length in ticks, or null when the host would not say. */
   ticksPerFrame: bigint | null;
   notes: string[];
+  /** Um registro por trecho planejado, para o relatório. */
+  diag: unknown[];
 }
 
 type PlanBuilder = (
@@ -382,6 +408,7 @@ async function runOnTargets(
     const context: BuildContext = {
       ticksPerFrame: await readTicksPerFrame(sequence),
       notes: [],
+      diag: [],
     };
 
     const plans: SegmentPlan[] = [];
@@ -423,6 +450,31 @@ async function runOnTargets(
       return fail(withNotes("Nada a fazer nesses segmentos.", context.notes));
     }
 
+    // O relatório, ANTES de tocar no host — se a transação derrubar o
+    // plugin, o que foi lido e calculado já está em disco.
+    const relatorio: Record<string, unknown> = {
+      quando: new Date().toISOString(),
+      acao: undoLabel,
+      ticksPerFrame: context.ticksPerFrame === null ? null : context.ticksPerFrame.toString(),
+      alvos: targets.map((target) => ({
+        label: target.param.label,
+        segment: target.segment,
+        keyTicks: target.param.keyTicks,
+        anchorTicks: target.param.anchorTicks,
+      })),
+      relogios: await clipClocks(byKey, targets),
+      trechos: context.diag,
+      planos: plans.map((plan) => ({
+        param: plan.descriptor?.label ?? safeDisplayName(plan.param),
+        remove: plan.removeTicks,
+        add: plan.add,
+        existentes: plan.existing,
+      })),
+      antes: await keyframesByParam(plans, byKey),
+      notas: context.notes.slice(),
+    };
+    await dumpDiag(relatorio, FLOW_DIAG_FILE);
+
     // Synchronous from here: Action and Keyframe objects created outside a
     // locked transaction go stale ("The script object is no longer valid").
     let committed = false;
@@ -432,6 +484,8 @@ async function runOnTargets(
     /** What the transaction really filed, so the bake registry can be
      *  updated with the truth rather than with the plan. */
     const filed: Array<{ key: string; added: string[]; removed: string[] }> = [];
+    /** Keyframes assados que entraram — recebem LINEAR numa 2ª transação. */
+    const toLinear: Array<{ param: ComponentParam; ticks: string }> = [];
 
     try {
       project.lockedAccess(() => {
@@ -466,12 +520,15 @@ async function runOnTargets(
             const record = { key: plan.key, added: [] as string[], removed: [] as string[] };
             filed.push(record);
 
-            if (plan.add.length > 0) {
-              // The docs prescribe the stopwatch action alongside the
-              // keyframe actions; on an already-animated param it is a
-              // no-op, and it is what makes a first bake stick.
-              push(() => plan.param.createSetTimeVaryingAction(true), false);
-            }
+            // Sem ligar o cronômetro. Todo parâmetro que chega aqui já
+            // tem dois ou mais keyframes — o cronômetro já está ligado —
+            // e `createSetTimeVaryingAction(true)` não é um no-op: o
+            // Zoom mediu que ela faz o Premiere plantar um keyframe
+            // SEU, no tick 0 do parâmetro, com valor 0. Era isso que
+            // fazia toda animação com curva partir do zero, em escala
+            // e em posição, mesmo com o primeiro keyframe longe do
+            // início. A varredura depois do commit apanha o que
+            // sobrar.
 
             for (const ticks of plan.removeTicks) {
               const gone = push(
@@ -501,21 +558,15 @@ async function runOnTargets(
               }
             }
 
-            // Interpolation is filed after every add of this plan: the
-            // action resolves its keyframe by time, and the keyframes
-            // only exist once the compound action runs. Without LINEAR
-            // Premiere smooths on top of the bake. Only the keys that
-            // were actually filed get one — the rest have no keyframe to
-            // point at.
+            // A interpolação NÃO entra neste compound. A ação resolve o
+            // keyframe pelo tempo NA CRIAÇÃO — e aqui dentro os
+            // keyframes assados ainda não existem: o compound só roda
+            // depois. O relatório mostrou o resultado: os assados
+            // entram certos e o âncora do tick 0 sai com valor 0.
+            // LINEAR vai numa transação própria, com os keyframes já
+            // no lugar.
             for (const ticks of landed) {
-              push(
-                () =>
-                  plan.param.createSetInterpolationAtKeyframeAction(
-                    ppro.TickTime.createWithTicks(ticks),
-                    ppro.Constants.InterpolationMode.LINEAR
-                  ),
-                false
-              );
+              toLinear.push({ param: plan.param, ticks });
             }
           }
         }, undoLabel);
@@ -524,7 +575,9 @@ async function runOnTargets(
       transactionError = describeError(cause);
     }
 
+    relatorio.transacao = { committed, added, refused, transactionError, filed };
     if (transactionError) {
+      await dumpDiag(relatorio, FLOW_DIAG_FILE);
       return fail(withNotes(`O Premiere recusou: ${transactionError}`, context.notes));
     }
     if (!committed) {
@@ -549,6 +602,40 @@ async function runOnTargets(
         bakedByParam.delete(record.key);
       }
     }
+
+    // ── 2ª transação: LINEAR nos assados, agora que eles existem ─────
+    // Sem LINEAR o Premiere suaviza por cima da assadura e a forma
+    // deriva. Se esta falhar, a assadura fica: é curva um pouco mais
+    // macia, não um trecho perdido.
+    let linearCommitted = false;
+    let linearFiled = 0;
+    if (toLinear.length > 0) {
+      try {
+        project.lockedAccess(() => {
+          linearCommitted = project.executeTransaction((compoundAction) => {
+            for (const entry of toLinear) {
+              try {
+                const action = entry.param.createSetInterpolationAtKeyframeAction(
+                  ppro.TickTime.createWithTicks(entry.ticks),
+                  ppro.Constants.InterpolationMode.LINEAR
+                );
+                if (action && compoundAction.addAction(action as never) !== false) {
+                  linearFiled += 1;
+                }
+              } catch (cause) {
+                console.warn("[Flow] interpolação recusada:", cause);
+              }
+            }
+          }, "Curva: interpolação linear");
+        });
+      } catch (cause) {
+        console.warn("[Flow] a transação de interpolação não assentou:", cause);
+      }
+      if (!linearCommitted) {
+        context.notes.push("O Premiere não aceitou a interpolação linear dos assados.");
+      }
+    }
+    relatorio.interpolacao = { pedidos: toLinear.length, aceitos: linearFiled, linearCommitted };
 
     const wanted = plans.reduce((total, plan) => total + plan.add.length, 0);
     if (wanted > 0 && added === 0) {
@@ -576,7 +663,36 @@ async function runOnTargets(
     const refreshedByKey = new Map(
       refreshedClips.map((ref) => [ref.key, ref.clip])
     );
+    // Lida pelos clipes reatualizados, pelo mesmo motivo do verify.
+    const swept = await sweepStrays(ppro, project, plans, filed, refreshedByKey);
+    if (swept > 0) {
+      context.notes.push(
+        `${swept} keyframe(s) que o Premiere criou sozinho foram removidos.`
+      );
+    }
+
+    // ── Os âncoras, CONFERIDOS ───────────────────────────────────────
+    // O bake não os toca, e o host devolveu o do tick 0 com valor 0.
+    // Cada âncora é relido e comparado com o valor de antes; o que
+    // divergir é apagado e reescrito com o valor original — em duas
+    // transações, porque no mesmo compound as duas se anulam. Perde-se
+    // o bezier do âncora, ganha-se o valor de volta.
+    const ancoras = await repairAnchors(ppro, project, plans, refreshedByKey);
+    relatorio.ancoras = ancoras;
+    const reparados = ancoras.filter((row) => row.reparado).length;
+    if (reparados > 0) {
+      context.notes.push(
+        `${reparados} âncora(s) voltaram com valor errado e foram reescritos.`
+      );
+    }
     const verified = await verify(plans, refreshedByKey);
+    relatorio.depois = {
+      varridos: swept,
+      verificados: verified,
+      keyframes: await keyframesByParam(plans, refreshedByKey),
+      notas: context.notes.slice(),
+    };
+    await dumpDiag(relatorio, FLOW_DIAG_FILE);
     if (wanted > 0 && verified === 0) {
       context.notes.push("Não consegui reler os keyframes — confira o Effect Controls.");
     }
@@ -599,6 +715,291 @@ async function runOnTargets(
   } catch (cause) {
     return fail(`Falhou: ${describeError(cause)}`);
   }
+}
+
+/** `getValueAtTime` como o host responde: forma, chaves e valor desembrulhado. */
+async function rawShapeAt(param: ComponentParam, time: TickTime): Promise<unknown> {
+  let raw: unknown;
+  try {
+    raw = await param.getValueAtTime(time);
+  } catch (cause) {
+    return `(erro: ${describeError(cause)})`;
+  }
+  const inner = raw && typeof raw === "object" ? (raw as { value?: unknown }).value : undefined;
+  return {
+    forma: describeShape(raw),
+    formaInterna: describeShape(inner),
+    valor: unwrapValue(raw),
+  };
+}
+
+/** Os quatro relógios de cada clipe alvo, em ticks. */
+async function clipClocks(
+  byKey: Map<string, VideoClipTrackItem>,
+  targets: FlowTarget[]
+): Promise<Record<string, unknown>> {
+  const out: Record<string, unknown> = {};
+  const read = async (get: () => unknown): Promise<string> => {
+    try {
+      const time = (await Promise.resolve(get())) as TickTime | null;
+      return time ? String(time.ticks) : "(vazio)";
+    } catch (cause) {
+      return `(erro: ${describeError(cause)})`;
+    }
+  };
+  for (const target of targets) {
+    const clip = byKey.get(target.param.clipKey);
+    if (!clip || out[target.param.clipKey]) {
+      continue;
+    }
+    out[target.param.clipKey] = {
+      sequenciaIn: await read(() => clip.getStartTime()),
+      sequenciaOut: await read(() => clip.getEndTime()),
+      mediaIn: await read(() => clip.getInPoint()),
+      mediaOut: await read(() => clip.getOutPoint()),
+    };
+  }
+  return out;
+}
+
+/** A lista de keyframes, com valor, de cada parâmetro tocado. */
+async function keyframesByParam(
+  plans: SegmentPlan[],
+  byKey: Map<string, VideoClipTrackItem>
+): Promise<Record<string, unknown>> {
+  const out: Record<string, unknown> = {};
+  for (const plan of plans) {
+    const label = plan.descriptor?.label ?? safeDisplayName(plan.param);
+    if (out[label]) {
+      continue;
+    }
+    let param: ComponentParam | null = null;
+    try {
+      param = plan.descriptor ? await resolveParam(byKey, plan.descriptor) : null;
+    } catch {
+      param = null;
+    }
+    out[label] = await probeKeyframes(param ?? plan.param);
+  }
+  return out;
+}
+
+interface AnchorReport {
+  param: string;
+  ticks: string;
+  antes: number | { x: number; y: number };
+  depois: unknown;
+  reparado: boolean;
+  depoisDoReparo?: unknown;
+  erro?: string;
+}
+
+/** Igual o bastante: diferença abaixo do que o Effect Controls mostra. */
+function sameValue(
+  a: number | { x: number; y: number },
+  b: number | { x: number; y: number } | null
+): boolean {
+  if (b === null) {
+    return false;
+  }
+  if (typeof a === "number" || typeof b === "number") {
+    return typeof a === "number" && typeof b === "number" && Math.abs(a - b) < 1e-3;
+  }
+  return Math.abs(a.x - b.x) < 1e-4 && Math.abs(a.y - b.y) < 1e-4;
+}
+
+/**
+ * Relê cada âncora tocado pelo bake e reescreve o que mudou de valor.
+ * Devolve um relato por âncora, para o relatório dizer se precisou.
+ */
+async function repairAnchors(
+  ppro: premierepro,
+  project: Project,
+  plans: SegmentPlan[],
+  byKey: Map<string, VideoClipTrackItem>
+): Promise<AnchorReport[]> {
+  const rows: AnchorReport[] = [];
+  const seen = new Set<string>();
+
+  for (const plan of plans) {
+    let fresh: ComponentParam | null = null;
+    try {
+      fresh = plan.descriptor ? await resolveParam(byKey, plan.descriptor) : null;
+    } catch {
+      fresh = null;
+    }
+    const handle = fresh ?? plan.param;
+    const label = plan.descriptor?.label ?? safeDisplayName(plan.param);
+
+    for (const anchor of plan.anchors) {
+      const id = `${plan.key}@${anchor.ticks}`;
+      if (seen.has(id)) {
+        continue;
+      }
+      seen.add(id);
+
+      const time = ppro.TickTime.createWithTicks(anchor.ticks);
+      const depois = await readValue(handle, time);
+      const row: AnchorReport = {
+        param: label,
+        ticks: anchor.ticks,
+        antes: anchor.value,
+        depois,
+        reparado: false,
+      };
+      rows.push(row);
+
+      if (sameValue(anchor.value, depois)) {
+        continue;
+      }
+      console.warn(`[Flow] ${label}: âncora em ${anchor.ticks} mudou de`, anchor.value, "para", depois);
+
+      try {
+        let apagou = false;
+        project.lockedAccess(() => {
+          apagou = project.executeTransaction((compoundAction) => {
+            compoundAction.addAction(
+              handle.createRemoveKeyframeAction(
+                ppro.TickTime.createWithTicks(anchor.ticks),
+                false
+              )
+            );
+          }, "Curva: repor âncora (apagar)");
+        });
+        let escreveu = false;
+        project.lockedAccess(() => {
+          escreveu = project.executeTransaction((compoundAction) => {
+            const keyframe = makeKeyframe(ppro, handle, anchor.value);
+            keyframe.position = ppro.TickTime.createWithTicks(anchor.ticks);
+            compoundAction.addAction(handle.createAddKeyframeAction(keyframe));
+          }, "Curva: repor âncora (escrever)");
+        });
+        row.reparado = apagou && escreveu;
+      } catch (cause) {
+        row.erro = describeError(cause);
+        console.warn("[Flow] a reposição do âncora não assentou:", cause);
+      }
+      row.depoisDoReparo = await readValue(handle, time);
+    }
+  }
+  return rows;
+}
+
+/**
+ * Removes every keyframe the commit left on a parameter that is neither
+ * one the editor had nor one this bake filed.
+ *
+ * The transaction says what was asked for, not what the host did with
+ * it: the Zoom tool measured Premiere planting a keyframe of its own
+ * (tick 0, value 0) beside the ones the plugin wrote. So the list is
+ * read back and compared, as numbers — the host spells a tick its own
+ * way — against what the parameter should hold. Strays go in a
+ * transaction of their own, after the commit: if it fails, the bake
+ * stays applied. Returns how many were removed.
+ */
+async function sweepStrays(
+  ppro: premierepro,
+  project: Project,
+  plans: SegmentPlan[],
+  filed: Array<{ key: string; added: string[]; removed: string[] }>,
+  byKey: Map<string, VideoClipTrackItem>
+): Promise<number> {
+  const normal = (ticks: string): string => {
+    try {
+      return BigInt(ticks).toString();
+    } catch {
+      return ticks;
+    }
+  };
+
+  /** What each parameter should hold now, by registry key. */
+  const expected = new Map<string, Set<string>>();
+  const paramOf = new Map<string, { plan: SegmentPlan }>();
+  for (const plan of plans) {
+    let set = expected.get(plan.key);
+    if (!set) {
+      set = new Set(plan.existing.map(normal));
+      expected.set(plan.key, set);
+      paramOf.set(plan.key, { plan });
+    }
+  }
+  for (const record of filed) {
+    const set = expected.get(record.key);
+    if (!set) {
+      continue;
+    }
+    for (const ticks of record.removed) {
+      set.delete(normal(ticks));
+    }
+    for (const ticks of record.added) {
+      set.add(normal(ticks));
+    }
+  }
+
+  const strays: Array<{ param: ComponentParam; times: TickTime[]; label: string }> = [];
+  for (const [key, set] of expected) {
+    const plan = paramOf.get(key)?.plan;
+    if (!plan) {
+      continue;
+    }
+    let param: ComponentParam | null = null;
+    try {
+      param = plan.descriptor ? await resolveParam(byKey, plan.descriptor) : null;
+    } catch {
+      param = null;
+    }
+    const handle = param ?? plan.param;
+    const times = await keyframeTimes(handle);
+    const alien = times.filter((time) => !set.has(normal(time.ticks)));
+    if (alien.length > 0) {
+      strays.push({
+        param: handle,
+        times: alien,
+        label: plan.descriptor?.label ?? safeDisplayName(handle),
+      });
+    }
+  }
+
+  if (strays.length === 0) {
+    return 0;
+  }
+
+  for (const stray of strays) {
+    console.warn(
+      `[Flow] ${stray.label}: ${stray.times.length} keyframe(s) alheio(s) em`,
+      stray.times.map((time) => time.ticks).join(", ")
+    );
+  }
+
+  let removed = 0;
+  try {
+    project.lockedAccess(() => {
+      const committed = project.executeTransaction((compoundAction) => {
+        for (const stray of strays) {
+          for (const time of stray.times) {
+            try {
+              const action = stray.param.createRemoveKeyframeAction(
+                ppro.TickTime.createWithTicks(time.ticks),
+                false
+              );
+              if (action && compoundAction.addAction(action as never) !== false) {
+                removed += 1;
+              }
+            } catch (cause) {
+              console.warn("[Flow] remoção de keyframe alheio recusada:", cause);
+            }
+          }
+        }
+      }, "Limpar keyframe alheio da curva");
+      if (!committed) {
+        removed = 0;
+      }
+    });
+  } catch (cause) {
+    console.warn("[Flow] a limpeza dos keyframes alheios não assentou:", cause);
+    return 0;
+  }
+  return removed;
 }
 
 /**
@@ -771,17 +1172,39 @@ async function planSegment(
     });
   }
 
+  // O que o host respondeu nos âncoras, CRU — a forma e o valor — e a
+  // curva amostrada, para o relatório dizer onde o zero nasce.
+  build.diag.push({
+    param: safeDisplayName(param),
+    startTicks,
+    endTicks,
+    startSeconds,
+    endSeconds,
+    frames,
+    steps,
+    de: { forma: await rawShapeAt(param, startTime), lido: from },
+    para: { forma: await rawShapeAt(param, endTime), lido: to },
+    ease: [0, 0.1, 0.25, 0.5, 0.75, 0.9, 1].map((t) => [t, ease(t)]),
+    add,
+  });
+
   if (add.length === 0) {
     build.notes.push("Nenhum frame livre entre os keyframes do trecho.");
     return null;
   }
 
+  const existing = (await keyframeTimes(param)).map((time) => time.ticks);
   return {
     param,
     key: "",
     removeTicks: await innerTicks(param, startTicks, endTicks),
     add,
-    before: (await keyframeTimes(param)).length,
+    before: existing.length,
+    existing,
+    anchors: [
+      { ticks: startTicks, value: from },
+      { ticks: endTicks, value: to },
+    ],
   };
 }
 

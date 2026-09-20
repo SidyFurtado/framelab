@@ -3,6 +3,9 @@ node_modules/
 .release_stage/
 dist/*.zip
 dist/*.ccx
+# Gerado por `npm run package`, e apagado por `npm run build`
+# (emptyOutDir). Versioná-lo só servia para o build sumir com ele.
+dist/*.pkg
 *.log
 site-anterior/
 installer/bin/

@@ -50,6 +50,7 @@ import {
   type SrtOptions,
 } from "./srt";
 import { demoTranscript, previewMarkup } from "./preview";
+import { uxpModule, shellModule, workspace } from "../silence/workspace";
 
 /**
  * Os controles da régua, na ordem em que importam.
@@ -62,6 +63,7 @@ import { demoTranscript, previewMarkup } from "./preview";
 interface CapSlider {
   key: keyof SrtOptions;
   label: string;
+  note?: string;
   step: number;
   format: (value: number) => string;
 }
@@ -72,18 +74,21 @@ const CAP_SLIDERS: readonly CapSlider[] = [
   {
     key: "maxLineChars",
     label: "Comprimento máximo",
+    note: "Quantidade máxima de caracteres por linha antes de quebrar ou criar nova legenda.",
     step: 1,
     format: (value) => `${Math.round(value)} caracteres`,
   },
   {
     key: "minCueSeconds",
     label: "Duração mínima",
+    note: "Tempo mínimo que cada legenda permanece visível em tela.",
     step: 0.1,
     format: asSeconds,
   },
   {
     key: "gapFrames",
     label: "Intervalo entre legendas",
+    note: "Espaço em quadros entre legendas. 0 quadros entra imediatamente sem piscar.",
     step: 1,
     format: (value) => {
       const v = Math.round(value);
@@ -93,18 +98,33 @@ const CAP_SLIDERS: readonly CapSlider[] = [
   {
     key: "readingCps",
     label: "Velocidade de leitura",
+    note: "Caracteres por segundo para garantir conforto visual na leitura.",
     step: 1,
     // 0 não é "zero caracteres por segundo", é a regra desligada — e
     // mostrar "0 car/s" faria parecer defeito.
     format: (value) => (value <= 0 ? "desligada" : `${Math.round(value)} car/s`),
   },
-  { key: "maxCueSeconds", label: "Duração máxima", step: 0.25, format: asSeconds },
-  { key: "gapSeconds", label: "Pausa para silêncio", step: 0.05, format: asSeconds },
+  {
+    key: "maxCueSeconds",
+    label: "Duração máxima",
+    note: "Tempo máximo permitido para um único bloco de legenda.",
+    step: 0.25,
+    format: asSeconds,
+  },
+  {
+    key: "gapSeconds",
+    label: "Pausa para silêncio",
+    note: "Tempo de pausa na fala que encerra a legenda em vez de emendar na próxima.",
+    step: 0.05,
+    format: asSeconds,
+  },
 ];
 
 let cancelActiveRun: (() => void) | null = null;
 /** Solta os listeners que os menus penduram em `document`. */
 let releaseDocument: (() => void) | null = null;
+/** Para o cronômetro do progresso quando a ferramenta sai de cena. */
+let releaseTimer: (() => void) | null = null;
 /** Solta os ouvintes que os deslizadores penduram em `document`. */
 let releaseSliders: (() => void) | null = null;
 
@@ -128,6 +148,8 @@ export const captionsTool: Tool = {
       glossary: "",
       track: "all",
       srt: { ...SRT_DEFAULTS },
+      srtDestination: "",
+      srtDestinationToken: "",
     };
     let scan: TrackScan | null = null;
     const capSliders = new Map<keyof SrtOptions, SliderHandle>();
@@ -144,6 +166,9 @@ export const captionsTool: Tool = {
     const trackHost = container.querySelector<HTMLElement>("[data-track-pick]");
     const langHost = container.querySelector<HTMLElement>("[data-lang-pick]");
     const modelSeg = container.querySelector<HTMLElement>("[data-model-seg]");
+    const srtDestEl = container.querySelector<HTMLElement>("[data-srt-dest]");
+    const srtDestPick = container.querySelector<HTMLElement>("[data-srt-dest-pick]");
+    const srtDestReset = container.querySelector<HTMLElement>("[data-srt-dest-reset]");
     const glossaryEl = container.querySelector<HTMLTextAreaElement>("[data-glossary]");
     const glossaryNote = container.querySelector<HTMLElement>("[data-glossary-note]");
     const manualEl = container.querySelector<HTMLElement>("[data-manual]");
@@ -226,6 +251,24 @@ export const captionsTool: Tool = {
     };
     document.addEventListener("click", onDocumentPointer, true);
     document.addEventListener("keydown", onDocumentKey, true);
+
+    /*
+     * O cronômetro do progresso tem de morrer com a ferramenta.
+     *
+     * Ele só era limpo por `showProgress(null)`, que vive no `finally`
+     * do apply — então uma transcrição que travasse (agente morto,
+     * whisper pendurado) deixava um `setInterval` batendo a cada meio
+     * segundo contra um nó que a Shell já tinha apagado, e cada visita
+     * à ferramenta acrescentava mais um. `cancelActiveRun` não cobria:
+     * ele levanta uma bandeira e o trabalho assíncrono só a vê quando
+     * chega ao próximo ponto de checagem.
+     */
+    releaseTimer = () => {
+      if (timerInterval !== null) {
+        window.clearInterval(timerInterval);
+        timerInterval = null;
+      }
+    };
     releaseDocument = () => {
       document.removeEventListener("click", onDocumentPointer, true);
       document.removeEventListener("keydown", onDocumentKey, true);
@@ -245,6 +288,7 @@ export const captionsTool: Tool = {
       syncModel();
       syncGlossaryNote();
       syncCaptionFormat();
+      renderDestination();
       // A sequência é lida sozinha ao abrir: sem isso o editor tinha de
       // apertar um botão antes de poder escolher a faixa, e a escolha é
       // a primeira decisão da ferramenta.
@@ -271,6 +315,86 @@ export const captionsTool: Tool = {
       persist();
       syncModel();
     });
+
+    // ── destino do .srt ───────────────────────────────────────
+
+    function renderDestination(): void {
+      if (srtDestEl) {
+        if (config.srtDestination) {
+          srtDestEl.textContent = config.srtDestination;
+          srtDestEl.title = `${config.srtDestination} (clique para abrir no Finder/Explorer)`;
+          srtDestEl.style.cursor = "pointer";
+        } else {
+          srtDestEl.textContent = "(pasta padrão do plugin)";
+          srtDestEl.title =
+            "Pasta interna de trabalho do plugin. Clique em 'Escolher…' para definir uma pasta no seu computador.";
+          srtDestEl.style.cursor = "default";
+        }
+      }
+      if (srtDestReset) {
+        srtDestReset.hidden = !config.srtDestination;
+      }
+    }
+
+    srtDestPick?.addEventListener("click", () => void pickDestination());
+
+    srtDestReset?.addEventListener("click", () => {
+      config.srtDestination = "";
+      config.srtDestinationToken = "";
+      persist();
+      renderDestination();
+      context.setStatus("Destino redefinido para a pasta padrão do plugin.", "idle");
+    });
+
+    srtDestEl?.addEventListener("click", async () => {
+      try {
+        const shell = shellModule();
+        if (!shell?.openPath) return;
+        if (config.srtDestination) {
+          await shell.openPath(config.srtDestination, "Abrir pasta de destino das legendas");
+        } else {
+          const space = await workspace();
+          await shell.openPath(space.nativeBase, "Abrir pasta de trabalho do plugin");
+        }
+      } catch (cause) {
+        console.warn("[Legendas] não foi possível abrir a pasta:", cause);
+      }
+    });
+
+    async function pickDestination(): Promise<void> {
+      const picker = uxpModule<{
+        storage?: {
+          localFileSystem?: {
+            getFolder?(): Promise<{ nativePath?: string } | null>;
+            createPersistentToken?(entry: unknown): Promise<string>;
+          };
+        };
+      }>("uxp")?.storage?.localFileSystem;
+
+      if (typeof picker?.getFolder !== "function") {
+        context.setStatus("Este build do Premiere não abre o seletor de pastas.", "error");
+        return;
+      }
+      try {
+        const folder = await picker.getFolder();
+        if (!folder?.nativePath) {
+          return;
+        }
+        config.srtDestination = folder.nativePath;
+        if (typeof picker.createPersistentToken === "function") {
+          try {
+            config.srtDestinationToken = (await picker.createPersistentToken(folder)) ?? "";
+          } catch {
+            config.srtDestinationToken = "";
+          }
+        }
+        persist();
+        renderDestination();
+        context.setStatus(`Pasta de destino definida: ${folder.nativePath}`, "done");
+      } catch (cause) {
+        console.log("[Legendas] seleção de pasta encerrada:", cause);
+      }
+    }
 
     // ── formato da legenda ────────────────────────────────────
 
@@ -406,7 +530,7 @@ export const captionsTool: Tool = {
         redoBtn.textContent = "Gerando…";
       }
       try {
-        const result = await rebuildSrt(config.srt);
+        const result = await rebuildSrt(config.srt, config.srtDestination, config.srtDestinationToken);
         context.setStatus(result.message, result.ok ? "done" : "error");
       } catch (cause) {
         context.setStatus(describeError(cause), "error");
@@ -554,6 +678,8 @@ export const captionsTool: Tool = {
           glossaryText: config.glossary,
           track: config.track,
           srt: config.srt,
+          destination: config.srtDestination,
+          destinationToken: config.srtDestinationToken,
           onStage: (text: string) => {
             showProgress(text);
             context.setStatus(`${findLanguage(config.language).label} · ${text}`);
@@ -746,6 +872,8 @@ export const captionsTool: Tool = {
   unmount(): void {
     cancelActiveRun?.();
     cancelActiveRun = null;
+    releaseTimer?.();
+    releaseTimer = null;
     releaseDocument?.();
     releaseDocument = null;
     releaseSliders?.();
@@ -773,7 +901,7 @@ export function markup(): string {
 
   const srtPresets = SRT_PRESETS.map(
     (preset) =>
-      `<div class="preset-pill" ${CONTROL} data-preset="${preset.id}">` +
+      `<div class="preset-pill" ${CONTROL} data-preset="${preset.id}" title="${escapeHtml(preset.note)}">` +
       `${escapeHtml(preset.name)}</div>`
   ).join("");
 
@@ -791,7 +919,7 @@ export function markup(): string {
     return (
       '<div class="field">' +
       '<div class="field-head">' +
-      `<span class="t-label">${spec.label}</span>` +
+      `<span class="t-label" title="${escapeHtml(spec.note ?? "")}">${spec.label}</span>` +
       `<span class="field-val" data-cap-out="${key}">${spec.format(SRT_DEFAULTS[key])}</span>` +
       "</div>" +
       `<div class="slider-row"><div data-cap="${key}"></div></div>` +
@@ -803,19 +931,24 @@ export function markup(): string {
     '<div class="zones">' +
       '<div class="zone">' +
         '<div class="field">' +
-          '<span class="t-label">Faixa de áudio</span>' +
+          '<span class="t-label" title="A faixa vai inteira para o motor, com os silêncios entre os clipes — é o que faz uma frase cortada no meio sair inteira.">Faixa de áudio</span>' +
           '<div data-track-pick></div>' +
-          '<p class="field-note">A faixa vai inteira para o motor, com os silêncios ' +
-          "entre os clipes — é o que faz uma frase cortada no meio sair inteira.</p>" +
         "</div>" +
         '<div class="field">' +
           '<span class="t-label">Idioma</span>' +
           '<div data-lang-pick></div>' +
         "</div>" +
         '<div class="field">' +
-          '<span class="t-label">Qualidade</span>' +
+          '<span class="t-label" title="O modelo baixa sozinho na primeira vez.">Qualidade</span>' +
           `<div class="seg" data-model-seg>${models}</div>` +
-          '<p class="field-note">O modelo baixa sozinho na primeira vez.</p>' +
+        "</div>" +
+        '<div class="field">' +
+          '<div class="field-head">' +
+            '<span class="t-label" title="Pasta onde o .srt é salvo no disco. O arquivo também entra no seu projeto.">Destino do .srt</span>' +
+            `<span class="field-action" ${CONTROL} data-srt-dest-pick>Escolher…</span>` +
+            `<span class="field-action" ${CONTROL} data-srt-dest-reset hidden>Padrão</span>` +
+          "</div>" +
+          '<p class="dl-dest" data-srt-dest></p>' +
         "</div>" +
       "</div>" +
 
@@ -826,7 +959,6 @@ export function markup(): string {
         '<div class="field">' +
           '<span class="t-label">Formato da legenda</span>' +
           `<div class="preset-rail" data-srt-rail>${srtPresets}</div>` +
-          '<p class="field-note" data-srt-note></p>' +
         "</div>" +
         '<div class="field">' +
           '<span class="t-label">Linhas</span>' +
@@ -835,8 +967,6 @@ export function markup(): string {
         capSlider("maxLineChars") +
         capSlider("minCueSeconds") +
         capSlider("gapFrames") +
-        '<p class="field-note">Com 0 quadros de intervalo, a legenda seguinte entra ' +
-        "imediatamente sem piscar tela preta, exceto quando houver momento de silêncio na fala.</p>" +
 
         // A prévia fica ENCOSTADA nos controles principais. Mais
         // abaixo, num painel de 320px, ela sai da tela justamente
@@ -855,9 +985,6 @@ export function markup(): string {
             capSlider("readingCps") +
             capSlider("maxCueSeconds") +
             capSlider("gapSeconds") +
-            '<p class="field-note"><b>Pausa para silêncio</b> é o tempo de silêncio na fala que ' +
-            "encerra uma legenda em vez de emendar na próxima. " +
-            "<b>Velocidade de leitura</b> garante tempo de leitura aos olhos.</p>" +
           "</div>" +
         "</div>" +
       "</div>" +
@@ -865,30 +992,9 @@ export function markup(): string {
       '<div class="zone">' +
         '<div class="field">' +
           '<div class="field-head"><span class="t-label">Glossário do projeto</span></div>' +
-          '<textarea class="dl-urls" data-glossary spellcheck="false" rows="4" ' +
-          'placeholder="Framelab&#10;Sidy Furtado&#10;nome do cliente"></textarea>' +
-          '<p class="field-note" data-glossary-note></p>' +
-        "</div>" +
-      "</div>" +
-
-      '<div class="zone">' +
-        /*
-         * O aviso vem ANTES, não como surpresa.
-         *
-         * O painel roda o ffmpeg por dentro de um pequeno aplicativo
-         * que ele mesmo escreve, e esse aplicativo não é assinado.
-         * O macOS então pergunta duas coisas na primeira vez — acesso
-         * à pasta da mídia (necessário) e microfone (não). Ser
-         * emboscado por esses diálogos é assustador e parece malware;
-         * dizer antes o que vai aparecer e o que responder é o mínimo.
-         */
-        '<div class="cc-heads-up">' +
-          '<p class="cc-heads-up-title">Na primeira vez o macOS vai perguntar duas coisas</p>' +
-          '<p class="cc-heads-up-body"><b>Pasta da sua mídia</b> (Google Drive, Documentos…): ' +
-          "<b>permita</b> — é de onde o áudio é lido.<br>" +
-          "<b>Microfone</b>: <b>pode negar</b>. O plugin nunca grava áudio; " +
-          "o pedido vem de uma biblioteca que o conversor de áudio carrega e não usa. " +
-          "Negando, tudo funciona igual.</p>" +
+          '<textarea class="dl-urls" data-glossary spellcheck="false" rows="3" ' +
+          'placeholder="Framelab&#10;Sidy Furtado&#10;nome do cliente" ' +
+          'title="Um termo por linha: nomes, marcas, jargão. Já vem com o vocabulário de edição de fábrica."></textarea>' +
         "</div>" +
       "</div>" +
 

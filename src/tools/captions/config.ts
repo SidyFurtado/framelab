@@ -20,6 +20,10 @@ export interface CaptionConfig {
   track: number | "all";
   /** A régua da legenda: caracteres, linhas, tempos. */
   srt: SrtOptions;
+  /** Pasta onde o .srt é salvo. Vazio = pasta de trabalho padrão do plugin. */
+  srtDestination: string;
+  /** Token de acesso persistente do storage UXP para a pasta escolhida. */
+  srtDestinationToken: string;
 }
 
 const DEFAULTS: CaptionConfig = {
@@ -28,6 +32,8 @@ const DEFAULTS: CaptionConfig = {
   glossary: "",
   track: "all",
   srt: { ...SRT_DEFAULTS },
+  srtDestination: "",
+  srtDestinationToken: "",
 };
 
 export async function readConfig(): Promise<CaptionConfig> {
@@ -46,6 +52,9 @@ export async function readConfig(): Promise<CaptionConfig> {
           ? parsed.track
           : "all",
       srt: readSrt(parsed.srt),
+      srtDestination: typeof parsed.srtDestination === "string" ? parsed.srtDestination : "",
+      srtDestinationToken:
+        typeof parsed.srtDestinationToken === "string" ? parsed.srtDestinationToken : "",
     };
   } catch {
     return { ...DEFAULTS };

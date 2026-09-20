@@ -31,6 +31,12 @@ import type {
   Sequence,
 } from "@adobe/premierepro";
 import { getPremiere, describeError } from "../../bridge/premiere";
+import { groupByVariantToken } from "./nameGrouping";
+import {
+  readAudioChannels,
+  resetChannelProbe,
+  type AudioChannels,
+} from "./audioSignals";
 
 /**
  * Every write to the project goes through here.
@@ -80,7 +86,7 @@ export type TopCategory =
   | "other";
 
 /** Subpasta de Audio. `null` quando não dá para saber sem chutar. */
-export type AudioKind = "sfx" | "music";
+export type AudioKind = "sfx" | "music" | "voice";
 
 export interface ClassifiedItem {
   item: ProjectItem;
@@ -195,7 +201,7 @@ function categoryFromExtension(ext: string): ItemCategory {
   return "other";
 }
 
-// ── SFX contra trilha ──────────────────────────────────────────────
+// ── locução, trilha e efeito ───────────────────────────────────────
 
 /*
  * Aqui não existe a pasta curada do ADR-010: a entrada é o que o editor
@@ -213,6 +219,25 @@ const SFX_HINTS =
 const MUSIC_HINTS =
   /(^|[^a-z])(music|m[uú]sica|musicas|trilha|soundtrack|score|song|beat|instrumental|bgm)([^a-z]|$)/i;
 
+/*
+ * Narração tem vocabulário próprio, e ele não se confunde com o de
+ * trilha. "avatar" entra porque numa esteira de UGC é como o material
+ * falado chega — reconhecer a palavra na entrada não é o mesmo que
+ * batizar a pasta de saída com ela.
+ */
+const VOICE_HINTS =
+  /(^|[^a-z])(loc[uú][cç][aã]o|locucao|narra[cç][aã]o|narracao|narration|narrador|voice[ _-]?over|voiceover|vocal|dublagem|dubbing|avatar|talking[ _-]?head)([^a-z]|$)/i;
+
+/** Siglas curtas, só quando são o token inteiro: "VO" sim, "vovó" não. */
+const VOICE_TOKENS = new Set(["vo", "vox", "nar", "loc"]);
+
+function hasVoiceToken(text: string): boolean {
+  return text
+    .toLowerCase()
+    .split(/[^a-z0-9À-ſ]+/)
+    .some((token) => VOICE_TOKENS.has(token));
+}
+
 /** Acima disto ninguém chama de efeito. */
 const MUSIC_MIN_SECONDS = 45;
 /** Abaixo disto ninguém chama de trilha. */
@@ -221,6 +246,12 @@ const SFX_MAX_SECONDS = 8;
 function folderPartOf(mediaPath: string): string {
   const cut = Math.max(mediaPath.lastIndexOf("/"), mediaPath.lastIndexOf("\\"));
   return cut > 0 ? mediaPath.slice(0, cut) : "";
+}
+
+/** O arquivo, sem o caminho. O item do projeto pode ter sido renomeado. */
+function baseNameOf(mediaPath: string): string {
+  const cut = Math.max(mediaPath.lastIndexOf("/"), mediaPath.lastIndexOf("\\"));
+  return cut >= 0 ? mediaPath.slice(cut + 1) : mediaPath;
 }
 
 /**
@@ -268,26 +299,74 @@ async function audioSeconds(
   }
 }
 
+/** O nome sem a extensão, para comparar com o nome de uma sequência. */
+function stemOf(name: string): string {
+  const cut = name.lastIndexOf(".");
+  const stem = cut > 0 ? name.slice(0, cut) : name;
+  return stem.trim().toLowerCase();
+}
+
+interface AudioContext {
+  ppro: premierepro;
+  item: ProjectItem;
+  clip: ClipProjectItem | null;
+  name: string;
+  mediaPath: string;
+  /** Nomes das sequências do projeto, em minúsculas. */
+  sequenceNames: ReadonlySet<string>;
+}
+
 /**
- * Em ordem de confiança: como o editor arquivou, como nomeou, a duração
- * — e a duração só decide nas pontas, onde não é chute. Se nada disso
- * responder, o formato do arquivo desempata.
+ * Em ordem de confiança: como o editor arquivou, como nomeou, se o
+ * arquivo tem o nome de uma peça do projeto, quantos canais tem — e a
+ * duração só decide nas pontas, onde não é chute.
+ *
+ * A ordem importa e foi ela que mudou. Antes a duração decidia sozinha
+ * depois do nome, e qualquer áudio acima de 45s virava trilha: uma
+ * narração de 1'23" ia para "Musicas" sem nada no projeto discordar. Os
+ * dois sinais que entram agora à frente dela dizem outra coisa, e dizem
+ * com fundamento:
+ *
+ * - "BODY.mp3" ao lado de uma sequência chamada "BODY" é a narração
+ *   daquela peça. Trilha de biblioteca não tem o nome da entrega.
+ * - Locução é mono; trilha comercial praticamente nunca é. É o que a
+ *   coluna "Informações do áudio" do painel já mostra, e agora o plugin
+ *   lê. Mono e curto continua sendo efeito — biblioteca de foley também
+ *   entrega mono, só que em dois segundos, não em oitenta.
+ *
+ * Quando os canais não vêm, a régua antiga continua valendo: é pior ficar
+ * sem resposta do que responder pelo que sempre respondeu.
  */
-async function audioKindOf(
-  ppro: premierepro,
-  clip: ClipProjectItem | null,
-  name: string,
-  mediaPath: string
-): Promise<AudioKind | null> {
+async function audioKindOf(ctx: AudioContext): Promise<AudioKind | null> {
+  const { ppro, item, clip, name, mediaPath, sequenceNames } = ctx;
   const folder = folderPartOf(mediaPath);
   const seconds = await audioSeconds(ppro, clip);
 
-  const decided = ((): AudioKind | null => {
+  const namesAPiece =
+    sequenceNames.has(stemOf(name)) ||
+    (mediaPath !== "" && sequenceNames.has(stemOf(baseNameOf(mediaPath))));
+
+  let channels: AudioChannels | null = null;
+
+  const decided = await (async (): Promise<AudioKind | null> => {
     if (SFX_HINTS.test(folder)) return "sfx";
     if (MUSIC_HINTS.test(folder)) return "music";
+    if (VOICE_HINTS.test(folder)) return "voice";
 
     if (SFX_HINTS.test(name)) return "sfx";
     if (MUSIC_HINTS.test(name)) return "music";
+    if (VOICE_HINTS.test(name) || hasVoiceToken(name)) return "voice";
+
+    if (namesAPiece) return "voice";
+
+    channels = await readAudioChannels(ppro, item, name);
+
+    if (channels === "mono") {
+      // Mono sem duração legível fica sem resposta: um efeito mono e uma
+      // locução mono só se distinguem pelo relógio.
+      if (seconds === null) return null;
+      return seconds <= SFX_MAX_SECONDS ? "sfx" : "voice";
+    }
 
     if (seconds !== null) {
       if (seconds >= MUSIC_MIN_SECONDS) return "music";
@@ -302,6 +381,8 @@ async function audioKindOf(
 
   console.log(
     `[Organize] audio "${name}" | ${seconds === null ? "duração ilegível" : `${seconds.toFixed(1)}s`}` +
+    ` | canais ${channels ?? "?"}` +
+    ` | nome de sequência: ${namesAPiece ? "sim" : "não"}` +
     ` | pasta "${folder}" | -> ${decided ?? "solto em Audio"}`
   );
 
@@ -311,9 +392,57 @@ async function audioKindOf(
 // ── public labels ──────────────────────────────────────────────────
 
 export const AUDIO_KIND_LABELS: Record<AudioKind, string> = {
+  voice: "Locucao",
   music: "Musicas",
   sfx: "SFX",
 };
+
+/*
+ * O vocabulário do editor, lido do projeto.
+ *
+ * "Locucao" é o nome que o plugin dá quando precisa criar a pasta. Não é
+ * o nome que ele exige: uma esteira de UGC chama a mesma coisa de
+ * "Avatar", e quem já tem essa pasta no template não quer uma segunda ao
+ * lado dela com outro nome. Se a pasta existe, ela é o destino — o
+ * plugin se adapta ao projeto, não o contrário.
+ *
+ * Só vale para pastas dentro de Audio, e só para nomes que não deixam
+ * dúvida sobre o que guardam.
+ */
+const AUDIO_KIND_ALIASES: Record<AudioKind, readonly string[]> = {
+  voice: [
+    "locucao", "narracao", "narrador", "narration", "voz", "vozes", "vo",
+    "voice", "voices", "voiceover", "voice over", "avatar", "avatares",
+    "dublagem", "fala", "falas",
+  ],
+  music: [
+    "musicas", "musica", "trilha", "trilhas", "trilha sonora", "music",
+    "musics", "soundtrack", "bgm", "score",
+  ],
+  sfx: [
+    "sfx", "fx", "efeito", "efeitos", "efeitos sonoros", "sound effects",
+    "sounds", "foley",
+  ],
+};
+
+/** Minúsculas e sem acento: "Locução", "LOCUCAO" e "locucao" são a mesma pasta. */
+function normalizeBinName(name: string): string {
+  return name
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+/*
+ * A ordem em que as subpastas de Audio nascem e são lidas.
+ *
+ * Existe para que criar, indexar e desenhar percorram a MESMA lista: as
+ * três faziam `["music", "sfx"]` à mão, e um tipo novo teria de ser
+ * lembrado em três lugares para não virar uma pasta que se cria mas
+ * ninguém encontra depois.
+ */
+export const AUDIO_KIND_ORDER: readonly AudioKind[] = ["voice", "music", "sfx"];
 
 export const TOP_CATEGORY_LABELS: Record<TopCategory, string> = {
   sequence: "Sequencias",
@@ -443,6 +572,10 @@ export async function scanProject(): Promise<ScanResult> {
     throw new Error("Nenhum projeto aberto.");
   }
 
+  // Uma amostra de metadados crus por varredura, para que o formato do
+  // que o host responde seja um fato conferível e não uma suposição.
+  resetChannelProbe();
+
   // 1. Collect ONLY loose ProjectItems directly in the root (skipping all bins)
   const rootFolder = await project.getRootItem();
   const rootLooseItems = await collectRootLooseItems(ppro, rootFolder);
@@ -473,6 +606,11 @@ export async function scanProject(): Promise<ScanResult> {
   }
   const hasProjectSequenceList =
     projectSequenceGuids.size > 0 || projectSequenceNames.size > 0;
+
+  // Em minúsculas, para o áudio poder perguntar se tem o nome de uma peça.
+  const sequenceNamesLower = new Set(
+    [...projectSequenceNames].map((seqName) => seqName.trim().toLowerCase())
+  );
 
   // 2. Identify sequences and detect nesting across project
   const nestedDetection = await detectNestedSequences(
@@ -604,7 +742,14 @@ export async function scanProject(): Promise<ScanResult> {
     }
 
     if (category === "audio") {
-      audioKind = await audioKindOf(ppro, clip, name, mediaPathForKind);
+      audioKind = await audioKindOf({
+        ppro,
+        item,
+        clip,
+        name,
+        mediaPath: mediaPathForKind,
+        sequenceNames: sequenceNamesLower,
+      });
     }
 
     diagnostics.push(
@@ -629,7 +774,7 @@ export async function scanProject(): Promise<ScanResult> {
     video: 0, audio: 0, image: 0, graphics: 0, caption: 0,
     sequence: 0, "sequence-nested": 0, premiere: 0, other: 0,
   };
-  const audioKindCounts: Record<AudioKind, number> = { sfx: 0, music: 0 };
+  const audioKindCounts: Record<AudioKind, number> = { voice: 0, sfx: 0, music: 0 };
   for (const c of classified) {
     counts[c.category]++;
     if (c.audioKind) {
@@ -667,6 +812,7 @@ export async function scanProject(): Promise<ScanResult> {
   const sequenceGroups: SequenceGroup[] = [];
   const standalonePrincipal: ClassifiedItem[] = [];
   const standaloneNested: ClassifiedItem[] = [];
+  const leftovers: ClassifiedItem[] = [];
 
   for (const [base, members] of seqMap) {
     // Se a base for um identificador genérico de sequência aninhada (ex: "Nested", "Nested Sequence", "Sequência aninhada"),
@@ -674,13 +820,108 @@ export async function scanProject(): Promise<ScanResult> {
     if (members.length >= 2 && !isNestedSequenceName(base)) {
       sequenceGroups.push({ base, items: members });
     } else {
-      for (const member of members) {
-        if (member.category === "sequence-nested") {
-          standaloneNested.push(member);
-        } else {
-          standalonePrincipal.push(member);
-        }
+      leftovers.push(...members);
+    }
+  }
+
+  /*
+   * 6. As irmãs que o separador não enxerga.
+   *
+   * "[100926][OT] AD05 H1 [LeafTide] [Squad B]" e a H2 e a H3 não têm
+   * separador nenhum: pela base eram três nomes inteiros diferentes, e
+   * as três iam soltas para "Principal". Diferem por um token só, e é
+   * assim que o editor as guarda — numa pasta da peça.
+   */
+  const variantGroups = groupByVariantToken(leftovers.map((item) => item.name));
+  const grouped = new Set<number>();
+
+  /*
+   * Duas pastas com o mesmo nome não são duas pastas.
+   *
+   * O rótulo de uma família pode cair em cima de uma base que o
+   * separador já formou ("VB3.03 - Body" formou "VB3.03"; "VB3.03 X1" e
+   * "VB3.03 X2" formam o mesmo rótulo). Sem este índice, a fase 2 pedia
+   * a criação da mesma pasta duas vezes e o projeto ficava com uma bin
+   * repetida e vazia ao lado da que recebeu tudo.
+   */
+  const groupByBase = new Map<string, SequenceGroup>();
+  for (const group of sequenceGroups) {
+    groupByBase.set(group.base.toLowerCase(), group);
+  }
+
+  for (const variant of variantGroups) {
+    const members = variant.members.map((index) => leftovers[index]!);
+    const existing = groupByBase.get(variant.label.toLowerCase());
+    if (existing) {
+      existing.items.push(...members);
+    } else {
+      const group: SequenceGroup = { base: variant.label, items: members };
+      sequenceGroups.push(group);
+      groupByBase.set(group.base.toLowerCase(), group);
+    }
+    for (const index of variant.members) {
+      grouped.add(index);
+    }
+  }
+
+  /*
+   * 7. A aninhada vai morar com quem a usa.
+   *
+   * Uma sequência usada dentro de outra pertence à peça que a usa. Se
+   * essa peça tem pasta, é lá que ela vai; "Nested" fica para as que
+   * não têm onde se encaixar. Quando os pais estão em pastas
+   * diferentes não há resposta certa, e aí ela fica em "Nested" mesmo —
+   * escolher uma das duas seria inventar.
+   */
+  const groupOfSequence = new Map<string, SequenceGroup>();
+  for (const group of sequenceGroups) {
+    for (const member of group.items) {
+      groupOfSequence.set(member.name.trim().toLowerCase(), group);
+    }
+  }
+
+  const homeForNested = (item: ClassifiedItem): SequenceGroup | null => {
+    const parents = new Set([
+      ...(nestedDetection.parentsById.get(item.id) ?? []),
+      ...(nestedDetection.parentsByName.get(item.name.trim().toLowerCase()) ?? []),
+    ]);
+
+    let home: SequenceGroup | null = null;
+    for (const parent of parents) {
+      const group = groupOfSequence.get(parent.trim().toLowerCase());
+      if (!group) continue;
+      if (home && home !== group) return null;
+      home = group;
+    }
+    return home;
+  };
+
+  for (const [index, member] of leftovers.entries()) {
+    if (grouped.has(index)) continue;
+
+    if (member.category === "sequence-nested") {
+      const home = homeForNested(member);
+      if (home) {
+        home.items.push(member);
+        continue;
       }
+      standaloneNested.push(member);
+    } else {
+      standalonePrincipal.push(member);
+    }
+  }
+
+  /*
+   * O destino de cada item é decidido aqui e escrito no item.
+   *
+   * A fase 3 procura a pasta por `sequenceBase`, e ela agora pode ser um
+   * rótulo que só existe depois do agrupamento. As que ficaram soltas
+   * mantêm a base do separador de propósito: é o que faz uma irmã
+   * adicionada depois cair na pasta que a primeira varredura criou.
+   */
+  for (const group of sequenceGroups) {
+    for (const member of group.items) {
+      member.sequenceBase = group.base;
     }
   }
 
@@ -764,6 +1005,16 @@ export interface NestedSequenceDetection {
   ids: Set<string>;
   names: Set<string>;
   guids: Set<string>;
+  /*
+   * Quem usa quem.
+   *
+   * Saber que uma sequência é aninhada diz onde ela NÃO vai; saber
+   * dentro de qual ela está diz onde ela vai. Sem isto, a sub-sequência
+   * de um AD ia para uma pasta "Nested" genérica, longe da peça a que
+   * pertence — que é o oposto de organizar.
+   */
+  parentsById: Map<string, Set<string>>;
+  parentsByName: Map<string, Set<string>>;
 }
 
 async function detectNestedSequences(
@@ -774,6 +1025,22 @@ async function detectNestedSequences(
   const ids = new Set<string>();
   const names = new Set<string>();
   const guids = new Set<string>();
+  const parentsById = new Map<string, Set<string>>();
+  const parentsByName = new Map<string, Set<string>>();
+
+  const noteParent = (
+    map: Map<string, Set<string>>,
+    key: string,
+    parentName: string
+  ): void => {
+    if (!key || !parentName) return;
+    const known = map.get(key);
+    if (known) {
+      known.add(parentName);
+    } else {
+      map.set(key, new Set([parentName]));
+    }
+  };
   /*
    * O veredito "é sequência?" depende só do project item, mas a
    * varredura pergunta por OCORRÊNCIA na timeline: cinco sequências de
@@ -784,9 +1051,12 @@ async function detectNestedSequences(
    */
   const verdicts = new Map<string, boolean>();
 
-  const scanTrack = async (track: {
-    getTrackItems(kind: unknown, all: boolean): unknown;
-  } | null): Promise<void> => {
+  const scanTrack = async (
+    track: {
+      getTrackItems(kind: unknown, all: boolean): unknown;
+    } | null,
+    parentName: string
+  ): Promise<void> => {
     if (!track) return;
     try {
       const items = track.getTrackItems(
@@ -835,8 +1105,10 @@ async function detectNestedSequences(
 
           if (isSub) {
             ids.add(id);
+            noteParent(parentsById, id, parentName);
             if (piName) {
               names.add(piName.toLowerCase());
+              noteParent(parentsByName, piName.toLowerCase(), parentName);
             }
             try {
               const clip = ppro.ClipProjectItem.cast(pi);
@@ -858,21 +1130,27 @@ async function detectNestedSequences(
   };
 
   for (const seq of sequences) {
+    let parentName = "";
+    try {
+      parentName = (seq.name ?? "").trim();
+    } catch {
+      parentName = "";
+    }
     try {
       const videoTrackCount = await seq.getVideoTrackCount();
       for (let t = 0; t < videoTrackCount; t++) {
-        await scanTrack(await seq.getVideoTrack(t));
+        await scanTrack(await seq.getVideoTrack(t), parentName);
       }
       const audioTrackCount = await seq.getAudioTrackCount();
       for (let t = 0; t < audioTrackCount; t++) {
-        await scanTrack(await seq.getAudioTrack(t));
+        await scanTrack(await seq.getAudioTrack(t), parentName);
       }
     } catch {
       // Host não respondeu nesta sequência; segue para as próximas
     }
   }
 
-  return { ids, names, guids };
+  return { ids, names, guids, parentsById, parentsByName };
 }
 
 // ── organize ───────────────────────────────────────────────────────
@@ -987,7 +1265,7 @@ export async function organizeProject(scan: ScanResult): Promise<OrganizeResult>
             plannedSub += 1;
           }
           for (const group of scan.sequenceGroups) {
-            if (!hadSeqGroups.has(group.base)) {
+            if (!hadSeqGroups.has(normalizeBinName(group.base))) {
               tx.addAction(seqBin.createBinAction(group.base, true));
               plannedSub += 1;
             }
@@ -997,7 +1275,7 @@ export async function organizeProject(scan: ScanResult): Promise<OrganizeResult>
         // Only the kinds actually found, so a project with nothing but
         // music never grows an empty SFX bin.
         if (audioBin) {
-          for (const kind of ["music", "sfx"] as AudioKind[]) {
+          for (const kind of AUDIO_KIND_ORDER) {
             if (scan.audioKindCounts[kind] > 0 && !hadAudioKinds.has(kind)) {
               tx.addAction(audioBin.createBinAction(AUDIO_KIND_LABELS[kind], true));
               plannedSub += 1;
@@ -1035,7 +1313,7 @@ export async function organizeProject(scan: ScanResult): Promise<OrganizeResult>
         if (id) snapshot.createdBinIds.push(id);
       }
     }
-    for (const kind of ["music", "sfx"] as AudioKind[]) {
+    for (const kind of AUDIO_KIND_ORDER) {
       const folder = layout.audioKind.get(kind);
       if (folder && !hadAudioKinds.has(kind)) {
         const id = layout.ids.get(folder);
@@ -1060,8 +1338,9 @@ export async function organizeProject(scan: ScanResult): Promise<OrganizeResult>
         const seqTop = layout.top.get("sequence");
 
         if (category === "sequence" || category === "sequence-nested") {
-          if (sequenceBase && layout.seqGroups.has(sequenceBase)) {
-            targetBin = layout.seqGroups.get(sequenceBase);
+          const groupKey = sequenceBase ? normalizeBinName(sequenceBase) : "";
+          if (groupKey && layout.seqGroups.has(groupKey)) {
+            targetBin = layout.seqGroups.get(groupKey);
           } else if (category === "sequence-nested") {
             targetBin = layout.seqNested ?? seqTop;
           } else {
@@ -1385,8 +1664,17 @@ async function readBinLayout(
       layout.ids.set(subFolder, sub.getId());
 
       if (category === "audio") {
-        for (const kind of ["music", "sfx"] as AudioKind[]) {
-          if (sub.name === AUDIO_KIND_LABELS[kind]) {
+        const normalized = normalizeBinName(sub.name);
+        for (const kind of AUDIO_KIND_ORDER) {
+          // O nome do plugin decide primeiro; o vocabulário do editor
+          // entra quando a pasta do plugin não existe, e nunca por cima
+          // dela.
+          if (normalized === normalizeBinName(AUDIO_KIND_LABELS[kind])) {
+            layout.audioKind.set(kind, subFolder);
+          } else if (
+            !layout.audioKind.has(kind) &&
+            AUDIO_KIND_ALIASES[kind].includes(normalized)
+          ) {
             layout.audioKind.set(kind, subFolder);
           }
         }
@@ -1395,7 +1683,9 @@ async function readBinLayout(
       } else if (sub.name === "Nested") {
         layout.seqNested = subFolder;
       } else {
-        layout.seqGroups.set(sub.name, subFolder);
+        // Em minúsculas: uma pasta "vb3.03" e uma base "VB3.03" são a
+        // mesma pasta, e criá-la de novo só deixava duas meio cheias.
+        layout.seqGroups.set(normalizeBinName(sub.name), subFolder);
       }
     }
   }

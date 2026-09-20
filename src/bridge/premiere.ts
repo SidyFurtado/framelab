@@ -96,8 +96,17 @@ export async function readSelection(): Promise<SelectionSummary> {
     let totalSelected = 0;
     let totalSeconds = 0;
 
+    // As faixas também vão juntas: o laço abaixo já lia os itens de
+    // cada faixa em paralelo, mas esperava uma faixa terminar para
+    // pedir a próxima. Numa sequência de oito faixas eram oito
+    // rodadas onde cabia uma — e isto roda na abertura do painel e a
+    // cada foco de janela.
+    const tracks = await Promise.all(
+      Array.from({ length: trackCount }, (_, index) => sequence.getVideoTrack(index))
+    );
+
     for (let trackIndex = 0; trackIndex < trackCount; trackIndex++) {
-      const track = await sequence.getVideoTrack(trackIndex);
+      const track = tracks[trackIndex];
       if (!track) {
         continue;
       }
@@ -246,24 +255,49 @@ export async function collectSelectedVideoClips(
   const seen = new Map<string, number>();
   const trackCount = await sequence.getVideoTrackCount();
 
+  const tracks = await Promise.all(
+    Array.from({ length: trackCount }, (_, index) => sequence.getVideoTrack(index))
+  );
+
+  /*
+   * Em paralelo, como `readSelection` já fazia — e pelo mesmo motivo.
+   *
+   * Esta função roda em TODO apply de Zoom, Curvas e Muletas, e duas
+   * vezes no Zoom, que relê os clipes depois de inserir o efeito. Um
+   * `await getIsSelected()` por item, em fila, são tantas idas e
+   * voltas ao host quantos itens houver na sequência inteira — numa
+   * sequência de dois mil clipes, dois mil esperas de uma em uma.
+   *
+   * As perguntas são independentes entre si, então vão todas juntas:
+   * a faixa inteira passa a custar uma rodada. A ORDEM é preservada
+   * porque `Promise.all` devolve na ordem de entrada, e a ordem é o
+   * que dá estabilidade à chave posicional de `clipIdentity`.
+   */
   for (let trackIndex = 0; trackIndex < trackCount; trackIndex++) {
-    const track = await sequence.getVideoTrack(trackIndex);
+    const track = tracks[trackIndex];
     if (!track) {
       continue;
     }
     const items = track.getTrackItems(ppro.Constants.TrackItemType.CLIP, false);
-    for (const item of items) {
-      if (await item.getIsSelected()) {
-        const base = await clipIdentity(item, trackIndex, refs.length);
-        const repeat = seen.get(base) ?? 0;
-        seen.set(base, repeat + 1);
-        refs.push({
-          clip: item,
-          key: repeat === 0 ? base : `${base}#${repeat}`,
-          trackIndex,
-        });
-      }
-    }
+    const selected = await Promise.all(
+      items.map((item) => Promise.resolve(item.getIsSelected()).catch(() => false))
+    );
+    const chosen = items.filter((_, at) => selected[at]);
+    // As identidades também são independentes: três chamadas ao host
+    // cada uma, e todas de uma vez.
+    const identities = await Promise.all(
+      chosen.map((item, at) => clipIdentity(item, trackIndex, refs.length + at))
+    );
+    chosen.forEach((item, at) => {
+      const base = identities[at];
+      const repeat = seen.get(base) ?? 0;
+      seen.set(base, repeat + 1);
+      refs.push({
+        clip: item,
+        key: repeat === 0 ? base : `${base}#${repeat}`,
+        trackIndex,
+      });
+    });
   }
   return refs;
 }

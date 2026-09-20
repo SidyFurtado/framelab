@@ -13,9 +13,9 @@ import {
   organizeProject,
   undoOrganize,
   AUDIO_KIND_LABELS,
+  AUDIO_KIND_ORDER,
   TOP_CATEGORY_LABELS,
   TOP_CATEGORY_ORDER,
-  type AudioKind,
   type ScanResult,
   type OrganizeSnapshot,
   type TopCategory,
@@ -40,7 +40,8 @@ export const organizeTool: Tool = {
   summary: "Organização automática do projeto por tipo",
   hint:
     "Organiza apenas os arquivos e sequências soltos na raiz do projeto. " +
-    "Suas pastas pessoais e pastas criadas por plugins (Animation Composer, etc.) são 100% preservadas e intocadas.",
+    "Suas pastas pessoais e pastas criadas por plugins (Animation Composer, etc.) são 100% preservadas e intocadas. " +
+    "Se você já tem uma pasta de áudio com o seu nome (Avatar, Locução, Trilha…), ela é usada como está.",
   category: "projeto",
   glyph: "folder",
   available: true,
@@ -207,8 +208,11 @@ export const organizeTool: Tool = {
           // Áudio é o único que ganha subpasta, e só quando a heurística
           // decidiu. O que ela não soube dizer aparece solto aqui mesmo,
           // que é exatamente onde vai ficar no projeto.
-          if (cat === "audio" && (scan.audioKindCounts.music > 0 || scan.audioKindCounts.sfx > 0)) {
-            for (const kind of ["music", "sfx"] as AudioKind[]) {
+          const anyAudioKind = AUDIO_KIND_ORDER.some(
+            (kind) => scan!.audioKindCounts[kind] > 0
+          );
+          if (cat === "audio" && anyAudioKind) {
+            for (const kind of AUDIO_KIND_ORDER) {
               const group = items.filter((i) => i.audioKind === kind);
               if (group.length === 0) continue;
               html += `<div class="org-group">`;

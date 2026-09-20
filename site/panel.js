@@ -24,9 +24,22 @@ var GLYPHS = {
 };
 
 function glyph(name) {
+  var raw = GLYPHS[name] || "";
+  var content = raw.replace(
+    /<(path|circle|rect|line|polyline|polygon)([^>]*?)(\/?>)/gi,
+    function (_match, tag, attrs, close) {
+      var extra = "";
+      if (!attrs.includes("fill=")) extra += ' fill="none"';
+      if (!attrs.includes("stroke=")) extra += ' stroke="currentColor"';
+      if (!attrs.includes("stroke-width=")) extra += ' stroke-width="1.2"';
+      if (!attrs.includes("stroke-linecap=")) extra += ' stroke-linecap="square"';
+      if (!attrs.includes("stroke-linejoin=")) extra += ' stroke-linejoin="round"';
+      return "<" + tag + attrs + extra + close;
+    }
+  );
   return '<svg viewBox="0 0 14 14" aria-hidden="true" fill="none" ' +
-    'stroke="currentColor" stroke-width="1.1" stroke-linecap="square">' +
-    (GLYPHS[name] || "") + "</svg>";
+    'stroke="currentColor" stroke-width="1.2" stroke-linecap="square" stroke-linejoin="round">' +
+    content + "</svg>";
 }
 
 function seg(items, active) {

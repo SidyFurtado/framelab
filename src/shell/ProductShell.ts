@@ -19,11 +19,16 @@ import {
   type SelectionSummary,
 } from "../bridge/premiere";
 import { PluginUpdater, type VersionManifest } from "./updater";
-import { startAgentHeartbeat } from "../tools/download/runner";
+import { startAgentHeartbeat, stopAgentHeartbeat } from "../tools/download/runner";
+
+/** Cravado pelo vite no build. Ver o porquê em vite.config.ts. */
+declare const __BUILD_STAMP__: string;
 
 const PRODUCT_NAME = "Framelab";
 const PRODUCT_TAGLINE = "Premiere";
-const VERSION = "0.4.0";
+const VERSION = "0.4.1";
+const NAV_PREFERENCE = "framelab.navigation.collapsed";
+
 
 /**
  * Product Shell: top bar, navigator, active Tool workspace, action bar
@@ -37,18 +42,29 @@ export class ProductShell {
   private readonly navEl: HTMLElement;
   private readonly navScroll: HTMLElement;
   private readonly topbarEl: HTMLElement;
+  private readonly navToggle: HTMLElement;
+  private readonly helpToggle: HTMLElement;
+  private readonly refreshButton: HTMLElement;
+  private readonly scrollEl: HTMLElement;
+  private navPreference: boolean | null = null;
+  private navCompact = false;
+  private narrow = false;
+  private readonly onResize = (): void => this.updateLayout();
   private updateBadgeEl: HTMLElement | null = null;
   private updateModalEl: HTMLElement | null = null;
   private latestManifest: VersionManifest | null = null;
 
   private readonly titleEl: HTMLElement;
+  private readonly subtitleEl: HTMLElement;
   private readonly chipEl: HTMLElement;
   private readonly stateEl: HTMLElement;
   private readonly calloutEl: HTMLElement;
-  private readonly stripEl: HTMLElement;
   private readonly bodyEl: HTMLElement;
   private readonly resetButton: HTMLElement;
   private readonly applyButton: HTMLElement;
+  private readonly applyLabelEl: HTMLElement;
+  private readonly actionSelectionEl: HTMLElement;
+  private readonly actionSummaryEl: HTMLElement;
   private readonly statusEl: HTMLElement;
   private readonly statusToolEl: HTMLElement;
 
@@ -70,7 +86,6 @@ export class ProductShell {
   private refreshTimer: number | null = null;
   private refreshInFlight = false;
   private refreshQueued = false;
-  private collapsed = new Set<string>();
   private query = "";
   private selection: SelectionSummary | null = null;
   /** Keeps the host warning on screen instead of a Tool's hint. */
@@ -81,22 +96,31 @@ export class ProductShell {
     this.root = root;
     this.root.innerHTML = "";
     this.root.className = "shell";
+    try {
+      const saved = localStorage.getItem(NAV_PREFERENCE);
+      this.navPreference = saved === "true" ? true : saved === "false" ? false : null;
+    } catch { /* A preferência é opcional em hosts sem storage. */ }
 
     // ── top bar ──
     const topbar = document.createElement("header");
     topbar.className = "topbar";
     topbar.innerHTML =
-      '<div class="brand"><span class="brand-mark">' +
-      brandMark() +
-      `</span><span class="brand-name"><b>${escapeHtml(PRODUCT_NAME)}</b>` +
-      `<span>${escapeHtml(PRODUCT_TAGLINE)}</span></span></div>` +
+      `<div class="brand" aria-label="${escapeHtml(PRODUCT_NAME)}">` +
+      `<b>${escapeHtml(PRODUCT_NAME.toLowerCase())}</b><span aria-hidden="true">/</span></div>` +
       '<label class="search">' +
       searchGlyph() +
       '<input type="text" placeholder="Buscar ferramenta…" ' +
       'aria-label="Buscar ferramenta" spellcheck="false"></label>' +
-      `<span class="version">v${VERSION}</span>`;
+      // O carimbo do build no título: passar o ponteiro sobre a versão
+      // responde "é esta build mesmo que está rodando?" sem console.
+      `<span class="version" title="build ${__BUILD_STAMP__}">v${VERSION}</span>`;
 
     this.topbarEl = topbar;
+    this.navToggle = createControl("nav-toggle");
+    this.navToggle.innerHTML = panelToggleGlyph();
+    this.navToggle.setAttribute("aria-controls", "tool-navigation");
+    this.navToggle.addEventListener("click", () => this.setNavCompact(!this.navCompact));
+    topbar.insertBefore(this.navToggle, topbar.firstChild);
     this.searchInput = topbar.querySelector("input") as HTMLInputElement;
     this.searchInput.addEventListener("input", () => {
       this.query = this.searchInput.value;
@@ -106,12 +130,20 @@ export class ProductShell {
     // ── navigator ──
     this.navEl = document.createElement("nav");
     this.navEl.className = "nav";
+    this.navEl.id = "tool-navigation";
+    this.navEl.setAttribute("aria-label", "Ferramentas");
     this.navScroll = document.createElement("div");
     this.navScroll.className = "nav-scroll";
     const empty = document.createElement("p");
     empty.className = "nav-empty";
     empty.textContent = "Nenhuma ferramenta encontrada.";
-    this.navEl.append(this.navScroll, empty);
+    const navFooter = document.createElement("div");
+    navFooter.className = "nav-footer";
+    navFooter.innerHTML =
+      `<span class="nav-footer-mark" aria-hidden="true">${premiereGlyph()}</span>` +
+      `<span>${escapeHtml(PRODUCT_TAGLINE)} Pro</span>` +
+      `<span class="nav-footer-version" title="build ${__BUILD_STAMP__}">v${VERSION}</span>`;
+    this.navEl.append(this.navScroll, empty, navFooter);
 
     // ── workspace ──
     const work = document.createElement("div");
@@ -121,59 +153,108 @@ export class ProductShell {
     header.className = "work-head";
     this.titleEl = document.createElement("span");
     this.titleEl.className = "work-title";
+    this.subtitleEl = document.createElement("span");
+    this.subtitleEl.className = "work-subtitle";
     this.chipEl = document.createElement("span");
     this.chipEl.className = "work-chip";
     const refresh = createControl("work-refresh");
+    this.refreshButton = refresh;
     refresh.title = "Reler a seleção da timeline";
     refresh.setAttribute("aria-label", "Reler a seleção da timeline");
     refresh.innerHTML = refreshGlyph();
     refresh.addEventListener("click", () => void this.refreshSelection());
-    header.append(this.titleEl, this.chipEl, refresh);
+    const heading = document.createElement("div");
+    heading.className = "work-heading";
+    heading.append(this.chipEl, this.titleEl, this.subtitleEl);
+    this.helpToggle = createControl("work-help");
+    this.helpToggle.innerHTML = helpGlyph();
+    this.helpToggle.title = "Como usar esta ferramenta";
+    this.helpToggle.setAttribute("aria-label", "Como usar esta ferramenta");
+    this.helpToggle.setAttribute("aria-controls", "tool-help");
+    this.helpToggle.setAttribute("aria-expanded", "false");
+    this.helpToggle.addEventListener("click", () => {
+      if (this.hostGaps) return;
+      this.calloutEl.hidden = !this.calloutEl.hidden;
+      this.helpToggle.setAttribute("aria-expanded", String(!this.calloutEl.hidden));
+    });
+    header.append(heading, this.helpToggle, refresh);
 
     this.stateEl = document.createElement("div");
     this.stateEl.className = "work-state";
 
     this.calloutEl = document.createElement("p");
     this.calloutEl.className = "callout";
-
-    this.stripEl = document.createElement("div");
-    this.stripEl.className = "strip";
+    this.calloutEl.id = "tool-help";
+    this.calloutEl.hidden = true;
 
     this.bodyEl = document.createElement("div");
     this.bodyEl.className = "work-body";
 
     const actions = document.createElement("div");
     actions.className = "actions";
+    const actionDescription = document.createElement("div");
+    actionDescription.className = "action-description";
+    this.actionSelectionEl = document.createElement("span");
+    this.actionSelectionEl.className = "action-selection";
+    this.actionSummaryEl = document.createElement("span");
+    this.actionSummaryEl.className = "action-summary";
+    actionDescription.append(this.actionSelectionEl, this.actionSummaryEl);
     this.resetButton = createControl("btn-reset", "Limpar");
     this.resetButton.hidden = true;
     this.resetButton.addEventListener("click", () => this.resetHandler?.());
     this.applyButton = createControl("btn-apply");
+    this.applyLabelEl = document.createElement("span");
+    this.applyLabelEl.className = "btn-apply-label";
+    this.applyButton.append(this.applyLabelEl);
+    this.applyButton.insertAdjacentHTML("beforeend", arrowGlyph());
     setDisabled(this.applyButton, true);
     this.applyButton.addEventListener("click", () => void this.runApply());
-    actions.append(this.resetButton, this.applyButton);
+    actions.append(actionDescription, this.resetButton, this.applyButton);
 
-    work.append(
-      header,
-      this.stateEl,
-      this.calloutEl,
-      this.stripEl,
-      this.bodyEl,
-      actions
-    );
+    this.scrollEl = document.createElement("div");
+    this.scrollEl.className = "work-scroll";
+    this.scrollEl.append(this.stateEl, this.calloutEl, this.bodyEl);
+    work.append(header, this.scrollEl, actions);
 
     const main = document.createElement("div");
     main.className = "main";
-    main.append(this.navEl, work);
+    const scrim = createControl("nav-scrim");
+    scrim.setAttribute("aria-label", "Recolher navegação");
+    scrim.addEventListener("click", () => this.setNavCompact(true));
+    main.append(this.navEl, scrim, work);
 
     // ── status bar ──
     this.statusEl = document.createElement("footer");
     this.statusEl.className = "statusbar";
+    this.statusEl.setAttribute("role", "status");
+    this.statusEl.setAttribute("aria-live", "polite");
     this.statusToolEl = document.createElement("span");
     this.statusToolEl.className = "statusbar-tool";
 
     this.root.append(topbar, main, this.statusEl);
     this.navScroll.addEventListener("click", (event) => this.onNavClick(event));
     bindKeyboard(this.root);
+    this.root.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && this.narrow && !this.navCompact) {
+        this.setNavCompact(true);
+        this.navToggle.focus();
+      }
+      // Com a lateral sobreposta, Tab permanece nos controles visíveis.
+      if (event.key === "Tab" && this.narrow && !this.navCompact) {
+        const controls = [
+          ...this.topbarEl.querySelectorAll<HTMLElement>('input, button, [tabindex="0"]'),
+          ...this.navEl.querySelectorAll<HTMLElement>('[tabindex="0"]'),
+        ].filter((element) => element.getBoundingClientRect().width > 0);
+        const current = controls.indexOf(document.activeElement as HTMLElement);
+        const next = (current + (event.shiftKey ? -1 : 1) + controls.length) % controls.length;
+        if (controls[next]) {
+          event.preventDefault();
+          controls[next].focus();
+        }
+      }
+    });
+    this.updateLayout();
+    window.addEventListener("resize", this.onResize);
   }
 
   start(): void {
@@ -191,6 +272,33 @@ export class ProductShell {
     // Debounced: a focus re-reads every track item of every video track,
     // three host calls apiece, and an alt-tab fires more than one.
     window.addEventListener("focus", () => this.scheduleRefresh());
+
+    /*
+     * O desligamento que faltava.
+     *
+     * `stopAgentHeartbeat` existia exportado e nunca era chamado: o
+     * batimento só parava quando o processo do painel morria junto. Na
+     * prática o agente saía sozinho pelos 90s de carência, mas entre o
+     * fechar e o sair havia uma janela em que ele ainda achava que o
+     * painel estava aberto. Ligado ao descarregamento da página, que é
+     * o que o UXP dispara ao fechar e ao recarregar o plugin, o agente
+     * passa a saber na hora.
+     */
+    window.addEventListener("beforeunload", () => {
+      window.removeEventListener("resize", this.onResize);
+      stopAgentHeartbeat();
+      if (this.refreshTimer !== null) {
+        clearTimeout(this.refreshTimer);
+        this.refreshTimer = null;
+      }
+      try {
+        if (this.activeToolId) {
+          findTool(this.activeToolId)?.unmount?.();
+        }
+      } catch {
+        // Fechando: um unmount que reclame não muda nada.
+      }
+    });
 
     // Auto-update check in the background
     setTimeout(() => {
@@ -351,9 +459,37 @@ export class ProductShell {
       `Esta versão do Premiere não expõe: ${check.missing.join(", ")}. ` +
       "As ferramentas podem falhar. Atualize o Premiere.";
     this.hostGaps = true;
+    this.calloutEl.hidden = false;
+    this.helpToggle.hidden = true;
   }
 
   // ── navigator ────────────────────────────────────────────
+
+  private setNavCompact(compact: boolean): void {
+    this.navPreference = compact;
+    try { localStorage.setItem(NAV_PREFERENCE, String(compact)); } catch { /* opcional */ }
+    this.updateLayout();
+  }
+
+  private updateLayout(): void {
+    const width = this.root.clientWidth || window.innerWidth;
+    const previousCompact = this.navCompact;
+    this.narrow = width < 600;
+    this.navCompact = this.navPreference ?? this.narrow;
+    this.root.classList.toggle("is-narrow", this.narrow);
+    this.root.classList.toggle("is-nav-compact", this.navCompact);
+    // Breakpoints seguem o espaço da ferramenta, inclusive ao recolher a lateral.
+    const workWidth = width - (this.navCompact || this.narrow ? 56 : 212);
+    this.root.classList.toggle("is-work-wide", workWidth >= 640);
+    this.root.classList.toggle("is-work-small", workWidth < 330);
+    const label = this.navCompact ? "Expandir navegação" : "Recolher navegação";
+    this.navToggle.title = label;
+    this.navToggle.setAttribute("aria-label", label);
+    this.navToggle.setAttribute("aria-expanded", String(!this.navCompact));
+    if (previousCompact !== this.navCompact || !this.navScroll.firstChild) {
+      this.renderNav();
+    }
+  }
 
   private renderNav(): void {
     const searching = this.query.trim().length > 0;
@@ -376,16 +512,13 @@ export class ProductShell {
         if (list.length === 0) {
           return "";
         }
-        const open = !this.collapsed.has(category.id);
         return (
-          `<div class="nav-cat" ${CONTROL} data-category="${category.id}" ` +
-          `aria-expanded="${open}"><span class="caret"></span>` +
+          '<div class="nav-group">' +
+          '<div class="nav-cat">' +
           `<span class="nav-cat-name">${escapeHtml(category.name)}</span></div>` +
-          (open
-            ? `<div class="nav-tools">${list
-                .map((tool) => this.toolMarkup(tool))
-                .join("")}</div>`
-            : "")
+          `<div class="nav-tools">${list
+            .map((tool) => this.toolMarkup(tool))
+            .join("")}</div></div>`
         );
       })
       .join("");
@@ -396,11 +529,11 @@ export class ProductShell {
     return (
       `<div class="nav-tool${active ? " is-active" : ""}" ${CONTROL} ` +
       `data-tool="${tool.id}" data-available="${tool.available}" ` +
-      `title="${escapeHtml(tool.name)}">` +
-      `<span class="nav-glyph">${glyph(tool.glyph)}</span>` +
+      `aria-label="${escapeHtml(tool.name)}" aria-pressed="${active}" ` +
+      `title="${escapeHtml(tool.name)} — ${escapeHtml(tool.summary)}">` +
+      `<span class="nav-glyph" aria-hidden="true">${glyph(tool.glyph)}</span>` +
       '<span class="nav-text">' +
       `<span class="nav-name">${escapeHtml(tool.name)}</span>` +
-      `<span class="nav-summary">${escapeHtml(tool.summary)}</span>` +
       "</span></div>"
     );
   }
@@ -414,19 +547,13 @@ export class ProductShell {
     const toolButton = target.closest<HTMLElement>("[data-tool]");
     if (toolButton?.dataset.tool) {
       this.selectTool(toolButton.dataset.tool);
+      if (this.narrow && !this.navCompact) {
+        this.setNavCompact(true);
+      }
+      this.navScroll.querySelector<HTMLElement>(`[data-tool="${toolButton.dataset.tool}"]`)?.focus();
       return;
     }
 
-    const categoryButton = target.closest<HTMLElement>("[data-category]");
-    const categoryId = categoryButton?.dataset.category;
-    if (categoryId) {
-      if (this.collapsed.has(categoryId)) {
-        this.collapsed.delete(categoryId);
-      } else {
-        this.collapsed.add(categoryId);
-      }
-      this.renderNav();
-    }
   }
 
   // ── workspace ────────────────────────────────────────────
@@ -463,20 +590,25 @@ export class ProductShell {
     this.refreshHandler = null;
     this.resetButton.hidden = true;
     this.resetButton.textContent = "Limpar";
-    this.applyButton.textContent = "Aplicar";
+    this.applyLabelEl.textContent = "Aplicar";
     setDisabled(this.applyButton, true);
 
     this.titleEl.textContent = tool.name;
+    this.subtitleEl.textContent = tool.summary;
     const category = categories.find((entry) => entry.id === tool.category);
     this.chipEl.textContent = category?.name ?? "";
     if (!this.hostGaps) {
       this.calloutEl.textContent = tool.hint;
+      this.calloutEl.hidden = true;
+      this.helpToggle.setAttribute("aria-expanded", "false");
     }
+    this.stateEl.hidden = tool.usesSelection === false;
+    this.refreshButton.hidden = tool.usesSelection === false;
     this.statusToolEl.textContent = tool.name;
     this.setStatus("", "idle");
 
     this.renderNav();
-    this.bodyEl.scrollTop = 0;
+    this.scrollEl.scrollTop = 0;
     // tool.ts promises the Shell owns this markup. Now it actually does,
     // instead of leaning on every Tool to clear the container first.
     this.bodyEl.innerHTML = "";
@@ -492,7 +624,7 @@ export class ProductShell {
     return {
       setApplyLabel: (label) => {
         if (!live()) return;
-        this.applyButton.textContent = label;
+        this.applyLabelEl.textContent = sentenceCase(label);
         this.renderApplyCount();
       },
       setApplyEnabled: (enabled) => {
@@ -553,6 +685,7 @@ export class ProductShell {
   }
 
   private setStatus(text: string, tone: StatusTone): void {
+    this.statusEl.hidden = !text;
     this.statusEl.className = `statusbar${
       tone === "done" ? " is-done" : tone === "error" ? " is-error" : ""
     }`;
@@ -562,6 +695,7 @@ export class ProductShell {
       message.textContent = text;
       this.statusEl.append(message);
     }
+    this.statusToolEl.hidden = !!text;
     this.statusEl.append(this.statusToolEl);
   }
 
@@ -595,7 +729,6 @@ export class ProductShell {
     try {
       this.selection = await readSelection();
       this.renderState();
-      this.renderStrip();
       this.renderApplyCount();
       // The active Tool re-reads whatever it cached about the selection.
       // Its own failures are the Tool's business, never the Shell's.
@@ -640,69 +773,22 @@ export class ProductShell {
       }${where} · ${formatDuration(summary?.selectedSeconds ?? 0)}</span>`;
   }
 
-  private renderStrip(): void {
-    const summary = this.selection;
-    this.stripEl.innerHTML = "";
-
-    if (!summary || summary.selectedCount === 0) {
-      this.stripEl.hidden = true;
-      return;
-    }
-    this.stripEl.hidden = false;
-
-    const base = document.createElement("span");
-    base.className = "strip-base";
-    this.stripEl.append(base);
-
-    // Positioned in sequence time. Laid end to end, the strip hid every
-    // gap and put the playhead nowhere near where it really was.
-    const span = summary.rangeEnd - summary.rangeStart;
-    if (!(span > 0)) {
-      return;
-    }
-
-    const clips = document.createElement("span");
-    clips.className = "strip-clips";
-
-    for (const clip of summary.clips) {
-      const item = document.createElement("span");
-      item.className = `strip-clip${clip.selected ? " is-selected" : ""}`;
-      item.style.left = `${(
-        ((clip.startSeconds - summary.rangeStart) / span) * 100
-      ).toFixed(3)}%`;
-      item.style.width = `${(
-        ((clip.endSeconds - clip.startSeconds) / span) * 100
-      ).toFixed(3)}%`;
-      if (clip.selected) {
-        const block = document.createElement("span");
-        block.className = "strip-block";
-        item.append(block);
-      }
-      clips.append(item);
-    }
-
-    this.stripEl.append(clips);
-
-    if (summary.playheadRatio !== null) {
-      const head = document.createElement("span");
-      head.className = "strip-head";
-      head.style.left = `${(summary.playheadRatio * 100).toFixed(2)}%`;
-      this.stripEl.append(head);
-    }
-  }
 
   private renderApplyCount(): void {
-    this.applyButton.querySelector(".btn-apply-count")?.remove();
     const count = this.selection?.selectedCount ?? 0;
     const tool = this.activeToolId ? findTool(this.activeToolId) : undefined;
-    if (isDisabled(this.applyButton) || count === 0 || tool?.usesSelection === false) {
-      return;
-    }
-    const badge = document.createElement("span");
-    badge.className = "btn-apply-count";
-    badge.textContent = `${count} ${count === 1 ? "clipe" : "clipes"}`;
-    this.applyButton.append(badge);
+    this.actionSelectionEl.textContent = tool?.usesSelection === false
+      ? "Pronto para executar"
+      : count === 0
+        ? "Nenhum clipe selecionado"
+        : `${count} ${count === 1 ? "clipe selecionado" : "clipes selecionados"}`;
+    this.actionSummaryEl.textContent = tool?.summary ?? "";
   }
+}
+
+function sentenceCase(label: string): string {
+  const normalized = label.trim().toLocaleLowerCase("pt-BR");
+  return normalized ? normalized[0].toLocaleUpperCase("pt-BR") + normalized.slice(1) : "";
 }
 
 function formatDuration(seconds: number): string {
@@ -710,31 +796,69 @@ function formatDuration(seconds: number): string {
   return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
 }
 
-/* The Framelab mark: a precision calibrated viewfinder reticle with sensor core. */
-function brandMark(): string {
-  return (
-    '<svg viewBox="0 0 100 100" aria-hidden="true" fill="none">' +
-    '<path d="M12 34V14h22" stroke="currentColor" stroke-width="8" stroke-linecap="square"/>' +
-    '<path d="M66 14h22v20" stroke="currentColor" stroke-width="8" stroke-linecap="square"/>' +
-    '<path d="M88 66v20H66" stroke="currentColor" stroke-width="8" stroke-linecap="square"/>' +
-    '<path d="M34 86H12V66" stroke="currentColor" stroke-width="8" stroke-linecap="square"/>' +
-    '<rect x="34" y="34" width="32" height="32" fill="#E39B3C"/>' +
-    '</svg>'
-  );
-}
+/*
+ * As marcas do próprio Shell.
+ *
+ * Mesma regra dos glifos das ferramentas (ver `glyphs.ts`): o UXP não
+ * honra `fill="none"` e não desce o preenchimento do <svg> para os
+ * filhos, então nada aqui é desenhado a traço. Tudo é silhueta, com
+ * `fill` escrito em cada forma, e só com linhas retas — o que mantém
+ * a família coerente e dispensa qualquer curva do renderizador.
+ */
 
+/** A marca: o retículo do visor, com o sensor no acento do tema. */
+/** Busca: o mesmo quadro do glifo de Zoom, com um cabo. */
 function searchGlyph(): string {
   return (
-    '<svg viewBox="0 0 14 14" aria-hidden="true" fill="none" stroke="currentColor" ' +
-    'stroke-width="1.2"><circle cx="6" cy="6" r="4"/><path d="M9.2 9.2 12.4 12.4"/></svg>'
+    '<svg viewBox="0 0 14 14" aria-hidden="true" fill="currentColor">' +
+    '<path fill="currentColor" fill-rule="evenodd" ' +
+    'd="M1.2 1.2h8.4v8.4H1.2V1.2Zm1.5 1.5v5.4h5.4V2.7H2.7Z"/>' +
+    '<path fill="currentColor" d="M9.3 10.4 10.4 9.3l2.4 2.4-1.1 1.1z"/>' +
+    "</svg>"
   );
 }
 
+/** Reler: um anel partido, com a ponta da seta no corte. */
 function refreshGlyph(): string {
   return (
-    '<svg viewBox="0 0 14 14" aria-hidden="true" fill="none" stroke="currentColor" ' +
-    'stroke-width="1.2" stroke-linecap="square">' +
-    '<path d="M11.6 7a4.6 4.6 0 1 1-1.5-3.4"/><path d="M11.8 1.6v3.2H8.6"/></svg>'
+    '<svg viewBox="0 0 14 14" aria-hidden="true" fill="currentColor">' +
+    '<path fill="currentColor" fill-rule="evenodd" ' +
+    'd="M2 2h10v3.2h-1.6V3.6H3.6v6.8h6.8V8.8H12V12H2V2Z"/>' +
+    '<path fill="currentColor" d="M7.6 7h5.2l-2.6 3.2z"/>' +
+    "</svg>"
   );
 }
 
+function panelToggleGlyph(): string {
+  return (
+    '<svg class="panel-toggle-glyph" viewBox="0 0 16 16" aria-hidden="true">' +
+    '<path fill="currentColor" fill-rule="evenodd" d="M1.5 2h13v12h-13V2Zm1.5 1.5v9h2.5v-9H3Zm4 0v9h6v-9H7Z"/>' +
+    '<path class="panel-toggle-arrow" fill="currentColor" d="m8.2 6 2 2-2 2V6Z"/>' +
+    "</svg>"
+  );
+}
+
+function premiereGlyph(): string {
+  return (
+    '<svg viewBox="0 0 14 14" aria-hidden="true">' +
+    '<path fill="currentColor" fill-rule="evenodd" d="M1.5 1.5h11v11h-11v-11ZM4 4v6h1.5V8.2h1.2C8.2 8.2 9 7.4 9 6.1S8.2 4 6.7 4H4Zm1.5 1.3h1.1c.6 0 .9.3.9.7s-.3.7-.9.7H5.5V5.8Z"/>' +
+    "</svg>"
+  );
+}
+
+function helpGlyph(): string {
+  return (
+    '<svg viewBox="0 0 16 16" aria-hidden="true">' +
+    '<path fill="currentColor" fill-rule="evenodd" d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13Zm0 1.5a5 5 0 1 1 0 10A5 5 0 0 1 8 3Z"/>' +
+    '<path fill="currentColor" d="M7.2 10.8h1.6v1.4H7.2zM5.9 6.3c.1-1.4 1-2.2 2.4-2.2 1.3 0 2.2.8 2.2 2 0 .9-.4 1.4-1.3 2-.7.4-.8.7-.8 1.3H7c0-1.1.3-1.7 1.2-2.3.6-.4.8-.6.8-1s-.3-.7-.8-.7c-.6 0-.9.3-.9.9H5.9Z"/>' +
+    "</svg>"
+  );
+}
+
+function arrowGlyph(): string {
+  return (
+    '<svg class="btn-apply-arrow" viewBox="0 0 14 14" aria-hidden="true">' +
+    '<path fill="currentColor" d="M3 2h9v9h-1.7V4.9L3.6 11.6l-1.2-1.2L9.1 3.7H3V2Z"/>' +
+    "</svg>"
+  );
+}

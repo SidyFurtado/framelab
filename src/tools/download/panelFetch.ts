@@ -21,7 +21,7 @@
  * Toda falha aqui LANÇA, e quem chama manda o job para o script. O
  * painel nunca fica sem porta.
  */
-import { uxpModule } from "../silence/workspace";
+import { fileUrl, uxpModule } from "../silence/workspace";
 import type { DirectJob } from "./ytdlp";
 
 const CHUNK_BYTES = 4 * 1024 * 1024;
@@ -31,6 +31,20 @@ const MAX_BYTES = 300 * 1024 * 1024;
 export interface ByteProgress {
   (doneBytes: number, totalBytes: number | null): void;
 }
+
+/**
+ * Perguntado a cada bloco. true faz o laço largar tudo na hora.
+ *
+ * Um TikTok em HD são dezenas de blocos de 4 MB; esperar o último para
+ * só então olhar o cancelamento deixava o painel travado por todo o
+ * resto do arquivo.
+ */
+export interface Cancelled {
+  (): boolean;
+}
+
+/** O que `fetchAllBytes` lança quando o editor desiste. */
+const GAVE_UP = "cancelado pelo editor";
 
 interface UxpFolder {
   nativePath?: string;
@@ -91,19 +105,6 @@ function storageApi(): { lfs: UxpLfs; binary: unknown } | null {
 }
 
 /** file: URL de um caminho nativo, com cada segmento escapado. */
-function fileUrl(nativePathValue: string): string {
-  return (
-    "file://" +
-    nativePathValue
-      // Barra invertida vira barra antes de tudo: um caminho Windows
-      // era codificado como segmento único e nunca resolvia.
-      .replace(/\\/g, "/")
-      .split("/")
-      .map((part) => encodeURIComponent(part))
-      .join("/")
-  );
-}
-
 /**
  * A pasta de destino como entry de storage — criando o último nível
  * se for preciso. `~/Movies` sempre existe; `~/Movies/Framelab` só
@@ -165,13 +166,22 @@ export async function downloadInPanel(
   job: DirectJob,
   destination: string,
   token: string | null,
-  onProgress?: ByteProgress
+  onProgress?: ByteProgress,
+  cancelled?: Cancelled
 ): Promise<string> {
   const { folder, binary } = await destinationFolder(destination, token);
 
+  /*
+   * Os bytes TODOS antes de qualquer arquivo existir.
+   *
+   * É o que garante que cancelar no meio não deixe um arquivo pela
+   * metade no destino: `createFile` só acontece depois que o download
+   * terminou inteiro, então uma desistência não escreve nada — e a
+   * execução seguinte não tem como confundir um resto com um pronto.
+   */
   let combined: Uint8Array;
   try {
-    combined = await fetchAllBytes(job.mediaUrl, onProgress);
+    combined = await fetchAllBytes(job.mediaUrl, onProgress, cancelled);
   } catch (cause) {
     throw stageError("rede", cause);
   }
@@ -201,13 +211,17 @@ export async function downloadInPanel(
  */
 export async function fetchAllBytes(
   mediaUrl: string,
-  onProgress?: ByteProgress
+  onProgress?: ByteProgress,
+  cancelled?: Cancelled
 ): Promise<Uint8Array> {
   const parts: Uint8Array[] = [];
   let received = 0;
   let total: number | null = null;
 
   for (;;) {
+    if (cancelled?.()) {
+      throw new Error(GAVE_UP);
+    }
     const from = received;
     const to = from + CHUNK_BYTES - 1;
     let response: Response;
@@ -244,11 +258,26 @@ export async function fetchAllBytes(
     const chunk = await response.arrayBuffer();
     parts.push(new Uint8Array(chunk));
     received += chunk.byteLength;
+    /*
+     * O teto vale pelo que JÁ ESTÁ na memória, não pelo que o servidor
+     * prometeu.
+     *
+     * A checagem morava só dentro do `if (total === null)` logo abaixo:
+     * um 206 sem `content-range` — ou com um que o regex não lê — nunca
+     * chegava a um total, e o laço então acumulava blocos de 4 MB até o
+     * servidor parar. Um link errado apontando para um arquivo de
+     * gigabytes levava o painel junto.
+     */
+    if (received > MAX_BYTES) {
+      throw new Error("arquivo grande demais para o painel");
+    }
 
     if (total === null) {
       const range = response.headers.get("content-range");
       const match = range ? /\/(\d+)\s*$/.exec(range) : null;
       total = match ? Number.parseInt(match[1], 10) : null;
+      // O total declarado corta antes de baixar o resto — o teto acima
+      // já garante o fim, este só o torna barato.
       if (total !== null && total > MAX_BYTES) {
         throw new Error("arquivo grande demais para o painel");
       }

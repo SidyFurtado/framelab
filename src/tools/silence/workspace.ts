@@ -316,6 +316,27 @@ export function nativePath(space: Workspace, name: string): string {
 }
 
 /**
+ * Um caminho nativo como URL `file://`.
+ *
+ * Existia três vezes, copiada palavra por palavra, em Legendas, Baixar
+ * e Traduzir — e o comentário que explica a única parte não óbvia
+ * existia em uma só delas. Mora aqui porque é o par natural de
+ * `nativePath`: quem produz o caminho é quem sabe convertê-lo.
+ */
+export function fileUrl(nativePathValue: string): string {
+  return (
+    "file://" +
+    nativePathValue
+      // Barra invertida vira barra ANTES de tudo: um caminho Windows
+      // era codificado como segmento único e nunca resolvia.
+      .replace(/\\/g, "/")
+      .split("/")
+      .map((part) => encodeURIComponent(part))
+      .join("/")
+  );
+}
+
+/**
  * Escreve um arquivo, com bit de execução quando pedido.
  *
  * O `mode` é o que faz `openPath` executar o script em vez de abrir

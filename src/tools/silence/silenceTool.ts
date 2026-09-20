@@ -62,13 +62,31 @@ let cancelActiveScan: (() => void) | null = null;
 /** Solta os ouvintes que os oito deslizadores põem em `document`. */
 let releaseSliders: (() => void) | null = null;
 
+/*
+ * O snapshot do Desfazer vive no MÓDULO, não no `mount`.
+ *
+ * Preso ao `mount`, ele morria ao trocar de ferramenta — sem aviso, e
+ * justamente onde dói: esta ferramenta reescreve os itens da faixa, os
+ * efeitos e keyframes do clipe cortado se vão junto, e o desfazer do
+ * host empilha um passo por segmento. Ou seja, o Desfazer do painel é
+ * o caminho prático de volta, e ele era descartado por um clique no
+ * navegador. Pior: abandonar uma execução travada é esse mesmo clique,
+ * então "cancelar" e "perder o desfazer" eram o mesmo gesto.
+ *
+ * No módulo ele sobrevive à troca, e o `mount` religa o botão quando
+ * encontra um snapshot esperando.
+ */
+let snapshot: CutSnapshot | null = null;
+
 export const silenceTool: Tool = {
   id: "silence",
   name: "Corte de Silêncios",
   summary: "Remove pausas e fecha o corte automaticamente",
   hint:
     "Selecione os clipes falados na timeline e analise. " +
-    "Os trechos com fala são mantidos e encostados na timeline.",
+    "Os trechos com fala são mantidos e encostados entre si. " +
+    "O corte não é ripple: clipes não selecionados ficam onde estão, " +
+    "e entre blocos separados por eles sobra o buraco do que saiu.",
   category: "edicao",
   glyph: "cut",
   available: true,
@@ -78,7 +96,6 @@ export const silenceTool: Tool = {
     let mode: DetectionMode = "waveform";
     let ffmpegPath = "";
     let scan: SilenceScan | null = null;
-    let snapshot: CutSnapshot | null = null;
     let scanning = false;
     let cancelRequested = false;
 
@@ -118,7 +135,10 @@ export const silenceTool: Tool = {
     context.setApplyLabel("CORTAR SILÊNCIOS");
     context.setApplyEnabled(false);
     context.setResetLabel("DESFAZER CORTE");
-    context.setResetHandler(null);
+    // Um snapshot que sobreviveu à troca de ferramenta religa o
+    // botão: ele continua válido, e escondê-lo seria jogar fora o
+    // único caminho de volta que o editor tem.
+    context.setResetHandler(snapshot ? () => void runUndo() : null);
 
     // Carrega configurações persistidas de máquina
     void readConfig().then((config) => {

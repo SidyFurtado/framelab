@@ -31,7 +31,7 @@
  * mantém no páreo os formatos que simplesmente não têm essa etiqueta,
  * que é o caso do YouTube inteiro. Sem ele, o filtro derrubava tudo.
  */
-import { dispatch, withdraw } from "./runner";
+import { dispatch, stampVerdict, withdraw } from "./runner";
 import { readConfig as readSilenceConfig } from "../silence/ffmpeg";
 
 /** Alias local: o escapador compartilhado, no nome curto dos templates. */
@@ -63,6 +63,21 @@ const FILE_MARKER = "FRAMELAB_FILE:";
 const FILE_PRINT = `after_move:${FILE_MARKER}%(filepath)j`;
 /** Escrito na primeira linha útil do script: prova que ele rodou. */
 const STARTED_FILE = "dl-started.txt";
+/**
+ * A única rédea que o painel tem sobre um script já lançado.
+ *
+ * O UXP não tem `child_process`: não há como matar o processo. O que
+ * há é um arquivo — o painel escreve, o script olha entre um item e o
+ * outro e sai sozinho. Sem isso, cancelar um lote deixava o órfão
+ * baixando por até noventa minutos, e o agente roda um trabalho por vez
+ * e BLOQUEIA em cada um: o download seguinte ficava na fila atrás de um
+ * trabalho que ninguém mais queria.
+ *
+ * Não interrompe o item corrente — um arquivo de 2 GB no meio do curl
+ * segue até o fim. Corta do próximo em diante, que é o que faz a
+ * diferença num lote.
+ */
+const CANCEL_FILE = "dl-cancel.txt";
 const CONFIG_FILE = "download-config.json";
 const SCRIPT_FILE = "download.command";
 const SCRIPT_FILE_WIN = "download.bat";
@@ -72,13 +87,38 @@ const SCRIPT_FILE_WIN = "download.bat";
  */
 const LOCAL_BIN_WIN = "yt-dlp.exe";
 
-/** Prefixo dos JSON de sondagem: `dl-info-0.json`, `dl-info-1.json`… */
-function infoFile(index: number): string {
-  return `dl-info-${index}.json`;
+/**
+ * O carimbo que separa os arquivos de uma execução dos da anterior.
+ * Ver `run`: é o que impede um script órfão de entregar o resultado
+ * dele para a execução seguinte.
+ */
+function runTag(): string {
+  return Date.now().toString(36);
 }
 
-function scriptName(): string {
-  return isWindows() ? SCRIPT_FILE_WIN : SCRIPT_FILE;
+/**
+ * O JSON de sondagem de um link: `dl-lz4k2-info-0.json`.
+ *
+ * Carrega o carimbo da execução pelo mesmo motivo que o result.json:
+ * `dl-info-0.json` era nome fixo, e uma sondagem cancelada deixa um
+ * script órfão que escreve nele DEPOIS que a próxima já limpou a pasta
+ * — a posição 0 da lista nova passava a mostrar o vídeo do lote velho.
+ */
+function infoFile(tag: string, index: number): string {
+  return `dl-${tag}-info-${index}.json`;
+}
+
+/**
+ * O script desta execução.
+ *
+ * O nome carrega o carimbo porque o bash LÊ o arquivo enquanto o
+ * executa, por posição: reescrever `download.command` por cima de um
+ * script que um cancelamento deixou rodando faz o órfão continuar a
+ * leitura no texto novo, a partir do byte onde estava. Enquanto
+ * cancelar era código morto isso não acontecia.
+ */
+function scriptName(tag: string): string {
+  return `dl-${tag}-${isWindows() ? SCRIPT_FILE_WIN : SCRIPT_FILE}`;
 }
 
 
@@ -86,10 +126,20 @@ function scriptName(): string {
 
 const POLL_MS = 250;
 /**
- * Uma sondagem é rede e nada mais — mas a PRIMEIRA pode carregar o
- * yt-dlp junto (35 MB), então o teto respira.
+ * Uma sondagem é rede e nada mais: meia dúzia de JSON de metadados,
+ * que numa linha ruim são segundos. Passar de 90s com o binário já na
+ * mão não é rede lenta — é algo travado, e o teto antigo transformava
+ * isso em oito minutos de painel morto.
  */
-const PROBE_TIMEOUT_MS = 8 * 60 * 1000;
+const PROBE_TIMEOUT_MS = 90 * 1000;
+/**
+ * A exceção: a PRIMEIRA sondagem provisiona o yt-dlp (35 MB) e o deno
+ * antes de consultar qualquer coisa. Enquanto não há binário conhecido
+ * o teto continua largo — cortar aqui quebraria justamente a primeira
+ * vez de quem acabou de instalar o plugin, que é quando o painel
+ * precisa dar certo.
+ */
+const PROBE_SETUP_TIMEOUT_MS = 8 * 60 * 1000;
 const DOWNLOAD_TIMEOUT_MS = 90 * 60 * 1000;
 const INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -505,10 +555,25 @@ interface Launch {
    * pasta de trabalho lá dentro, e ela só se conhece depois do await.
    */
   build(space: Workspace): string;
+  /** O carimbo desta execução. Quem lê arquivos de volta precisa dele. */
+  tag: string;
   timeoutMs: number;
   /** Arquivos de uma execução anterior que precisam sumir antes. */
   stale: string[];
+  /**
+   * Outros arquivos que ESTA execução escreve, já carimbados — os JSON
+   * de sondagem. Entram no rodízio de limpeza junto com os de
+   * protocolo; sem isso, carimbá-los trocaria uma leitura errada por
+   * uma pasta que cresce um JSON por link para sempre.
+   */
+  owned?: readonly string[];
   onProgress?: RunProgress;
+  /**
+   * O agente está vivo, só ocupado com outro trabalho. Serve para o
+   * painel dizer "na fila" em vez de parecer travado — a espera aqui
+   * pode ser a duração inteira do trabalho da frente.
+   */
+  onQueued?: (message: string) => void;
   total: number;
   cancelled?: () => boolean;
   onManual?: (scriptPath: string, reason: string) => void;
@@ -532,7 +597,8 @@ async function run(launch: Launch): Promise<RunResult> {
   }
 
   const space = await workspace();
-  const scriptPath = nativePath(space, scriptName());
+  const scriptFile = scriptName(launch.tag);
+  const scriptPath = nativePath(space, scriptFile);
 
   /*
    * Cada execução ganha os SEUS arquivos de protocolo, renomeados no
@@ -542,17 +608,19 @@ async function run(launch: Launch): Promise<RunResult> {
    * hoje. Com nomes por execução, o órfão escreve nos nomes velhos e
    * ninguém lê.
    */
-  const tag = Date.now().toString(36);
+  const tag = launch.tag;
   const runFiles = {
     result: `dl-${tag}-result.json`,
     progress: `dl-${tag}-progress.txt`,
     log: `dl-${tag}-log.txt`,
     files: `dl-${tag}-files.txt`,
     started: `dl-${tag}-started.txt`,
+    cancel: `dl-${tag}-cancel.txt`,
   };
 
   for (const name of [
     ...Object.values(runFiles),
+    ...(launch.owned ?? []),
     ...previousRunFiles,
     RESULT_FILE,
     PROGRESS_FILE,
@@ -563,7 +631,27 @@ async function run(launch: Launch): Promise<RunResult> {
   ]) {
     await remove(space, name);
   }
-  previousRunFiles = Object.values(runFiles);
+  /*
+   * O script da execução anterior sai junto. Apagar é seguro mesmo com
+   * um órfão lendo: no Unix o descritor aberto sobrevive ao unlink, e
+   * no Windows a recusa do sistema deixa o arquivo onde está — os dois
+   * finais melhores que sobrescrever o texto debaixo de quem executa.
+   *
+   * O arquivo de cancelamento é a exceção e NÃO entra nesta lista: ele
+   * existe para ser lido por um script que esta execução já não espera
+   * mais, e o caso comum é cancelar e tentar de novo em seguida —
+   * apagá-lo aqui faria o órfão nunca ver a ordem de sair. Quem o apaga
+   * é o próprio script, ao obedecer.
+   */
+  previousRunFiles = [
+    runFiles.result,
+    runFiles.progress,
+    runFiles.log,
+    runFiles.files,
+    runFiles.started,
+    ...(launch.owned ?? []),
+    scriptFile,
+  ];
 
   const script = launch
     .build(space)
@@ -571,15 +659,16 @@ async function run(launch: Launch): Promise<RunResult> {
     .split(PROGRESS_FILE).join(runFiles.progress)
     .split(LOG_FILE).join(runFiles.log)
     .split(FILES_FILE).join(runFiles.files)
-    .split(STARTED_FILE).join(runFiles.started);
-  await write(space, scriptName(), script, true);
+    .split(STARTED_FILE).join(runFiles.started)
+    .split(CANCEL_FILE).join(runFiles.cancel);
+  await write(space, scriptFile, script, true);
 
   // Primeiro o caminho silencioso: o runner executa o script sem abrir
   // Terminal (ver runner.ts). Se o lançamento for recusado — ou se o
   // carimbo de início não aparecer — o Terminal volta como plano B:
   // feio e visível, mas nunca uma funcionalidade morta.
   let launchError: string | null = null;
-  const sent = await dispatch(scriptName());
+  const sent = await dispatch(scriptFile);
   let awaitingStamp = sent.mode !== "denied";
   if (!awaitingStamp) {
     console.error("[Download] agente recusado:", sent.error);
@@ -593,20 +682,52 @@ async function run(launch: Launch): Promise<RunResult> {
   }
 
   /** Quando desistir do silêncio: tempo de sobra para o .app abrir. */
-  const stampDeadline = Date.now() + 8000;
+  let stampDeadline = Date.now() + 8000;
+  /** Quanto se espera por vez enquanto o agente estiver vivo e ocupado. */
+  const BUSY_GRACE_MS = 8000;
   const deadline = Date.now() + launch.timeoutMs;
   let lastSignature = "";
   let tick = 0;
   while (Date.now() < deadline) {
     tick += 1;
     if (launch.cancelled?.()) {
-      return { ...fail("cancelled", scriptPath) };
+      // A bandeira primeiro: um script já rodando lê entre um item e o
+      // outro e sai sozinho. É o que impede o órfão de seguir baixando
+      // por noventa minutos e de segurar a fila do agente — que roda um
+      // trabalho por vez — atrás de um lote que ninguém mais quer.
+      await write(space, runFiles.cancel, "1");
+      // Retirar o pedido da fila do agente é o que separa cancelar de
+      // adiar: um ticket esquecido lá faz o agente pegar o trabalho
+      // depois, e o download volta à vida sozinho — sem painel nenhum
+      // esperando por ele.
+      await withdraw(sent.ticket);
+      // A lista de arquivos vai junto: o que o script já terminou de
+      // gravar está gravado, e esconder isso faria o painel mandar
+      // baixar de novo o que já está no destino.
+      return {
+        ...fail("cancelled", scriptPath),
+        log: tail(space, runFiles.log),
+        filesFile: runFiles.files,
+        // `after_move` só imprime depois do arquivo estar no nome
+        // final: o que está nessa lista está inteiro.
+        downloadedFiles: parseDownloadedFiles(readText(space, runFiles.log) ?? ""),
+      };
     }
 
     // O runner lançou mas o script não deu sinal de vida? Terminal.
     if (awaitingStamp && Date.now() > stampDeadline) {
-      awaitingStamp = false;
-      if (!readText(space, runFiles.started)) {
+      /*
+       * O prazo estourou. Antes de desistir, pergunta se o agente está
+       * vivo: um agente que continua carimbando não morreu, só está
+       * ocupado com outro trabalho — e para esse a resposta certa é
+       * esperar, não abrir um Terminal com diálogo de autorização.
+       */
+      const verdict = await stampVerdict();
+      if (verdict === "busy") {
+        stampDeadline = Date.now() + BUSY_GRACE_MS;
+        launch.onQueued?.("na fila do agente — outro trabalho está rodando…");
+      } else if (!readText(space, runFiles.started)) {
+        awaitingStamp = false;
         console.warn("[Download] sem carimbo do agente — caindo para o Terminal.");
         // Sai da fila antes: um agente que acordasse depois baixaria
         // o mesmo vídeo uma segunda vez.
@@ -617,6 +738,9 @@ async function run(launch: Launch): Promise<RunResult> {
           launchError = describe(cause);
           launch.onManual?.(scriptPath, launchError);
         }
+      } else {
+        // O trabalho já começou: não há o que esperar nem para onde cair.
+        awaitingStamp = false;
       }
     }
 
@@ -769,28 +893,48 @@ export async function probeUrls(
   config: DownloadConfig,
   onProgress?: RunProgress,
   cancelled?: () => boolean,
-  onManual?: (scriptPath: string, reason: string) => void
+  onManual?: (scriptPath: string, reason: string) => void,
+  onQueued?: (message: string) => void
 ): Promise<{ result: RunResult; probes: Probe[] }> {
-  const stale = urls.map((_, index) => infoFile(index));
+  const tag = runTag();
+  const infoFiles = urls.map((_, index) => infoFile(tag, index));
+  // Os nomes sem carimbo que as versões anteriores usavam. Varrer uma
+  // vez custa nada e evita que um JSON antigo fique na pasta para
+  // sempre, agora que ninguém mais escreve nesses nomes.
+  const stale = urls.map((_, index) => `dl-info-${index}.json`);
 
-  const result = await run({
+  const attempt = await run({
     build: (space) =>
       isWindows()
-        ? probeScriptWin(urls, config, space.nativeBase)
-        : probeScriptUnix(urls, config, space.nativeBase),
-    timeoutMs: PROBE_TIMEOUT_MS,
+        ? probeScriptWin(urls, tag, config, space.nativeBase)
+        : probeScriptUnix(urls, tag, config, space.nativeBase),
+    tag,
+    // Sem caminho guardado é a primeira vez: o script vai provisionar
+    // antes de consultar, e 90s não cobrem 35 MB numa linha ruim.
+    timeoutMs: config.ytdlpPath ? PROBE_TIMEOUT_MS : PROBE_SETUP_TIMEOUT_MS,
     stale,
+    owned: infoFiles,
     onProgress,
+    onQueued,
     total: urls.length,
     cancelled,
     onManual,
     purpose: "Consultar os dados dos vídeos com o yt-dlp.",
   });
+  /*
+   * Uma sondagem que estourou o prazo não é "o download demorou".
+   *
+   * Com o teto em 90s a frase passou a ser vista de verdade, e a do
+   * download mandava o editor procurar na pasta de destino um arquivo
+   * que nunca existiu — a consulta não baixa nada.
+   */
+  const result =
+    attempt.error === "timeout" ? { ...attempt, error: "probe-timeout" } : attempt;
 
   const space = await workspace();
   const complaints = complaintsByIndex(urls, result.log);
   const probes = urls.map((url, index) => {
-    const raw = readText(space, infoFile(index));
+    const raw = readText(space, infoFiles[index]);
     if (!raw) {
       return {
         url,
@@ -843,7 +987,8 @@ export async function downloadUrls(
   direct: readonly DirectJob[] = [],
   onProgress?: RunProgress,
   cancelled?: () => boolean,
-  onManual?: (scriptPath: string, reason: string) => void
+  onManual?: (scriptPath: string, reason: string) => void,
+  onQueued?: (message: string) => void
 ): Promise<DownloadOutcome> {
   const destination = config.destination || (await defaultDestination());
   // O ffmpeg apontado à mão nos ajustes do Corte de Silêncios vale
@@ -855,9 +1000,11 @@ export async function downloadUrls(
       isWindows()
         ? downloadScriptWin(urls, quality, config, space.nativeBase, destination, direct, customFfmpeg)
         : downloadScriptUnix(urls, quality, config, space.nativeBase, destination, direct, customFfmpeg),
+    tag: runTag(),
     timeoutMs: DOWNLOAD_TIMEOUT_MS,
     stale: [],
     onProgress,
+    onQueued,
     total: urls.length + direct.length,
     cancelled,
     onManual,
@@ -889,19 +1036,28 @@ export async function downloadUrls(
  * depende de um Python instalado.
  */
 export async function installYtdlp(
-  onManual?: (scriptPath: string, reason: string) => void
+  onManual?: (scriptPath: string, reason: string) => void,
+  cancelled?: () => boolean
 ): Promise<RunResult> {
-  return run({
+  const result = await run({
     build: (space) =>
       isWindows()
         ? installScriptWin(space.nativeBase)
         : installScriptUnix(space.nativeBase),
+    tag: runTag(),
     timeoutMs: INSTALL_TIMEOUT_MS,
     stale: [],
     total: 1,
+    cancelled,
     onManual,
     purpose: "Baixar o yt-dlp oficial para a pasta do plugin.",
   });
+  // Cancelar uma instalação não é cancelar um download: a frase do
+  // download promete um arquivo aparecendo na pasta de destino, e aqui
+  // não há arquivo nenhum para prometer.
+  return result.error === "cancelled"
+    ? { ...result, error: "install-cancelled" }
+    : result;
 }
 
 /** Abre a pasta de trabalho, para rodar o script à mão. */
@@ -1064,20 +1220,78 @@ function unixFfmpeg(customFfmpeg: string): string[] {
   ];
 }
 
+// Fecha só a própria janela, achada pelo título posto no preâmbulo.
+// Se o macOS negar a automação, a janela fica aberta e nada quebra.
+// Só fecha janela se o Terminal JÁ estiver aberto. `tell application
+// "Terminal"` LANÇA o Terminal quando ele não está rodando — era isto
+// que fazia uma janela vazia aparecer no FIM de cada trabalho, mesmo
+// com o agente silencioso funcionando.
+const UNIX_CLOSE_WINDOW =
+  `if pgrep -xq Terminal; then osascript -e 'tell application "Terminal" to close (every window whose name contains "Framelab")' >/dev/null 2>&1 & fi`;
+
 const UNIX_CLOSE = [
   'echo "Pronto. Pode voltar ao Premiere."',
-  // Fecha só a própria janela, achada pelo título posto no preâmbulo.
-  // Se o macOS negar a automação, a janela fica aberta e nada quebra.
-  // Só fecha janela se o Terminal JÁ estiver aberto. `tell application
-    // "Terminal"` LANÇA o Terminal quando ele não está rodando — era isto
-    // que fazia uma janela vazia aparecer no FIM de cada trabalho, mesmo
-    // com o agente silencioso funcionando.
-    `if pgrep -xq Terminal; then osascript -e 'tell application "Terminal" to close (every window whose name contains "Framelab")' >/dev/null 2>&1 & fi`,
+  UNIX_CLOSE_WINDOW,
   "exit 0",
 ];
 
+/**
+ * A saída pela ordem do painel, posta ANTES de cada item.
+ *
+ * Só entre itens: o curl ou o yt-dlp do item corrente não é
+ * interrompível de dentro do script, e matá-lo daqui deixaria um
+ * arquivo pela metade no destino — que é precisamente o que a execução
+ * seguinte confundiria com um download pronto.
+ *
+ * O próprio script apaga a bandeira ao obedecer: é o último a lê-la, e
+ * assim ela não fica na pasta de trabalho depois de cumprida.
+ */
+function unixCancelGuard(): string[] {
+  return [
+    `if [ -f "$WORK/${CANCEL_FILE}" ]; then`,
+    `  rm -f "$WORK/${CANCEL_FILE}"`,
+    '  echo "Cancelado pelo painel."',
+    `  ${UNIX_CLOSE_WINDOW}`,
+    "  exit 0",
+    "fi",
+  ];
+}
+
+/** O rótulo da saída cancelada no .bat. */
+const WIN_CANCEL_LABEL = "fl_cancelado";
+
+/**
+ * A mesma saída em .bat, em duas peças.
+ *
+ * Um `if exist` de uma linha só, que desvia — e não um bloco entre
+ * parênteses com `exit /b` dentro, cuja regra de expansão no cmd é
+ * justamente a que morde. Apagar a bandeira tem de acontecer DEPOIS do
+ * teste, e num `if exist` de uma linha não há "depois": daí o rótulo.
+ *
+ * Não pôde ser provado num Windows real. Está escrito para falhar no
+ * sentido seguro: se o desvio não pegar, o script segue baixando como
+ * sempre fez — o pior caso é o comportamento de antes desta mudança.
+ */
+function winCancelGuard(): string {
+  return `if exist "%WORK%\\${CANCEL_FILE}" goto :${WIN_CANCEL_LABEL}`;
+}
+
+/**
+ * O destino do desvio. Vai DEPOIS do `exit /b` final do script, para o
+ * fluxo normal nunca cair dentro dele.
+ */
+function winCancelTail(): string[] {
+  return [
+    `:${WIN_CANCEL_LABEL}`,
+    `del /q "%WORK%\\${CANCEL_FILE}" >nul 2>&1`,
+    "echo Cancelado pelo painel.",
+    "exit /b 0",
+  ];
+}
+
 export function probeScriptUnix(
   urls: readonly string[],
+  tag: string,
   config: DownloadConfig,
   folder: string
 ): string {
@@ -1085,9 +1299,10 @@ export function probeScriptUnix(
   lines.push("FAILED=0");
 
   urls.forEach((url, index) => {
-    const target = `"$WORK/${infoFile(index)}"`;
+    const target = `"$WORK/${infoFile(tag, index)}"`;
     const extra = extraSiteArgs(url);
     lines.push(
+      ...unixCancelGuard(),
       `echo "[${index + 1}/${urls.length}] consultando…"`,
       `printf '%s/%s' ${index + 1} ${urls.length} > "$WORK/${PROGRESS_FILE}"`,
       `if "$YTDLP" --no-warnings --no-playlist --ignore-config ` +
@@ -1133,6 +1348,7 @@ export function downloadScriptUnix(
   direct.forEach((job, index) => {
     const target = `"$DEST/"${q(job.fileName)}`;
     lines.push(
+      ...unixCancelGuard(),
       `echo "[${index + 1}/${total}] ${escapeEcho(job.fileName)}"`,
       `printf '%s/%s' ${index + 1} ${total} > "$WORK/${PROGRESS_FILE}"`,
       `if curl -fL --progress-bar --retry 3 -o ${target} ${q(job.mediaUrl)} 2>> "$WORK/${LOG_FILE}"; then`,
@@ -1169,6 +1385,7 @@ export function downloadScriptUnix(
     const step = direct.length + index + 1;
     const extra = extraSiteArgs(url);
     lines.push(
+      ...unixCancelGuard(),
       `echo "[${step}/${total}] ${escapeEcho(url)}"`,
       `printf '%s\\n' ${q(`[${step}/${total}] ${url}`)} >> "$WORK/${LOG_FILE}"`,
       `printf '%s/%s' ${step} ${total} > "$WORK/${PROGRESS_FILE}"`,
@@ -1359,15 +1576,17 @@ function winYtdlpSetup(config: DownloadConfig): string[] {
 
 export function probeScriptWin(
   urls: readonly string[],
+  tag: string,
   config: DownloadConfig,
   folder: string
 ): string {
   const lines = [...winBase(folder), ...winYtdlpSetup(config)];
 
   urls.forEach((url, index) => {
-    const target = `"%WORK%\\${infoFile(index)}"`;
+    const target = `"%WORK%\\${infoFile(tag, index)}"`;
     const extra = extraSiteArgs(url, true);
     lines.push(
+      winCancelGuard(),
       `echo [${index + 1}/${urls.length}] consultando...`,
       `>"%WORK%\\${PROGRESS_FILE}" echo ${index + 1}/${urls.length}`,
       `"%YTDLP%" --no-warnings --no-playlist --ignore-config ` +
@@ -1380,7 +1599,8 @@ export function probeScriptWin(
   lines.push(
     `>"%WORK%\\${RESULT_FILE}.tmp" echo {"ok":true,"ytdlp":"%YTDLP%","failed":%FAILED%}`,
     `move /y "%WORK%\\${RESULT_FILE}.tmp" "%WORK%\\${RESULT_FILE}" >nul`,
-    "exit /b 0"
+    "exit /b 0",
+    ...winCancelTail()
   );
 
   return lines.join("\r\n") + "\r\n";
@@ -1407,6 +1627,7 @@ export function downloadScriptWin(
   // curl.exe existe no Windows 10+; é tudo que o link direto precisa.
   direct.forEach((job, index) => {
     lines.push(
+      winCancelGuard(),
       `echo [${index + 1}/${total}] ${batValue(job.fileName)}`,
       `>"%WORK%\\${PROGRESS_FILE}" echo ${index + 1}/${total}`,
       `curl.exe -fSL --retry 3 -o "%DEST%\\${batValue(job.fileName)}" ` +
@@ -1463,6 +1684,7 @@ export function downloadScriptWin(
     const step = direct.length + index + 1;
     const extra = extraSiteArgs(url, true);
     lines.push(
+      winCancelGuard(),
       `echo [${step}/${total}]`,
       `>"%WORK%\\${PROGRESS_FILE}" echo ${step}/${total}`,
       `"%YTDLP%" ${shared} ${media} ${extra}-P "%DEST%" %FFARGS% %JSARGS% ${bq(url)} >>"%WORK%\\${LOG_FILE}" 2>&1`,
@@ -1477,7 +1699,8 @@ export function downloadScriptWin(
     `  >"%WORK%\\${RESULT_FILE}.tmp" echo {"ok":false,"error":"ytdlp-failed","failed":%FAILED%}`,
     ")",
     `move /y "%WORK%\\${RESULT_FILE}.tmp" "%WORK%\\${RESULT_FILE}" >nul`,
-    "exit /b 0"
+    "exit /b 0",
+    ...winCancelTail()
   );
 
   return lines.join("\r\n") + "\r\n";
@@ -1535,8 +1758,18 @@ export function describeRunError(code: string | null, log: string): string {
       );
     case "timeout":
       return "O download passou do tempo limite e foi abandonado.";
+    case "probe-timeout":
+      return (
+        "A consulta travou e foi abandonada. Tente de novo; se repetir, " +
+        "confira a internet ou o caminho do yt-dlp nos ajustes avançados."
+      );
     case "cancelled":
-      return "Download cancelado.";
+      // Honesto sobre o que o painel NÃO consegue fazer: não há como
+      // matar um processo a partir do UXP, então o que o yt-dlp já
+      // tinha começado termina sozinho e o arquivo aparece na pasta.
+      return "Cancelado. Um download já iniciado ainda pode terminar em segundo plano.";
+    case "install-cancelled":
+      return "Instalação cancelada. O yt-dlp continua como estava.";
     case "uxp-unavailable":
       return "Este build do Premiere não expõe shell/fs do UXP.";
     default:

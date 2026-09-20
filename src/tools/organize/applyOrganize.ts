@@ -48,6 +48,11 @@ import {
  * this Tool was doing on its first bin creation. The Zoom and Curves
  * tools have always paired the two; this one never did.
  *
+ * E a exceção é capturada DENTRO do lock: deixá-la atravessar
+ * `lockedAccess` deixava o projeto travado, e daí em diante toda
+ * transação seguinte falhava também — inclusive as das outras Tools,
+ * até o fim da sessão. Um erro só virava o plugin inteiro parado.
+ *
  * Returns false when the host refuses the transaction.
  */
 function commitTransaction(
@@ -56,11 +61,34 @@ function commitTransaction(
   build: (tx: CompoundAction) => void
 ): boolean {
   let committed = false;
-  project.lockedAccess(() => {
-    committed = project.executeTransaction(build, label);
-  });
+  let error: unknown = null;
+  try {
+    project.lockedAccess(() => {
+      try {
+        committed = project.executeTransaction(build, label);
+      } catch (cause) {
+        error = cause;
+      }
+    });
+  } catch (cause) {
+    error = error ?? cause;
+  }
+  if (error) {
+    console.error(`[Organize] transação "${label}" falhou:`, error);
+  }
   return committed;
 }
+
+/**
+ * Liga o despejo dos sinais crus de classificação no console.
+ *
+ * Desligado porque custa uma linha por item de áudio mais um bloco com
+ * uma linha por item classificado: num projeto de trezentos itens são
+ * centenas de linhas a cada varredura, toda vez. Ligue à mão quando a
+ * classificação errar um item e for preciso ver em que sinal ela se
+ * apoiou — é para isso que o despejo existe.
+ */
+const LOG_SIGNALS = false;
 
 // ── classification buckets ─────────────────────────────────────────
 
@@ -129,6 +157,21 @@ export interface OrganizeResult {
   ok: boolean;
   message: string;
   snapshot: OrganizeSnapshot | null;
+}
+
+/**
+ * O snapshot, ou null quando não há nada a desfazer.
+ *
+ * Uma aplicação que morre no meio ainda deixou pastas no projeto, e era
+ * por devolver null nesses caminhos que o painel não ligava o Desfazer:
+ * as pastas novas ficavam lá, sem volta a não ser pelo Ctrl+Z do
+ * Premiere. O que manda é o que foi registrado, não se a função chegou
+ * ao fim.
+ */
+function undoableSnapshot(snapshot: OrganizeSnapshot): OrganizeSnapshot | null {
+  return snapshot.moves.length > 0 || snapshot.createdBinIds.length > 0
+    ? snapshot
+    : null;
 }
 
 // ── file extension maps ────────────────────────────────────────────
@@ -379,12 +422,14 @@ async function audioKindOf(ctx: AudioContext): Promise<AudioKind | null> {
     return MUSIC_LEANING_EXTS.has(ext) ? "music" : null;
   })();
 
-  console.log(
-    `[Organize] audio "${name}" | ${seconds === null ? "duração ilegível" : `${seconds.toFixed(1)}s`}` +
-    ` | canais ${channels ?? "?"}` +
-    ` | nome de sequência: ${namesAPiece ? "sim" : "não"}` +
-    ` | pasta "${folder}" | -> ${decided ?? "solto em Audio"}`
-  );
+  if (LOG_SIGNALS) {
+    console.log(
+      `[Organize] audio "${name}" | ${seconds === null ? "duração ilegível" : `${seconds.toFixed(1)}s`}` +
+      ` | canais ${channels ?? "?"}` +
+      ` | nome de sequência: ${namesAPiece ? "sim" : "não"}` +
+      ` | pasta "${folder}" | -> ${decided ?? "solto em Audio"}`
+    );
+  }
 
   return decided;
 }
@@ -555,13 +600,47 @@ export function isNestedSequenceName(name: string): boolean {
 
 // ── scan ───────────────────────────────────────────────────────────
 
+export interface ScanOptions {
+  /** Frase de estado, para a barra do Shell. */
+  onStage?: (text: string) => void;
+  /** Quantos itens da etapa atual já foram lidos. */
+  onProgress?: (done: number, total: number) => void;
+  /** Perguntado entre um item e o próximo. */
+  cancelled?: () => boolean;
+}
+
+/**
+ * A frase que sai quando o editor desiste no meio.
+ *
+ * Vai como mensagem de erro porque é assim que a varredura interrompe o
+ * que está fazendo, mas desistir não é falhar — `isScanCancelled` existe
+ * para o painel poder pintar a barra de neutro em vez de vermelho.
+ */
+const SCAN_CANCELLED = "Varredura cancelada.";
+
+export function isScanCancelled(cause: unknown): boolean {
+  return cause instanceof Error && cause.message === SCAN_CANCELLED;
+}
+
+function stopIfCancelled(options: ScanOptions): void {
+  if (options.cancelled?.()) {
+    throw new Error(SCAN_CANCELLED);
+  }
+}
+
 /**
  * Scans loose items sitting in the root folder and classifies them.
  *
  * Existing bins (user folders, Animation Composer, Premiere Composer, etc.)
  * and items already organized inside bins are strictly ignored.
+ *
+ * Cada item custa cinco ou seis idas ao host, e a detecção de aninhadas
+ * ainda percorre as faixas de todas as sequências: num projeto grande
+ * isso são minutos. Daí `options` — sem contagem na barra, o painel
+ * parecia travado e o editor fechava o Premiere achando que tinha
+ * quebrado.
  */
-export async function scanProject(): Promise<ScanResult> {
+export async function scanProject(options: ScanOptions = {}): Promise<ScanResult> {
   const ppro = getPremiere();
   if (!ppro) {
     throw new Error("Premiere UXP runtime indisponível.");
@@ -572,13 +651,16 @@ export async function scanProject(): Promise<ScanResult> {
     throw new Error("Nenhum projeto aberto.");
   }
 
-  // Uma amostra de metadados crus por varredura, para que o formato do
-  // que o host responde seja um fato conferível e não uma suposição.
+  // Rearma a sonda de metadados. Ela só imprime com PROBE_METADATA ligado
+  // à mão em audioSignals.ts; rearmar aqui é o que faz a amostra sair da
+  // varredura atual quando alguém liga o interruptor.
   resetChannelProbe();
 
   // 1. Collect ONLY loose ProjectItems directly in the root (skipping all bins)
+  options.onStage?.("Lendo a raiz do projeto…");
   const rootFolder = await project.getRootItem();
   const rootLooseItems = await collectRootLooseItems(ppro, rootFolder);
+  stopIfCancelled(options);
 
   /*
    * The project's own list of sequences.
@@ -588,6 +670,7 @@ export async function scanProject(): Promise<ScanResult> {
    * sequences are, which is a different kind of answer from an item
    * describing itself — and the only one that cannot be contradicted.
    */
+  options.onStage?.("Lendo as sequências do projeto…");
   const projectSequenceGuids = new Set<string>();
   const projectSequenceNames = new Set<string>();
   let projectSequences: Sequence[] = [];
@@ -613,16 +696,23 @@ export async function scanProject(): Promise<ScanResult> {
   );
 
   // 2. Identify sequences and detect nesting across project
+  stopIfCancelled(options);
   const nestedDetection = await detectNestedSequences(
     ppro,
     projectSequences,
-    projectSequenceNames
+    projectSequenceNames,
+    options
   );
 
   // 3. Classify each loose item
   const classified: ClassifiedItem[] = [];
   const diagnostics: string[] = [];
+  let scanned = 0;
+  options.onStage?.("Classificando os itens soltos…");
   for (const { item, parentId } of rootLooseItems) {
+    stopIfCancelled(options);
+    scanned += 1;
+    options.onProgress?.(scanned, rootLooseItems.length);
     const id = item.getId();
     const name = item.name ?? "";
 
@@ -752,17 +842,19 @@ export async function scanProject(): Promise<ScanResult> {
       });
     }
 
-    diagnostics.push(
-      `  ${category.padEnd(16)} ${name}\n` +
-        `      isSequence=${claimsSequence}` +
-        ` contentType=${String(contentTypeRaw)}` +
-        ` guid=${ownGuid ?? "—"}` +
-        ` noProjeto=${ownGuid !== null && projectSequenceGuids.has(ownGuid)}` +
-        ` nomeNaLista=${projectSequenceNames.has(name)}` +
-        ` isNestedByName=${isNestedSequenceName(name)}` +
-        ` isNestedByTimeline=${nestedDetection.ids.has(id) || nestedDetection.names.has(name.trim().toLowerCase())}\n` +
-        `      ext="${ext}" mídia="${mediaPath}"`
-    );
+    if (LOG_SIGNALS) {
+      diagnostics.push(
+        `  ${category.padEnd(16)} ${name}\n` +
+          `      isSequence=${claimsSequence}` +
+          ` contentType=${String(contentTypeRaw)}` +
+          ` guid=${ownGuid ?? "—"}` +
+          ` noProjeto=${ownGuid !== null && projectSequenceGuids.has(ownGuid)}` +
+          ` nomeNaLista=${projectSequenceNames.has(name)}` +
+          ` isNestedByName=${isNestedSequenceName(name)}` +
+          ` isNestedByTimeline=${nestedDetection.ids.has(id) || nestedDetection.names.has(name.trim().toLowerCase())}\n` +
+          `      ext="${ext}" mídia="${mediaPath}"`
+      );
+    }
 
     classified.push({
       item, clip, name, id, category, audioKind, sequenceBase: seqBase, parentId,
@@ -786,12 +878,14 @@ export async function scanProject(): Promise<ScanResult> {
 
   // Todos os sinais crus por item. Enquanto a classificação depender de
   // como o host responde, isto é o que transforma um palpite em fato.
-  console.log(
-    `[Organize] o projeto declara ${projectSequenceNames.size} sequência(s): ` +
-      `${[...projectSequenceNames].join(", ") || "—"}\n` +
-      "[Organize] classificação:\n" +
-      diagnostics.join("\n")
-  );
+  if (LOG_SIGNALS) {
+    console.log(
+      `[Organize] o projeto declara ${projectSequenceNames.size} sequência(s): ` +
+        `${[...projectSequenceNames].join(", ") || "—"}\n` +
+        "[Organize] classificação:\n" +
+        diagnostics.join("\n")
+    );
+  }
 
   // 5. Group ALL sequences together by sequenceBase
   const allSequences = classified.filter(
@@ -1020,7 +1114,8 @@ export interface NestedSequenceDetection {
 async function detectNestedSequences(
   ppro: premierepro,
   sequences: Sequence[],
-  projectSequenceNames: Set<string>
+  projectSequenceNames: Set<string>,
+  options: ScanOptions
 ): Promise<NestedSequenceDetection> {
   const ids = new Set<string>();
   const names = new Set<string>();
@@ -1129,7 +1224,16 @@ async function detectNestedSequences(
     }
   };
 
+  let walked = 0;
+  options.onStage?.("Procurando sequências aninhadas…");
   for (const seq of sequences) {
+    // A pergunta é por sequência inteira, e uma sequência de trezentos
+    // clipes leva o seu tempo: a contagem sobe entre elas, que é o único
+    // ponto em que este laço volta a respirar.
+    stopIfCancelled(options);
+    walked += 1;
+    options.onProgress?.(walked, sequences.length);
+
     let parentName = "";
     try {
       parentName = (seq.name ?? "").trim();
@@ -1226,7 +1330,7 @@ export async function organizeProject(scan: ScanResult): Promise<OrganizeResult>
       return {
         ok: false,
         message: "O Premiere recusou a criação das pastas principais. Nada foi alterado.",
-        snapshot: null,
+        snapshot: undoableSnapshot(snapshot),
       };
     }
 
@@ -1284,17 +1388,14 @@ export async function organizeProject(scan: ScanResult): Promise<OrganizeResult>
         }
       }
     );
-    if (plannedSub > 0 && !subCreated) {
-      return {
-        ok: false,
-        message:
-          "O Premiere recusou a criação das subpastas. As pastas principais " +
-          "podem ter sido criadas; nenhum item foi movido.",
-        snapshot: null,
-      };
-    }
-
-    // ── Phase 3: move ─────────────────────────────────────────────
+    /*
+     * A releitura vem ANTES de qualquer saída.
+     *
+     * É ela que descobre quais subpastas passaram a existir, e é isso
+     * que o snapshot precisa para conseguir removê-las depois. Enquanto
+     * a recusa saía antes da releitura, o snapshot voltava null e as
+     * pastas já criadas ficavam no projeto sem volta pelo painel.
+     */
     phase = "reler a estrutura de pastas";
     root = await project.getRootItem();
     const layout = await readBinLayout(ppro, root);
@@ -1321,6 +1422,17 @@ export async function organizeProject(scan: ScanResult): Promise<OrganizeResult>
       }
     }
 
+    if (plannedSub > 0 && !subCreated) {
+      return {
+        ok: false,
+        message:
+          "O Premiere recusou a criação das subpastas. Nenhum item foi movido; " +
+          "use Desfazer para remover as pastas que já haviam sido criadas.",
+        snapshot: undoableSnapshot(snapshot),
+      };
+    }
+
+    // ── Phase 3: move ─────────────────────────────────────────────
     phase = "indexar os itens";
     const freshItems = new Map<string, ProjectItem>();
     await indexAllItems(ppro, root, freshItems);
@@ -1383,10 +1495,17 @@ export async function organizeProject(scan: ScanResult): Promise<OrganizeResult>
     // Uma transação vazia também devolve false, então só é recusa
     // quando havia algo para mover.
     if (movedCount > 0 && !moved) {
+      // O `build` anotou os movimentos antes de saber se a transação
+      // passaria. Recusada, nenhum deles aconteceu — e deixá-los no
+      // snapshot faria o Desfazer devolver itens que nunca saíram do
+      // lugar. As pastas criadas continuam lá, e essas sim voltam.
+      snapshot.moves.length = 0;
       return {
         ok: false,
-        message: "O Premiere recusou a movimentação. Nada foi alterado.",
-        snapshot: null,
+        message:
+          "O Premiere recusou a movimentação. Nenhum item foi movido; " +
+          "use Desfazer para remover as pastas que já haviam sido criadas.",
+        snapshot: undoableSnapshot(snapshot),
       };
     }
 
@@ -1398,7 +1517,7 @@ export async function organizeProject(scan: ScanResult): Promise<OrganizeResult>
         message:
           `${missingTargets} ${missingTargets === 1 ? "item ficou" : "itens ficaram"} sem ` +
           "pasta de destino. Confira se as pastas do plugin existem na raiz do projeto.",
-        snapshot: null,
+        snapshot: undoableSnapshot(snapshot),
       };
     }
 
@@ -1414,10 +1533,16 @@ export async function organizeProject(scan: ScanResult): Promise<OrganizeResult>
     };
   } catch (cause) {
     console.error(`[Organize] falhou ao ${phase}:`, cause);
+    // O que já tinha sido criado continua criado. O snapshot vai junto
+    // com a falha justamente por isso: é a única forma de o editor
+    // limpar do painel o que a aplicação deixou pela metade.
+    const partial = undoableSnapshot(snapshot);
     return {
       ok: false,
-      message: `Falha ao ${phase}: ${describeError(cause)}`,
-      snapshot: null,
+      message:
+        `Falha ao ${phase}: ${describeError(cause)}` +
+        (partial ? " Use Desfazer para reverter o que já foi feito." : ""),
+      snapshot: partial,
     };
   }
 }
@@ -1445,34 +1570,39 @@ export async function undoOrganize(
     const allItemsById = new Map<string, ProjectItem>();
     await indexAllItems(ppro, rootFolder, allItemsById);
 
+    const parentBefore = new Map<string, string>();
+    await indexItemParents(ppro, rootFolder, "__root__", parentBefore);
+
     // Phase 1: Move items back to original parents
-    let restoredCount = 0;
-    let lostCount = 0;
+    let plannedMoves = 0;
 
     const restored = commitTransaction(
       project,
       "Desfazer Organização — Restaurar Itens",
       (tx) => {
         for (const move of snapshot.moves) {
+          // Já está em casa. Acontece quando o editor desfaz duas vezes,
+          // ou quando a primeira tentativa restaurou e só tropeçou nas
+          // pastas: pedir o movimento de novo é encher a transação de
+          // ações à toa que podem derrubá-la inteira.
+          if (parentBefore.get(move.itemId) === move.originalParentId) {
+            continue;
+          }
+
           const item = allItemsById.get(move.itemId);
           const originalParent = allBins.get(move.originalParentId);
           if (!item || !originalParent) {
-            lostCount++;
             continue;
           }
 
           const moveAction = rootFolder.createMoveItemAction(item, originalParent);
           tx.addAction(moveAction);
-          restoredCount++;
+          plannedMoves++;
         }
       }
     );
 
-    // `restoredCount` counts what was planned, not what the host accepted.
-    // Reporting it either way painted the panel green over an undo that
-    // had not happened — and returning a null snapshot took away the only
-    // chance of trying again.
-    if (restoredCount > 0 && !restored) {
+    if (plannedMoves > 0 && !restored) {
       return {
         ok: false,
         message: "O Premiere recusou a restauração dos itens. Nada foi movido de volta.",
@@ -1486,6 +1616,31 @@ export async function undoOrganize(
     const rootAfterRestore = await project.getRootItem();
     const updatedBins = new Map<string, FolderItem>();
     await indexBins(ppro, rootAfterRestore, updatedBins);
+
+    /*
+     * O que voltou é lido do projeto, não contado do plano.
+     *
+     * A contagem antiga era das ações montadas, e a transação inteira
+     * podia ser aceita sem que cada item tivesse ido para onde se
+     * pediu. Uma volta ao projeto depois do movimento responde onde
+     * cada item está de verdade, que é a única resposta que interessa.
+     */
+    const parentAfter = new Map<string, string>();
+    await indexItemParents(ppro, rootAfterRestore, "__root__", parentAfter);
+
+    let restoredCount = 0;
+    let missingCount = 0;
+    let stuckCount = 0;
+    for (const move of snapshot.moves) {
+      const parent = parentAfter.get(move.itemId);
+      if (parent === undefined) {
+        missingCount++;
+      } else if (parent === move.originalParentId) {
+        restoredCount++;
+      } else {
+        stuckCount++;
+      }
+    }
 
     /*
      * A bin the Tool created is not the Tool's to delete unconditionally.
@@ -1554,28 +1709,46 @@ export async function undoOrganize(
     }
 
     const notes: string[] = [];
+    // Pasta mantida é decisão, não falha: ela ficou de pé porque o
+    // editor pôs coisa nova dentro dela depois de organizar.
     if (keptBins > 0) {
       notes.push(
         `${keptBins} ${keptBins === 1 ? "pasta mantida" : "pastas mantidas"} ` +
           "por ter conteúdo novo dentro."
       );
     }
-    if (lostCount > 0) {
+    if (stuckCount > 0) {
       notes.push(
-        `${lostCount} ${lostCount === 1 ? "item não foi encontrado" : "itens não foram encontrados"} no projeto.`
+        `${stuckCount} ${stuckCount === 1 ? "item continuou" : "itens continuaram"} na pasta nova.`
+      );
+    }
+    if (missingCount > 0) {
+      notes.push(
+        `${missingCount} ${missingCount === 1 ? "item não foi encontrado" : "itens não foram encontrados"} no projeto.`
       );
     }
     if (!binsRemoved) {
       notes.push("O Premiere recusou a remoção das pastas vazias.");
     }
 
+    /*
+     * Meio desfeito não é desfeito.
+     *
+     * O `ok` pinta a barra de verde, e ela dizia "restaurado" com itens
+     * parados na pasta nova e com as pastas ainda no projeto — as falhas
+     * iam como prosa no fim da mesma frase verde. Enquanto sobrar
+     * qualquer uma delas, isto é erro, e o snapshot volta para que o
+     * editor possa tentar de novo.
+     */
+    const undone = binsRemoved && stuckCount === 0 && missingCount === 0;
+
     return {
-      ok: true,
+      ok: undone,
       message: [
         `${restoredCount} ${restoredCount === 1 ? "item restaurado" : "itens restaurados"}.`,
         ...notes,
       ].join(" "),
-      snapshot: null,
+      snapshot: undone ? null : snapshot,
     };
   } catch (cause) {
     // The snapshot survives a failure: it is the only way back.
@@ -1705,6 +1878,35 @@ async function indexBins(
         const sub = ppro.FolderItem.cast(child);
         map.set(child.getId(), sub);
         await indexBins(ppro, sub, map);
+      } catch { /* cast failed */ }
+    }
+  }
+}
+
+/**
+ * Em que pasta cada item está agora.
+ *
+ * O item não sabe responder quem é o pai dele; quem sabe é quem o
+ * lista. O Desfazer pergunta isto duas vezes — antes, para não pedir de
+ * volta o que já está no lugar, e depois, para contar o que realmente
+ * voltou em vez do que foi pedido.
+ */
+async function indexItemParents(
+  ppro: premierepro,
+  folder: FolderItem,
+  parentId: string,
+  map: Map<string, string>
+): Promise<void> {
+  const children = await folder.getItems();
+  for (const child of children) {
+    const id = safeId(child);
+    if (id) {
+      map.set(id, parentId);
+    }
+    if (child.type === ppro.ProjectItem.TYPE_BIN) {
+      try {
+        const sub = ppro.FolderItem.cast(child);
+        await indexItemParents(ppro, sub, id, map);
       } catch { /* cast failed */ }
     }
   }

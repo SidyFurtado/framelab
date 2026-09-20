@@ -219,8 +219,38 @@ function main() {
   versionManifest.releaseDate = new Date().toISOString().split("T")[0];
   versionManifest.downloadUrl = `https://github.com/SidyFurtado/framelab/releases/latest/download/Framelab-macOS.zip`;
 
+  /*
+   * Os arquivos do bundle saem PRESOS na tag desta versão.
+   *
+   * Apontados para `main`, eles entregavam o que estivesse no `dist/`
+   * naquele instante — e o `dist/` é versionado e reescrito a cada
+   * build local. Quem estivesse numa versão antiga e atualizasse no
+   * meio de um desenvolvimento recebia código pela metade, enquanto o
+   * painel dizia ter instalado a versão anunciada.
+   *
+   * Preso na tag, ou entrega exatamente o que foi publicado, ou falha
+   * alto e o usuário cai no download manual. É por isso que a tag
+   * PRECISA ser criada e enviada — o lembrete abaixo existe para isso.
+   */
+  const tag = `v${version}`;
+  const rawBase = `https://raw.githubusercontent.com/SidyFurtado/framelab/${tag}/dist`;
+  versionManifest.bundleFiles = {
+    "manifest.json": `${rawBase}/manifest.json`,
+    "index.html": `${rawBase}/index.html`,
+    "index.js": `${rawBase}/index.js`,
+    "index.css": `${rawBase}/index.css`,
+  };
+
   fs.writeFileSync(VERSION_JSON_PATH, JSON.stringify(versionManifest, null, 2) + "\n");
   console.log("  ✓ version.json sincronizado com a versão " + version);
+  console.log(`  ✓ bundle preso na tag ${tag}`);
+
+  console.log("\n\x1b[33m⚠  FALTA PUBLICAR A TAG\x1b[0m");
+  console.log("  O atualizador vai buscar os arquivos em " + tag + ".");
+  console.log("  Enquanto a tag não existir no GitHub, a atualização");
+  console.log("  automática falha e cai no download manual:\n");
+  console.log(`    git add -A && git commit -m "v${version}"`);
+  console.log(`    git tag ${tag} && git push origin main ${tag}\n`);
 
   console.log("\n\x1b[32m🎉 TODOS OS PACOTES GERADOS COM SUCESSO!\x1b[0m");
   console.log(`  📦 Instalador Nativo Apple: ${pkgOutputPath}`);

@@ -21,6 +21,12 @@ export interface UpdateCheckResult {
 }
 
 const GITHUB_REPO = "SidyFurtado/framelab";
+
+/** `0.4.1` -> `v0.4.1`. O manifesto aceita as duas formas. */
+function versionTag(version: string): string {
+  const clean = version.trim();
+  return clean.startsWith("v") ? clean : `v${clean}`;
+}
 const VERSION_MANIFEST_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/main/version.json`;
 
 export class PluginUpdater {
@@ -125,11 +131,27 @@ export class PluginUpdater {
       const fs = uxp.storage.localFileSystem;
       const pluginFolder = await fs.getPluginFolder();
 
+      /*
+       * Os arquivos vêm da TAG da versão anunciada, nunca do `main`.
+       *
+       * O `dist/` é versionado e reescrito a cada build local. Servindo
+       * de `main`, o que o usuário baixava era o que estivesse lá NAQUELE
+       * instante — não o código da versão que o manifesto acabou de
+       * anunciar. Quem estivesse numa versão antiga e atualizasse no meio
+       * de um desenvolvimento recebia trabalho pela metade, e o painel
+       * dizia que tinha instalado a versão anunciada.
+       *
+       * Numa tag isso não acontece: ou ela existe e entrega exatamente o
+       * que foi publicado, ou ela não existe e a atualização falha alto,
+       * com o caminho manual oferecido logo abaixo. Falhar alto é o
+       * melhor dos dois erros.
+       */
+      const tag = versionTag(manifest.version);
       const filesToUpdate = manifest.bundleFiles ?? {
-        "manifest.json": `https://raw.githubusercontent.com/${GITHUB_REPO}/main/dist/manifest.json`,
-        "index.html": `https://raw.githubusercontent.com/${GITHUB_REPO}/main/dist/index.html`,
-        "index.js": `https://raw.githubusercontent.com/${GITHUB_REPO}/main/dist/index.js`,
-        "index.css": `https://raw.githubusercontent.com/${GITHUB_REPO}/main/dist/index.css`,
+        "manifest.json": `https://raw.githubusercontent.com/${GITHUB_REPO}/${tag}/dist/manifest.json`,
+        "index.html": `https://raw.githubusercontent.com/${GITHUB_REPO}/${tag}/dist/index.html`,
+        "index.js": `https://raw.githubusercontent.com/${GITHUB_REPO}/${tag}/dist/index.js`,
+        "index.css": `https://raw.githubusercontent.com/${GITHUB_REPO}/${tag}/dist/index.css`,
       };
 
       /*
@@ -143,7 +165,11 @@ export class PluginUpdater {
       const fileEntries = Object.entries(filesToUpdate).filter(
         ([filename, fileUrl]) =>
           /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(filename) &&
-          fileUrl.startsWith(allowedUrl)
+          fileUrl.startsWith(allowedUrl) &&
+          // Um manifesto que aponte de volta para um ramo móvel traz de
+          // volta o problema que a tag resolve, então ele é recusado
+          // aqui mesmo — inclusive o nosso, se um dia regredir.
+          !/^(main|master|HEAD)\//.test(fileUrl.slice(allowedUrl.length))
       );
       if (fileEntries.length === 0) {
         throw new Error("Manifesto sem arquivos válidos para atualizar.");

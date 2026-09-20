@@ -38,7 +38,7 @@ import { diffCorrections, worthLearning, type Candidate } from "./learn";
 import { readTranscript } from "../silence/transcript";
 import { shapesToTry, rememberShape } from "./schemas";
 import { buildCues, cuesToSrt, SRT_DEFAULTS, type SrtOptions } from "./srt";
-import { nativePath, uxpModule, workspace, write } from "../silence/workspace";
+import { fileUrl, nativePath, uxpModule, workspace, write } from "../silence/workspace";
 import {
   assembleArgs,
   splitByClip,
@@ -80,15 +80,45 @@ export interface TrackScan {
   fps: number;
 }
 
+/**
+ * Toda escrita no projeto passa por aqui.
+ *
+ * A exceção é capturada DENTRO do `lockedAccess` e só relançada
+ * depois que ele volta. Deixá-la atravessar o lock deixava o PROJETO
+ * travado, e daí em diante toda transação seguinte falhava — de
+ * qualquer ferramenta, até o Premiere ser reaberto. Um erro só virava
+ * o plugin inteiro parado.
+ *
+ * Aqui isso não é zelo: `importInto` tenta três formas de JSON de
+ * propósito e CONTA que as primeiras sejam recusadas. O caminho da
+ * exceção é o caminho normal desta ferramenta.
+ *
+ * Relançar fora do lock em vez de engolir preserva o motivo por forma
+ * — que é o que diz qual schema o host aceitou, e sem o que as duas
+ * falhas viram a mesma frase.
+ */
 function commitTransaction(
   project: Project,
   label: string,
   build: (tx: CompoundAction) => void
 ): boolean {
   let committed = false;
-  project.lockedAccess(() => {
-    committed = project.executeTransaction(build, label);
-  });
+  let error: unknown = null;
+  try {
+    project.lockedAccess(() => {
+      try {
+        committed = project.executeTransaction(build, label);
+      } catch (cause) {
+        error = cause;
+      }
+    });
+  } catch (cause) {
+    // O próprio `lockedAccess` recusando: nada chegou a rodar.
+    error = error ?? cause;
+  }
+  if (error) {
+    throw error;
+  }
   return committed;
 }
 
@@ -336,6 +366,28 @@ export async function transcribeTracks(
       cues: 0,
     };
   }
+
+  /*
+   * A última porta antes de qualquer escrita.
+   *
+   * Daqui para baixo tudo é gravação: o .srt, o cache do "refazer com
+   * outros limites", os snapshots e a transcrição nos itens de
+   * projeto. Se o editor cancelou enquanto o motor terminava, esse
+   * resultado é de um trabalho que ele abandonou — e entrar assim é
+   * pior que não entrar, porque nada na tela diz que entrou.
+   */
+  if (options.cancelled?.()) {
+    stages.push("cancelado depois de o motor terminar; nada foi gravado");
+    return {
+      ok: false,
+      message: describeWhisperError("cancelled"),
+      imported: 0,
+      stages,
+      srtPath: null,
+      cues: 0,
+    };
+  }
+
   stages.push("motor: concluiu");
   options.onStage?.("Processando transcrição e glossário…");
 
@@ -531,17 +583,6 @@ interface UxpFolder {
 interface UxpLfs {
   getEntryForPersistentToken?(token: string): Promise<UxpFolder>;
   getEntryWithUrl?(url: string): Promise<UxpFolder>;
-}
-
-function fileUrl(nativePathValue: string): string {
-  return (
-    "file://" +
-    nativePathValue
-      .replace(/\\/g, "/")
-      .split("/")
-      .map((part) => encodeURIComponent(part))
-      .join("/")
-  );
 }
 
 async function writeSrtToDestination(

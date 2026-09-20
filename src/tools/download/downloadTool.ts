@@ -57,12 +57,16 @@ import { downloadInPanel, rememberFolderToken } from "./panelFetch";
  * cópias da mesma decisão.
  */
 async function fastLaneByIndex(
-  list: readonly string[]
+  list: readonly string[],
+  cancelled?: () => boolean
 ): Promise<Map<number, TikTokFast>> {
   const positions = list
     .map((url, index) => ({ url, index }))
     .filter((entry) => isTikTokUrl(entry.url));
-  const infos = await fetchManyTikTok(positions.map((entry) => entry.url));
+  const infos = await fetchManyTikTok(
+    positions.map((entry) => entry.url),
+    cancelled
+  );
   const byIndex = new Map<number, TikTokFast>();
   positions.forEach((entry, at) => {
     const info = infos[at];
@@ -107,6 +111,16 @@ const COOKIE_LABELS: Record<Cookies, string> = {
  * isto, cada visita à ferramenta deixava mais um par para trás.
  */
 let releaseDocument: (() => void) | null = null;
+
+/**
+ * Deixa o `unmount` desistir de uma execução que ainda está de pé.
+ *
+ * Um download tem até noventa minutos de teto e uma sondagem oito. Sair
+ * da ferramenta deixava esse laço sondando o disco de 250 em 250ms
+ * atrás de um painel que ninguém mais está olhando — e, pior, com o
+ * pedido ainda na fila do agente.
+ */
+let cancelActiveRun: (() => void) | null = null;
 
 export const downloadTool: Tool = {
   id: "download",
@@ -254,8 +268,10 @@ export const downloadTool: Tool = {
     function syncApply(): void {
       const list = urls();
       context.setApplyEnabled(!busy && list.length > 0);
-      if (scanEl) {
-        setDisabled(scanEl, busy || list.length === 0);
+      // Durante uma execução o controle é o Cancelar, e Cancelar nunca
+      // pode aparecer desligado: era a única saída do editor.
+      if (scanEl && !busy) {
+        setDisabled(scanEl, list.length === 0);
       }
       if (list.length === 0) {
         const typed = countLines(urlsEl?.value ?? "");
@@ -279,7 +295,18 @@ export const downloadTool: Tool = {
 
     // ── analisar ──────────────────────────────────────────────
 
-    scanEl?.addEventListener("click", () => void runProbe());
+    // O mesmo controle serve às duas pontas: fora de execução ele
+    // analisa, durante ela ele cancela. É o padrão do Corte de
+    // Silêncios, e é o que garante que exista SEMPRE uma saída visível
+    // — inclusive para o download, cujo botão vive na Shell e fica
+    // desligado enquanto o trabalho corre.
+    scanEl?.addEventListener("click", () => {
+      if (busy) {
+        requestCancel();
+        return;
+      }
+      void runProbe();
+    });
 
     async function runProbe(): Promise<void> {
       const list = urls();
@@ -287,14 +314,13 @@ export const downloadTool: Tool = {
         return;
       }
       startBusy("Consultando os links…");
-      if (scanEl) scanEl.textContent = "Consultando…";
       showProgress("consulta", null, "lendo os links…");
 
       try {
         // TikTok vai pela via rápida (uma chamada de API, ~1s); o que
         // ela não resolver — e todo o resto — vai pelo yt-dlp. Ver
         // tiktok.ts para o porquê da existência das duas portas.
-        const fast = await fastLaneByIndex(list);
+        const fast = await fastLaneByIndex(list, () => cancelled);
         const byIndex = new Map<number, Probe>();
         const slow: string[] = [];
         const slowAt: number[] = [];
@@ -318,10 +344,23 @@ export const downloadTool: Tool = {
               showLog(log);
             },
             () => cancelled,
-            showManual
+            showManual,
+            showLog
           );
           result = { ...result, ...scripted.result };
           scripted.probes.forEach((probe, at) => byIndex.set(slowAt[at], probe));
+        }
+
+        // Uma consulta interrompida não tem meia resposta para mostrar:
+        // as posições que não chegaram viriam com "não foi possível
+        // ler", que é a frase de um link quebrado, não de uma desistência.
+        if (cancelled) {
+          probes = [];
+          renderList();
+          renderQualities();
+          showLog("");
+          context.setStatus("Consulta cancelada.", "idle");
+          return;
         }
 
         probes = list
@@ -348,10 +387,9 @@ export const downloadTool: Tool = {
           rememberFoundBinary(result.ytdlpPath);
         }
       } catch (cause) {
-        context.setStatus(describeError(cause), "error");
+        context.setStatus(failureMessage("consultar os links", cause), "error");
       } finally {
         showProgress(null, null);
-        if (scanEl) scanEl.textContent = "Analisar links";
         endBusy();
       }
     }
@@ -385,7 +423,7 @@ export const downloadTool: Tool = {
         // para o yt-dlp junto com os links que nunca foram dela.
         const direct: DirectJob[] = [];
         const slow: string[] = [];
-        const fast = await fastLaneByIndex(list);
+        const fast = await fastLaneByIndex(list, () => cancelled);
         list.forEach((url, index) => {
           const info = fast.get(index) ?? null;
           const job = info ? directJobFor(url, info, quality) : null;
@@ -419,17 +457,28 @@ export const downloadTool: Tool = {
                   ? `${formatBytes(done)} de ${formatBytes(size)}`
                   : formatBytes(done)
               );
-            }
+            },
+            () => cancelled
           );
         };
 
         for (let index = 0; index < direct.length; index += 1) {
+          if (cancelled) {
+            break;
+          }
           const job = direct[index];
           const step = `${index + 1}/${total}`;
           try {
             panelFiles.push(await tryPanel(job, step));
             continue;
           } catch (cause) {
+            // Desistência não é recusa do host: sem esta linha, cancelar
+            // no meio de um TikTok mandava o job para o plano B e abria
+            // um script para baixar exatamente o que se acabou de
+            // cancelar.
+            if (cancelled) {
+              break;
+            }
             const reason = cause instanceof Error ? cause.message : String(cause);
             console.warn("[Download] painel recusou:", reason);
 
@@ -469,7 +518,7 @@ export const downloadTool: Tool = {
           log: "",
           files: [] as string[],
         };
-        if (slow.length > 0 || scriptDirect.length > 0) {
+        if (!cancelled && (slow.length > 0 || scriptDirect.length > 0)) {
           const scripted = await downloadUrls(
             slow,
             quality,
@@ -485,7 +534,8 @@ export const downloadTool: Tool = {
               showLog(log);
             },
             () => cancelled,
-            showManual
+            showManual,
+            showLog
           );
           outcome = { ...outcome, ...scripted };
         }
@@ -493,6 +543,11 @@ export const downloadTool: Tool = {
         const files = [...panelFiles, ...outcome.files];
         showProgress(null, null);
         showLog(outcome.ok && outcome.failed === 0 ? "" : outcome.log);
+
+        if (cancelled) {
+          await finishCancelled(files, outcome.error === "cancelled");
+          return;
+        }
 
         if (files.length === 0) {
           context.setStatus(
@@ -515,11 +570,44 @@ export const downloadTool: Tool = {
         renderFiles(files);
         context.setResetHandler(() => clearAll());
       } catch (cause) {
-        context.setStatus(describeError(cause), "error");
+        context.setStatus(failureMessage("baixar", cause), "error");
       } finally {
         endBusy();
       }
     });
+
+    /**
+     * Fecha um lote interrompido sem mentir sobre ele.
+     *
+     * O que já chegou ao disco chegou inteiro — nenhum arquivo é criado
+     * antes do último byte (ver panelFetch) — então esconder esses
+     * arquivos mandaria o editor baixar de novo o que já tem. E quando
+     * o script chegou a ser lançado, o aviso de que ele pode terminar
+     * sozinho vem junto: não há como matar um processo pelo UXP.
+     */
+    async function finishCancelled(
+      files: readonly string[],
+      scriptWasRunning: boolean
+    ): Promise<void> {
+      const note = scriptWasRunning
+        ? describeRunError("cancelled", "")
+        : "Download cancelado.";
+      if (files.length === 0) {
+        context.setStatus(note, "idle");
+        return;
+      }
+      const count = files.length;
+      const saved = `${count} ${
+        count === 1 ? "arquivo já estava salvo" : "arquivos já estavam salvos"
+      }`;
+      const imported = config.importToProject ? await importFiles(files) : null;
+      context.setStatus(
+        imported === null ? `${note} ${saved}.` : `${note} ${saved} · ${imported}.`,
+        "idle"
+      );
+      renderFiles(files);
+      context.setResetHandler(() => clearAll());
+    }
 
     /** Joga o que baixou no projeto aberto. Devolve a frase do status. */
     async function importFiles(files: readonly string[]): Promise<string> {
@@ -563,14 +651,51 @@ export const downloadTool: Tool = {
       hideManual();
       context.setStatus(message);
       context.setApplyEnabled(false);
-      if (scanEl) setDisabled(scanEl, true);
+      setScanBusy(true);
       if (installEl) setDisabled(installEl, true);
     }
 
     function endBusy(): void {
       busy = false;
+      cancelled = false;
+      setScanBusy(false);
       if (installEl) setDisabled(installEl, false);
       syncApply();
+    }
+
+    /**
+     * O controle único, nas suas duas caras.
+     *
+     * Fora de execução é "Analisar links", cheio, que é a ação barata
+     * que a ferramenta oferece. Durante, vira "Cancelar" no traço vazado
+     * — a mesma peça do Corte de Silêncios, que é onde o editor já
+     * aprendeu a procurar a saída.
+     */
+    function setScanBusy(running: boolean): void {
+      if (!scanEl) return;
+      scanEl.classList.toggle("is-busy", running);
+      scanEl.textContent = running ? "Cancelar" : "Analisar links";
+      setDisabled(scanEl, running ? false : urls().length === 0);
+    }
+
+    /**
+     * O editor desistiu.
+     *
+     * Só levanta a bandeira: quem a lê é o laço de sondagem do script
+     * (a cada 250ms), o laço de blocos do download em painel e o passo
+     * da via rápida. Nenhum deles pode ser interrompido de fora, e
+     * inventar um segundo caminho de saída daria dois estados para o
+     * painel discordarem entre si.
+     */
+    function requestCancel(): void {
+      if (!busy || cancelled) {
+        return;
+      }
+      cancelled = true;
+      context.setStatus("Cancelando…");
+      // Desligado até o laço responder: dois cliques não cancelam duas
+      // vezes, e o botão aceso sugeriria que o primeiro não pegou.
+      if (scanEl) setDisabled(scanEl, true);
     }
 
     // ── qualidade ─────────────────────────────────────────────
@@ -671,16 +796,19 @@ export const downloadTool: Tool = {
       startBusy("Baixando o yt-dlp…");
       if (installEl) installEl.textContent = "Baixando…";
       try {
-        const result = await installYtdlp(showManual);
+        const result = await installYtdlp(showManual, () => cancelled);
         showLog(result.log);
         if (result.ok && result.ytdlpPath) {
           rememberFoundBinary(result.ytdlpPath);
           context.setStatus("yt-dlp instalado na pasta do plugin.", "done");
         } else {
-          context.setStatus(describeRunError(result.error, result.log), "error");
+          context.setStatus(
+            describeRunError(result.error, result.log),
+            result.error === "install-cancelled" ? "idle" : "error"
+          );
         }
       } catch (cause) {
-        context.setStatus(describeError(cause), "error");
+        context.setStatus(failureMessage("instalar o yt-dlp", cause), "error");
       } finally {
         if (installEl) installEl.textContent = "Reinstalar yt-dlp";
         endBusy();
@@ -689,7 +817,7 @@ export const downloadTool: Tool = {
 
     folderEl?.addEventListener("click", () => {
       void openWorkFolder().catch((cause) => {
-        context.setStatus(describeError(cause), "error");
+        context.setStatus(failureMessage("abrir a pasta", cause), "error");
       });
     });
 
@@ -776,9 +904,15 @@ export const downloadTool: Tool = {
 
     // Sem seleção de timeline para reler; a ferramenta não depende dela.
     context.setRefreshHandler(null);
+
+    cancelActiveRun = () => {
+      cancelled = true;
+    };
   },
 
   unmount(): void {
+    cancelActiveRun?.();
+    cancelActiveRun = null;
     releaseDocument?.();
     releaseDocument = null;
   },
@@ -847,6 +981,70 @@ function directJobFor(url: string, info: TikTokFast, quality: Quality): DirectJo
 }
 
 // ── texto derivado ─────────────────────────────────────────────────
+
+/**
+ * As falhas que não vêm do script e o que o editor faz com cada uma.
+ *
+ * A ordem importa: o teste do destino cita "destino:" no começo da
+ * mensagem, e o teste de rede é largo o bastante para roubá-lo quando
+ * a queixa interna do UXP fala de conexão.
+ */
+interface Failure {
+  test: RegExp;
+  message: string;
+}
+
+const FAILURES: Failure[] = [
+  {
+    // O `fs` do UXP roteia por esquema; caminho nativo cai fora da rota
+    // e volta com este nome interno. Ver silence/workspace.ts — a
+    // mensagem não fala de permissão, não fala de caminho, e apareceu
+    // na barra de status como a única explicação de um download que não
+    // aconteceu.
+    test: /route not found/i,
+    message:
+      "Este build do Premiere não deixou o plugin escrever na pasta de " +
+      "trabalho. Feche e reabra o painel; se continuar, reinstale o plugin.",
+  },
+  {
+    test: /nenhum caminho gravável|require\("fs"\)|shell não resolveu|storage do UXP/i,
+    message:
+      "O Premiere não deu ao plugin uma pasta onde trabalhar. Feche e " +
+      "reabra o painel; se continuar, reinstale o plugin.",
+  },
+  {
+    test: /^destino:|não abre o seletor|sem pasta-mãe/i,
+    message:
+      'A pasta de destino não aceitou a escrita. Escolha a pasta de novo em "Destino › Escolher…".',
+  },
+  {
+    test: /^rede:|failed to fetch|networkerror|net::|ENOTFOUND|ECONNRESET|timed? ?out/i,
+    message: "A conexão caiu no meio do caminho. Confira a internet e tente de novo.",
+  },
+];
+
+/**
+ * A frase da barra de status quando algo FORA do script falha.
+ *
+ * O caminho do script já tem `describeRunError`, que traduz cada código
+ * numa saída; o que passava por aqui ia cru — "Route not found" chegou
+ * ao editor exatamente assim, e é o nome de uma rota interna do UXP,
+ * não uma instrução para ninguém. A queixa original continua indo para
+ * o console, que é onde ela serve.
+ */
+function failureMessage(step: string, cause: unknown): string {
+  const raw = describeError(cause).trim();
+  console.error(`[Download] falha ao ${step}:`, cause);
+  const known = FAILURES.find((failure) => failure.test.test(raw));
+  if (known) {
+    return known.message;
+  }
+  // Sem tradução: o passo por extenso ao menos localiza a falha, que é
+  // o que a frase solta do host nunca faz.
+  return raw
+    ? `Falha ao ${step}: ${/[.!?]$/.test(raw) ? raw : `${raw}.`}`
+    : `Falha ao ${step}.`;
+}
 
 /**
  * A linha secundária de uma opção do menu.

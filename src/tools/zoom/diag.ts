@@ -22,13 +22,38 @@ export interface ParamProbe {
   valor: unknown;
 }
 
-export async function dumpDiag(payload: unknown, file = DIAG_FILE): Promise<void> {
+/**
+ * O relatório completo, a cada aplicação.
+ *
+ * Desligado, e não por economia de disco: montá-lo custa uma ida e
+ * volta ao host POR PARÂMETRO e por keyframe. Num trecho de dezoito
+ * keyframes em dois parâmetros são mais de cem perguntas ao Premiere
+ * que não têm nada a ver com o trabalho pedido.
+ *
+ * Ligue à mão quando estiver investigando. No mais, o relatório
+ * continua saindo sozinho sempre que algo dá errado — ver o `force` de
+ * `dumpDiag` — que é exatamente quando ele serve para alguma coisa.
+ */
+export const DIAG_ENABLED = false;
+
+/**
+ * Grava o relatório. Com o diagnóstico desligado, só grava quando
+ * `force` diz que algo deu errado: é o caso em que ele vale o disco.
+ */
+export async function dumpDiag(
+  payload: unknown,
+  file = DIAG_FILE,
+  force = false
+): Promise<void> {
+  if (!DIAG_ENABLED && !force) {
+    return;
+  }
   try {
     const space = await workspace();
     await write(space, file, JSON.stringify(payload, null, 2));
     console.log(`[Diag] relatório em ${nativePath(space, file)}`);
   } catch (cause) {
-    console.warn("[Zoom] não consegui escrever o relatório:", cause);
+    console.warn("[Diag] não consegui escrever o relatório:", cause);
   }
 }
 

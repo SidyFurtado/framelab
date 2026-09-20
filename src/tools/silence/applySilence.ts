@@ -879,11 +879,38 @@ export async function applyCuts(
 
     // Total de escritas, para a barra de progresso significar algo.
     let totalWrites = 0;
+    /** Trechos que não couberam num frame. Ver `planRun`. */
+    let totalDropped = 0;
+    /** Duração original das runs que vão ser reescritas, em ticks. */
+    let originalTicks = 0n;
+    /** O que sobra depois do corte, em ticks. */
+    let keptTicks = 0n;
     const plannedRuns = runs.map((run) => {
-      const writes = planRun(run, scan, perSecond);
-      totalWrites += writes.length;
-      return { run, writes };
+      const planned = planRun(run, scan, perSecond);
+      totalWrites += planned.writes.length;
+      totalDropped += planned.dropped;
+      if (planned.writes.length > 0) {
+        keptTicks += planned.keptTicks;
+        for (const clip of run) {
+          if (clip.plan) {
+            originalTicks += BigInt(clip.outTicks) - BigInt(clip.inTicks);
+          }
+        }
+      }
+      return { run, writes: planned.writes };
     });
+
+    /*
+     * Quantos blocos independentes vão ser reescritos.
+     *
+     * A remoção não é ripple, e a compactação só acontece DENTRO de um
+     * bloco de clipes encostados. Um clipe sem silêncio no meio da
+     * seleção quebra o bloco, então entre um bloco e o seguinte sobra o
+     * buraco do que saiu. Com mais de um bloco, isso precisa ser dito:
+     * o painel prometia trechos "encostados na timeline" e entregava
+     * furos que o editor descobria rolando a sequência.
+     */
+    const writtenRuns = plannedRuns.filter((entry) => entry.writes.length > 0).length;
 
     let done = 0;
     for (const { run, writes } of plannedRuns) {
@@ -937,10 +964,31 @@ export async function applyCuts(
       }
     }
 
+    /*
+     * Os números do que FOI escrito, não os do plano.
+     *
+     * `scan.removedSeconds` é o que a análise previu. Entre prever e
+     * escrever, todo trecho passa pelo encaixe na grade de frames, e o
+     * que não cobre um frame inteiro é descartado — certo a fazer, mas
+     * significa que o tempo removido de verdade não é o previsto. O
+     * painel anunciava o previsto, então os segundos na tela não eram
+     * os segundos do projeto.
+     */
+    const removedSeconds =
+      originalTicks > 0n
+        ? Number(originalTicks - keptTicks) / Number(perSecond)
+        : scan.removedSeconds;
+
     const message =
       `${scan.cuts} ${scan.cuts === 1 ? "corte feito" : "cortes feitos"} em ` +
       `${ready.length} ${ready.length === 1 ? "clipe" : "clipes"} · ` +
-      `${formatClock(scan.removedSeconds)} removidos.`;
+      `${formatClock(removedSeconds)} removidos.` +
+      (totalDropped > 0
+        ? ` ${totalDropped} trecho(s) curto(s) demais foram absorvidos no corte.`
+        : "") +
+      (writtenRuns > 1
+        ? ` Sobrou espaço vazio entre ${writtenRuns} blocos: o corte não é ripple.`
+        : "");
     return { ok: true, message, snapshot };
   } catch (cause) {
     return { ok: false, message: describeError(cause), snapshot: null };
@@ -1160,13 +1208,23 @@ function groupIntoRuns(clips: ClipTarget[]): ClipTarget[][] {
   return runs;
 }
 
-/** Converte os planos de uma sequência de clipes em escritas. */
+/**
+ * Converte os planos de uma sequência de clipes em escritas.
+ *
+ * Devolve junto quantos trechos foram DESCARTADOS por não caberem num
+ * frame depois do encaixe na grade. Eles somem em silêncio — é o certo
+ * a fazer, um trecho de meio frame não é um trecho — mas a contagem
+ * precisa subir junto, senão o painel anuncia cortes que não aconteceram
+ * e segundos que não saíram.
+ */
 function planRun(
   run: ClipTarget[],
   scan: SilenceScan,
   perSecond: bigint
-): Write[] {
+): { writes: Write[]; dropped: number; keptTicks: bigint } {
   const writes: Write[] = [];
+  let dropped = 0;
+  let keptTicks = 0n;
   const frame = scan.ticksPerFrame;
   let cursor = BigInt(run[0].startTicks);
 
@@ -1192,6 +1250,8 @@ function planRun(
         to = outTicks;
       }
       if (to - from < minimum) {
+        // Menor que um frame depois do encaixe: não há o que escrever.
+        dropped += 1;
         continue;
       }
 
@@ -1205,9 +1265,10 @@ function planRun(
         trackAudio: clip.trackAudio,
       });
       cursor += to - from;
+      keptTicks += to - from;
     }
   }
-  return writes;
+  return { writes, dropped, keptTicks };
 }
 
 /**

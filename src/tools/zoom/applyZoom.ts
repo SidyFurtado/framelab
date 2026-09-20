@@ -21,7 +21,14 @@ import {
   readTicksPerFrame,
   snapTicksToFrame,
 } from "../../bridge/premiere";
-import { dumpDiag, findComponent, numberOf, probeKeyframes, probeParams } from "./diag";
+import {
+  DIAG_ENABLED,
+  dumpDiag,
+  findComponent,
+  numberOf,
+  probeKeyframes,
+  probeParams,
+} from "./diag";
 
 export type ZoomDirection = "in" | "out";
 
@@ -419,7 +426,10 @@ export async function applyZoom(options: ZoomOptions): Promise<ZoomResult> {
      * que unidade escrever — coisa que até agora só foi deduzida, e
      * deduzida errado.
      */
-    const motion = probeChain ? await findComponent(probeChain, /motion/i) : null;
+    // Onze parâmetros por componente, uma pergunta ao host cada: só com
+    // o diagnóstico ligado.
+    const motion =
+      DIAG_ENABLED && probeChain ? await findComponent(probeChain, /motion/i) : null;
     const relatorio: Record<string, unknown> = {
       quando: new Date().toISOString(),
       transformMatchName,
@@ -439,10 +449,11 @@ export async function applyZoom(options: ZoomOptions): Promise<ZoomResult> {
       scaleParamEscolhido: readyScaleItems[0]
         ? safeDisplayName(readyScaleItems[0].scaleParam)
         : null,
-      motion: motion ? await probeParams(ppro, motion, probeTicks) : "(Motion não encontrado)",
-      transformNovo: probeTransform
-        ? await probeParams(ppro, probeTransform, probeTicks)
-        : "(Transform não encontrado)",
+      motion: motion ? await probeParams(ppro, motion, probeTicks) : "(não sondado)",
+      transformNovo:
+        DIAG_ENABLED && probeTransform
+          ? await probeParams(ppro, probeTransform, probeTicks)
+          : "(não sondado)",
     };
     // Escrito já aqui: se a transação seguinte derrubar o plugin, o que
     // foi medido até agora continua em disco.
@@ -589,6 +600,8 @@ export async function applyZoom(options: ZoomOptions): Promise<ZoomResult> {
     }
 
     // ── 3ª transação: os nossos, num campo limpo ─────────────────────
+    /** Os keyframes que entraram — recebem LINEAR na transação seguinte. */
+    const paraLinear: Array<{ param: ComponentParam; ticks: string }> = [];
     let animCommitted = false;
     project.lockedAccess(() => {
       animCommitted = project.executeTransaction((compoundAction) => {
@@ -602,21 +615,53 @@ export async function applyZoom(options: ZoomOptions): Promise<ZoomResult> {
             const kf = item.scaleParam.createKeyframe(value);
             kf.position = ppro.TickTime.createWithTicks(ticks);
             compoundAction.addAction(item.scaleParam.createAddKeyframeAction(kf));
-          }
-
-          // Without LINEAR, Premiere smooths on top of the baked curve
-          // and the shape drifts.
-          for (const ticks of placed.keys()) {
-            compoundAction.addAction(
-              item.scaleParam.createSetInterpolationAtKeyframeAction(
-                ppro.TickTime.createWithTicks(ticks),
-                ppro.Constants.InterpolationMode.LINEAR
-              )
-            );
+            paraLinear.push({ param: item.scaleParam, ticks });
           }
         }
       }, "Aplicar Zoom");
     });
+
+    /*
+     * ── 4ª transação: LINEAR, e SÓ agora ─────────────────────────────
+     *
+     * Esta ação resolve o keyframe pelo tempo NO MOMENTO EM QUE É
+     * CRIADA. Criada dentro do compound acima, ela procura um keyframe
+     * que ainda não existe — o compound só roda depois — e o que ela
+     * encontra no lugar é o keyframe que já estava no parâmetro.
+     *
+     * Foi exatamente isto que zerava a animação no Curvas, e lá está
+     * medido em disco: o âncora do tick 0 valia 100 antes do commit e
+     * 0 depois, sem que nenhuma ação nossa o tivesse tocado. Aqui o
+     * sintoma era o primeiro frame do zoom a 0%, e foi remendado
+     * quatro vezes pelo sintoma antes de alguém medir a causa.
+     *
+     * Com os keyframes já no lugar, a ação acha o que procura. Se esta
+     * transação falhar, a assadura fica: é curva um pouco mais macia,
+     * não um zoom perdido.
+     */
+    let linearCommitted = false;
+    if (animCommitted && paraLinear.length > 0) {
+      try {
+        project.lockedAccess(() => {
+          linearCommitted = project.executeTransaction((compoundAction) => {
+            for (const entry of paraLinear) {
+              try {
+                compoundAction.addAction(
+                  entry.param.createSetInterpolationAtKeyframeAction(
+                    ppro.TickTime.createWithTicks(entry.ticks),
+                    ppro.Constants.InterpolationMode.LINEAR
+                  )
+                );
+              } catch (cause) {
+                console.warn("[Zoom] interpolação recusada:", cause);
+              }
+            }
+          }, "Zoom: interpolação linear");
+        });
+      } catch (cause) {
+        console.warn("[Zoom] a transação de interpolação não assentou:", cause);
+      }
+    }
 
     if (!animCommitted) {
       rollbackAppends();
@@ -831,18 +876,35 @@ export async function applyZoom(options: ZoomOptions): Promise<ZoomResult> {
      * zero". Só do primeiro clipe: o arquivo é para ler, e vinte
      * clipes de lista não se leem.
      */
+    /*
+     * Algo saiu do trilho? Então o relatório vale o disco, mesmo com o
+     * diagnóstico desligado — é justamente o caso em que alguém vai
+     * precisar dele, e pedir para o editor reproduzir o problema com a
+     * flag ligada é a rodada de ping-pong que este arquivo existe para
+     * evitar.
+     */
+    const torto =
+      cabecas.some((row) => row.precisou) ||
+      strays.length > 0 ||
+      paraApagar.length > 0 ||
+      (paraLinear.length > 0 && !linearCommitted) ||
+      verifiedCount === 0 ||
+      unreadableCount > 0;
+
     relatorio.depois = {
       cronometroLigado: clockCommitted,
+      interpolacao: { pedidos: paraLinear.length, linearCommitted },
       keyframesDoHost,
       hostLimpo: hostCleared,
       cabecas,
-      keyframesDoPrimeiroClipe: readyScaleItems[0]
-        ? await probeKeyframes(readyScaleItems[0].scaleParam)
-        : "(nenhum item)",
+      keyframesDoPrimeiroClipe:
+        (DIAG_ENABLED || torto) && readyScaleItems[0]
+          ? await probeKeyframes(readyScaleItems[0].scaleParam)
+          : "(não sondado)",
       clipesVerificados: verifiedCount,
       clipesIlegiveis: unreadableCount,
     };
-    await dumpDiag(relatorio);
+    await dumpDiag(relatorio, undefined, torto);
 
     if (verifiedCount === 0 && unreadableCount === 0) {
       rollbackAppends();
@@ -882,7 +944,10 @@ export async function applyZoom(options: ZoomOptions): Promise<ZoomResult> {
  * seletor. Assim também sai com dois keyframes a reta que alguém
  * desenhou à mão sem escolher o preset.
  */
-function placeKeyframes(
+// Exportada para o teste. É a conta que decide onde cada keyframe cai
+// e com que valor — o lugar exato dos dois piores defeitos desta base,
+// e a única parte do Zoom que roda fora do Premiere.
+export function placeKeyframes(
   ppro: premierepro,
   options: ZoomOptions,
   baseFrom: number,
@@ -896,10 +961,21 @@ function placeKeyframes(
   const placed = new Map<string, number>();
   const delta = baseTo - baseFrom;
 
-  // Snapped to the frame grid and deduped: off-grid keyframes land
-  // where the editor cannot reproduce them by dragging, and two that
-  // round onto one frame become one keyframe with an arbitrary value.
-  placed.set(startTicks, baseFrom);
+  /*
+   * As pontas entram SÓ na grade, uma vez cada.
+   *
+   * Antes entravam duas vezes: o tick cru e o tick snapado. Na cabeça
+   * isso era inofensivo, porque o ponto de entrada de um clipe real já
+   * cai num frame e os dois davam o mesmo tick. No RABO não: o fim do
+   * punch é "começo + 1,6 segundos", que não cai em frame nenhum. O
+   * resultado saía com dois keyframes de valor final a menos de um
+   * décimo de frame um do outro, mais o último passo da curva colado
+   * neles — três keyframes empilhados no mesmo frame, um deles fora da
+   * grade, num lugar que o editor não consegue reproduzir arrastando.
+   *
+   * O comentário antigo dizia "snapped to the frame grid and deduped".
+   * Agora é verdade. Conferido em `test/keyframes.test.ts`.
+   */
   placed.set(snapTicksToFrame(startTicks, ticksPerFrame), baseFrom);
 
   if (!isLinear(options.ease)) {
@@ -913,7 +989,8 @@ function placeKeyframes(
     }
   }
 
-  placed.set(endTicks, baseTo);
+  // Por último e sem concorrência: se um passo da curva caiu no mesmo
+  // frame do fim, quem vale é o valor final, não a amostra da curva.
   placed.set(snapTicksToFrame(endTicks, ticksPerFrame), baseTo);
   return placed;
 }

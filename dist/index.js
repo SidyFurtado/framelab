@@ -227,7 +227,7 @@
     return { ok: missing.length === 0, missing };
   }
   const WORK_FOLDER = "edit-toolbox-audio";
-  const PROBE_FILE = "write-probe.txt";
+  const PROBE_FILE$1 = "write-probe.txt";
   function uxpModule(name) {
     if (typeof require !== "function") {
       return null;
@@ -362,7 +362,7 @@
       await fs.mkdir(candidate.fsBase, { recursive: true });
     } catch {
     }
-    const probe2 = join(candidate.fsBase, PROBE_FILE);
+    const probe2 = join(candidate.fsBase, PROBE_FILE$1);
     const stamp = "edit-toolbox";
     for (const sync of [true, false]) {
       try {
@@ -388,6 +388,9 @@
   }
   function nativePath(space, name) {
     return join(space.nativeBase, name);
+  }
+  function fileUrl(nativePathValue) {
+    return "file://" + nativePathValue.replace(/\\/g, "/").split("/").map((part) => encodeURIComponent(part)).join("/");
   }
   async function write(space, name, data, executable = false) {
     const fs = fsModule();
@@ -474,13 +477,17 @@
     return new Promise((resolve2) => setTimeout(resolve2, ms));
   }
   const DIAG_FILE = "zoom-diag.json";
-  async function dumpDiag(payload, file = DIAG_FILE) {
+  const DIAG_ENABLED = false;
+  async function dumpDiag(payload, file = DIAG_FILE, force = false) {
+    if (!force) {
+      return;
+    }
     try {
       const space = await workspace();
       await write(space, file, JSON.stringify(payload, null, 2));
       console.log(`[Diag] relatório em ${nativePath(space, file)}`);
     } catch (cause) {
-      console.warn("[Zoom] não consegui escrever o relatório:", cause);
+      console.warn("[Diag] não consegui escrever o relatório:", cause);
     }
   }
   async function probeParams(ppro, component, ticks) {
@@ -794,7 +801,7 @@
           "Nenhum parâmetro Scale encontrado no Transform. O console do UXP tem o dump."
         );
       }
-      const motion = probeChain ? await findComponent(probeChain, /motion/i) : null;
+      const motion = DIAG_ENABLED && probeChain ? await findComponent(probeChain, /motion/i) : null;
       const relatorio = {
         quando: (/* @__PURE__ */ new Date()).toISOString(),
         transformMatchName,
@@ -810,8 +817,8 @@
           para: options.direction === "in" ? options.scalePercent : NEUTRAL_SCALE
         },
         scaleParamEscolhido: readyScaleItems[0] ? safeDisplayName$1(readyScaleItems[0].scaleParam) : null,
-        motion: motion ? await probeParams(ppro, motion, probeTicks) : "(Motion não encontrado)",
-        transformNovo: probeTransform ? await probeParams(ppro, probeTransform, probeTicks) : "(Transform não encontrado)"
+        motion: motion ? await probeParams(ppro, motion, probeTicks) : "(não sondado)",
+        transformNovo: DIAG_ENABLED && probeTransform ? await probeParams(ppro, probeTransform, probeTicks) : "(não sondado)"
       };
       await dumpDiag(relatorio);
       const [baseFrom, baseTo] = options.direction === "in" ? [NEUTRAL_SCALE, options.scalePercent] : [options.scalePercent, NEUTRAL_SCALE];
@@ -903,6 +910,7 @@
           console.warn("[Zoom] a limpeza do âncora não assentou:", cause);
         }
       }
+      const paraLinear = [];
       let animCommitted = false;
       project2.lockedAccess(() => {
         animCommitted = project2.executeTransaction((compoundAction) => {
@@ -915,18 +923,34 @@
               const kf = item.scaleParam.createKeyframe(value);
               kf.position = ppro.TickTime.createWithTicks(ticks);
               compoundAction.addAction(item.scaleParam.createAddKeyframeAction(kf));
-            }
-            for (const ticks of placed.keys()) {
-              compoundAction.addAction(
-                item.scaleParam.createSetInterpolationAtKeyframeAction(
-                  ppro.TickTime.createWithTicks(ticks),
-                  ppro.Constants.InterpolationMode.LINEAR
-                )
-              );
+              paraLinear.push({ param: item.scaleParam, ticks });
             }
           }
         }, "Aplicar Zoom");
       });
+      let linearCommitted = false;
+      if (animCommitted && paraLinear.length > 0) {
+        try {
+          project2.lockedAccess(() => {
+            linearCommitted = project2.executeTransaction((compoundAction) => {
+              for (const entry of paraLinear) {
+                try {
+                  compoundAction.addAction(
+                    entry.param.createSetInterpolationAtKeyframeAction(
+                      ppro.TickTime.createWithTicks(entry.ticks),
+                      ppro.Constants.InterpolationMode.LINEAR
+                    )
+                  );
+                } catch (cause) {
+                  console.warn("[Zoom] interpolação recusada:", cause);
+                }
+              }
+            }, "Zoom: interpolação linear");
+          });
+        } catch (cause) {
+          console.warn("[Zoom] a transação de interpolação não assentou:", cause);
+        }
+      }
       if (!animCommitted) {
         rollbackAppends();
         return fail$2("Premiere rejected the zoom animation transaction.");
@@ -1070,16 +1094,18 @@
           unreadableCount += 1;
         }
       }
+      const torto = cabecas.some((row) => row.precisou) || strays.length > 0 || paraApagar.length > 0 || paraLinear.length > 0 && !linearCommitted || verifiedCount === 0 || unreadableCount > 0;
       relatorio.depois = {
         cronometroLigado: clockCommitted,
+        interpolacao: { pedidos: paraLinear.length, linearCommitted },
         keyframesDoHost,
         hostLimpo: hostCleared,
         cabecas,
-        keyframesDoPrimeiroClipe: readyScaleItems[0] ? await probeKeyframes(readyScaleItems[0].scaleParam) : "(nenhum item)",
+        keyframesDoPrimeiroClipe: (DIAG_ENABLED || torto) && readyScaleItems[0] ? await probeKeyframes(readyScaleItems[0].scaleParam) : "(não sondado)",
         clipesVerificados: verifiedCount,
         clipesIlegiveis: unreadableCount
       };
-      await dumpDiag(relatorio);
+      await dumpDiag(relatorio, void 0, torto);
       if (verifiedCount === 0 && unreadableCount === 0) {
         rollbackAppends();
         return fail$2("Nenhum keyframe foi criado no Scale do Transform.");
@@ -1102,7 +1128,6 @@
   function placeKeyframes(ppro, options, baseFrom, baseTo, startTicks, endTicks, startSec, duration, ticksPerFrame) {
     const placed = /* @__PURE__ */ new Map();
     const delta = baseTo - baseFrom;
-    placed.set(startTicks, baseFrom);
     placed.set(snapTicksToFrame(startTicks, ticksPerFrame), baseFrom);
     if (!isLinear(options.ease)) {
       for (let step2 = 1; step2 < CURVE_KEYS; step2++) {
@@ -1114,7 +1139,6 @@
         placed.set(ticks, baseFrom + delta * options.ease(t));
       }
     }
-    placed.set(endTicks, baseTo);
     placed.set(snapTicksToFrame(endTicks, ticksPerFrame), baseTo);
     return placed;
   }
@@ -1383,6 +1407,78 @@
           return "&#39;";
       }
     });
+  }
+  const DEBOUNCE_MS = 400;
+  function createToolSettings(file, defaults, sanitize) {
+    let cache = null;
+    let timer = null;
+    let writing = null;
+    async function persist() {
+      const value = cache;
+      if (!value) {
+        return;
+      }
+      try {
+        await write(await workspace(), file, JSON.stringify(value, null, 2));
+      } catch (cause) {
+        console.warn(`[Ajustes] não consegui gravar ${file}:`, cause);
+      }
+    }
+    function schedule() {
+      if (timer !== null) {
+        clearTimeout(timer);
+      }
+      timer = setTimeout(() => {
+        timer = null;
+        writing = persist();
+      }, DEBOUNCE_MS);
+    }
+    return {
+      peek() {
+        return cache ? { ...cache } : null;
+      },
+      async read() {
+        if (cache) {
+          return { ...cache };
+        }
+        try {
+          const raw = readText$1(await workspace(), file);
+          cache = raw ? sanitize(JSON.parse(raw)) : { ...defaults };
+        } catch {
+          cache = { ...defaults };
+        }
+        return { ...cache };
+      },
+      save(next) {
+        cache = sanitize(next);
+        schedule();
+      },
+      patch(part) {
+        cache = sanitize({ ...cache ?? defaults, ...part });
+        schedule();
+      },
+      async flush() {
+        if (timer !== null) {
+          clearTimeout(timer);
+          timer = null;
+          writing = persist();
+        }
+        await writing;
+      }
+    };
+  }
+  function warmToolSettings(settings) {
+    void settings.read().catch(() => void 0);
+  }
+  function clampNumber(raw, min, max, fallback) {
+    const value = typeof raw === "number" ? raw : Number(raw);
+    if (!Number.isFinite(value)) {
+      return fallback;
+    }
+    return Math.min(max, Math.max(min, value));
+  }
+  function pickOneOf(raw, allowed, fallback) {
+    return typeof raw === "string" && allowed.includes(raw) ? raw : fallback;
   }
   const cubicBezier = (p1x, p1y, p2x, p2y) => {
     const curve = (a, b, t) => {
@@ -1746,6 +1842,28 @@
     return `<svg class="ce-canvas" viewBox="0 0 ${NOMINAL_WIDTH} ${NOMINAL_HEIGHT}" preserveAspectRatio="none" aria-hidden="true"><path class="ce-floor" d=""/><path class="ce-ceiling" d=""/><path class="ce-linear" d=""/><path class="ce-tether" data-tether="1" d=""/><path class="ce-tether" data-tether="2" d=""/><path class="ce-curve" d=""/></svg><div class="ce-grip" ${CONTROL} data-handle="1" aria-label="Ponto de controle da saída"></div><div class="ce-grip" ${CONTROL} data-handle="2" aria-label="Ponto de controle da chegada"></div>`;
   }
   let drawnPoints = { ...CUSTOM_DEFAULT };
+  const drawnSettings = createToolSettings(
+    "curve-drawn.json",
+    { ...CUSTOM_DEFAULT },
+    (raw) => clampPoints({
+      x1: clampNumber(raw.x1, -4, 4, CUSTOM_DEFAULT.x1),
+      y1: clampNumber(raw.y1, -4, 4, CUSTOM_DEFAULT.y1),
+      x2: clampNumber(raw.x2, -4, 4, CUSTOM_DEFAULT.x2),
+      y2: clampNumber(raw.y2, -4, 4, CUSTOM_DEFAULT.y2)
+    })
+  );
+  warmToolSettings(drawnSettings);
+  let drawnTouched = false;
+  void drawnSettings.read().then((stored) => {
+    if (!drawnTouched) {
+      drawnPoints = stored;
+    }
+  });
+  function setDrawnPoints(next) {
+    drawnPoints = next;
+    drawnTouched = true;
+    drawnSettings.save({ ...next });
+  }
   const PREVIEW_WIDTH$1 = 200;
   const PREVIEW_HEIGHT$1 = 84;
   function mountCurvePicker(container, options) {
@@ -1776,7 +1894,7 @@
           editor = mountCurveEditor(slot, {
             points: drawnPoints,
             onChange: (next) => {
-              drawnPoints = next;
+              setDrawnPoints(next);
               writeTag();
               options.onChange(curve());
             }
@@ -1802,7 +1920,7 @@
       if (next === CUSTOM_CURVE && curveId !== CUSTOM_CURVE) {
         const seed = findCurve(curveId).points;
         if (seed) {
-          drawnPoints = { ...seed };
+          setDrawnPoints({ ...seed });
         }
       }
       curveId = next;
@@ -1818,7 +1936,7 @@
     meta?.addEventListener("click", (event) => {
       const target = event.target;
       if (target instanceof Element && target.closest("[data-curve-reset]")) {
-        drawnPoints = { ...CUSTOM_DEFAULT };
+        setDrawnPoints({ ...CUSTOM_DEFAULT });
         editor?.setPoints(drawnPoints);
         writeTag();
         options.onChange(curve());
@@ -1830,6 +1948,12 @@
       refresh: render,
       reset() {
         select(initialCurveId);
+      },
+      setCurveId(id) {
+        const known2 = id === CUSTOM_CURVE || CURVES.some((entry) => entry.id === id);
+        if (known2 && id !== curveId) {
+          select(id);
+        }
       },
       destroy() {
         editor?.destroy();
@@ -2041,6 +2165,34 @@
       }
     };
   }
+  const ZOOM_DEFAULTS = {
+    direction: "in",
+    style: "punch",
+    scalePercent: SCALE_DEFAULTS.punch,
+    punchDuration: PUNCH_DURATION_DEFAULT,
+    curveId: "punch",
+    scaleTouched: false
+  };
+  const zoomSettings = createToolSettings(
+    "zoom-config.json",
+    ZOOM_DEFAULTS,
+    (raw) => ({
+      direction: pickOneOf(raw.direction, ["in", "out"], "in"),
+      style: pickOneOf(raw.style, ["punch", "full"], "punch"),
+      scalePercent: Math.round(
+        clampNumber(raw.scalePercent, SCALE_MIN, SCALE_MAX, SCALE_DEFAULTS.punch)
+      ),
+      punchDuration: clampNumber(
+        raw.punchDuration,
+        PUNCH_DURATION_MIN,
+        PUNCH_DURATION_MAX,
+        PUNCH_DURATION_DEFAULT
+      ),
+      curveId: typeof raw.curveId === "string" && raw.curveId !== "custom" ? raw.curveId : "punch",
+      scaleTouched: raw.scaleTouched === true
+    })
+  );
+  warmToolSettings(zoomSettings);
   let livePicker$1 = null;
   let scaleSlider = null;
   let durationSlider = null;
@@ -2063,11 +2215,12 @@
     glyph: "zoom",
     available: true,
     mount(container, context) {
-      let direction = "in";
-      let style = "punch";
-      let scalePercent = SCALE_DEFAULTS.punch;
-      let punchDuration = PUNCH_DURATION_DEFAULT;
-      let scaleTouched = false;
+      const saved = zoomSettings.peek() ?? ZOOM_DEFAULTS;
+      let direction = saved.direction;
+      let style = saved.style;
+      let scalePercent = saved.scalePercent;
+      let punchDuration = saved.punchDuration;
+      let scaleTouched = saved.scaleTouched;
       container.innerHTML = markup$5(direction, style, scalePercent, punchDuration);
       const directionSeg = container.querySelector("[data-direction-seg]");
       const styleSeg = container.querySelector("[data-style-seg]");
@@ -2082,7 +2235,7 @@
       const curveZone = container.querySelector("[data-curve-zone]");
       livePicker$1?.destroy();
       livePicker$1 = mountCurvePicker(curveZone, {
-        curveId: "punch",
+        curveId: saved.curveId,
         renderPreview: (slot, curve) => renderRamp(slot, curve),
         onChange: () => draw()
       });
@@ -2106,6 +2259,17 @@
         if (durationField) {
           durationField.hidden = style === "full";
         }
+        remember();
+      }
+      function remember() {
+        zoomSettings.patch({
+          direction,
+          style,
+          scalePercent,
+          punchDuration,
+          scaleTouched,
+          curveId: livePicker$1?.curve().id ?? ZOOM_DEFAULTS.curveId
+        });
       }
       function setStyle(next) {
         style = next;
@@ -2199,6 +2363,17 @@
         });
       }
       draw();
+      void zoomSettings.read().then((stored) => {
+        if (!container.isConnected) {
+          return;
+        }
+        scaleTouched = stored.scaleTouched;
+        setDirection(stored.direction);
+        setStyle(stored.style);
+        setScale(stored.scalePercent);
+        setDuration(stored.punchDuration);
+        livePicker$1?.setCurveId(stored.curveId);
+      });
       context.setApplyLabel("APLICAR ZOOM");
       context.setApplyEnabled(true);
       context.setResetHandler(() => {
@@ -2228,6 +2403,7 @@
       });
     },
     unmount() {
+      void zoomSettings.flush();
       scaleSlider?.destroy();
       scaleSlider = null;
       durationSlider?.destroy();
@@ -2242,9 +2418,108 @@
     ).join("");
     return `<div class="zones"><div class="zone"><div class="field"><span class="t-label">Direção</span><div class="seg" data-direction-seg><div class="seg-item" ${CONTROL} data-value="in" aria-pressed="${direction === "in"}">Zoom In</div><div class="seg-item" ${CONTROL} data-value="out" aria-pressed="${direction === "out"}">Zoom Out</div></div></div><div class="field"><span class="t-label">Comportamento</span><div class="seg" data-style-seg><div class="seg-item" ${CONTROL} data-style="punch" aria-pressed="${style === "punch"}">Punch Smooth</div><div class="seg-item" ${CONTROL} data-style="full" aria-pressed="${style === "full"}">Clipe inteiro</div></div></div><div class="field" data-duration-field${style === "full" ? " hidden" : ""}><div class="field-head"><span class="t-label">Duração do Punch</span><span class="field-val" data-out-duration>${punchDuration.toFixed(1)}s</span></div><div class="preset-rail">${presetButtonsHtml}</div><div class="slider-row"><div data-duration></div></div></div><div class="field"><div class="field-head"><span class="t-label" title="100% mantém o enquadramento; valores acima aumentam o corte com Transform.">Intensidade (Escala Alvo)</span><span class="field-val" data-out-scale>${scalePercent}%</span></div><div class="slider-row"><div data-scale></div></div></div></div><div class="zone" data-curve-zone></div></div>`;
   }
-  const FLOW_DIAG_FILE = "flow-diag.json";
-  const MAX_PARAMS = 40;
+  const FILE = "flow-baked.json";
+  const MAX_PROJECTS = 24;
   const bakedByParam = /* @__PURE__ */ new Map();
+  let loadedFor = null;
+  let loading = null;
+  function projectKey(project2) {
+    if (!project2) {
+      return "(sem projeto)";
+    }
+    try {
+      const path = project2.path;
+      if (typeof path === "string" && path.trim() !== "") {
+        return path;
+      }
+    } catch {
+    }
+    try {
+      const name = project2.name;
+      if (typeof name === "string" && name.trim() !== "") {
+        return `nome:${name}`;
+      }
+    } catch {
+    }
+    return "(sem projeto)";
+  }
+  function parse(raw) {
+    if (!raw) {
+      return { version: 1, projects: {} };
+    }
+    try {
+      const data = JSON.parse(raw);
+      if (!data || data.version !== 1 || typeof data.projects !== "object") {
+        return { version: 1, projects: {} };
+      }
+      return { version: 1, projects: data.projects };
+    } catch {
+      return { version: 1, projects: {} };
+    }
+  }
+  async function readStored() {
+    try {
+      const space = await workspace();
+      return parse(readText$1(space, FILE));
+    } catch {
+      return { version: 1, projects: {} };
+    }
+  }
+  async function ensureRegistryLoaded(project2) {
+    const key = projectKey(project2);
+    if (loadedFor === key) {
+      return;
+    }
+    if (loading) {
+      await loading;
+      if (loadedFor === key) {
+        return;
+      }
+    }
+    loading = (async () => {
+      const stored = await readStored();
+      bakedByParam.clear();
+      const entry = stored.projects[key];
+      if (entry && entry.params) {
+        for (const [paramKey, ticks] of Object.entries(entry.params)) {
+          if (Array.isArray(ticks) && ticks.length > 0) {
+            bakedByParam.set(paramKey, new Set(ticks.filter((t) => typeof t === "string")));
+          }
+        }
+      }
+      loadedFor = key;
+    })();
+    try {
+      await loading;
+    } finally {
+      loading = null;
+    }
+  }
+  async function persistRegistry(project2) {
+    const key = projectKey(project2);
+    try {
+      const space = await workspace();
+      const stored = parse(readText$1(space, FILE));
+      const params = {};
+      for (const [paramKey, ticks] of bakedByParam) {
+        if (ticks.size > 0) {
+          params[paramKey] = [...ticks];
+        }
+      }
+      if (Object.keys(params).length === 0) {
+        delete stored.projects[key];
+      } else {
+        stored.projects[key] = { updated: (/* @__PURE__ */ new Date()).toISOString(), params };
+      }
+      const ordered = Object.entries(stored.projects).sort(
+        (a, b) => (b[1]?.updated ?? "").localeCompare(a[1]?.updated ?? "")
+      );
+      stored.projects = Object.fromEntries(ordered.slice(0, MAX_PROJECTS));
+      await write(space, FILE, JSON.stringify(stored));
+    } catch (cause) {
+      console.warn("[Flow] não consegui gravar o registro de assadura:", cause);
+    }
+  }
   function bakedFor(key) {
     let set = bakedByParam.get(key);
     if (!set) {
@@ -2253,6 +2528,14 @@
     }
     return set;
   }
+  function bakedIfAny(key) {
+    return bakedByParam.get(key);
+  }
+  function forgetParam(key) {
+    bakedByParam.delete(key);
+  }
+  const FLOW_DIAG_FILE = "flow-diag.json";
+  const MAX_PARAMS = 40;
   const EXCLUDED_COMPONENTS = /time\s*remap|remapeamento\s*de\s*tempo|remappage|zeitverzerrung|时间重映射/i;
   async function resolve(value) {
     return await value;
@@ -2271,6 +2554,7 @@
         report.lines.push("Nenhuma sequência ativa.");
         return { params: [], report };
       }
+      await ensureRegistryLoaded(project2);
       const clips = await collectSelectedVideoClips(ppro, sequence);
       report.clips = clips.length;
       if (clips.length === 0) {
@@ -2351,7 +2635,7 @@
     }
   }
   function anchorsOf(key, keyTicks) {
-    const baked = bakedByParam.get(key);
+    const baked = bakedIfAny(key);
     if (!baked || baked.size === 0) {
       return keyTicks.slice();
     }
@@ -2418,6 +2702,7 @@
       if (!sequence) {
         return fail$1("Abra uma sequência na timeline primeiro.");
       }
+      await ensureRegistryLoaded(project2);
       const clips = await collectSelectedVideoClips(ppro, sequence);
       if (clips.length === 0) {
         return fail$1("Nenhum clipe de vídeo selecionado na timeline.");
@@ -2471,7 +2756,7 @@
           keyTicks: target.param.keyTicks,
           anchorTicks: target.param.anchorTicks
         })),
-        relogios: await clipClocks(byKey, targets),
+        relogios: DIAG_ENABLED ? await clipClocks(byKey, targets) : "(diag desligado)",
         trechos: context.diag,
         planos: plans.map((plan) => ({
           param: plan.descriptor?.label ?? safeDisplayName(plan.param),
@@ -2479,7 +2764,7 @@
           add: plan.add,
           existentes: plan.existing
         })),
-        antes: await keyframesByParam(plans, byKey),
+        antes: DIAG_ENABLED ? await keyframesByParam(plans, byKey) : "(diag desligado)",
         notas: context.notes.slice()
       };
       await dumpDiag(relatorio, FLOW_DIAG_FILE);
@@ -2551,7 +2836,7 @@
       }
       relatorio.transacao = { committed, added, refused, transactionError, filed };
       if (transactionError) {
-        await dumpDiag(relatorio, FLOW_DIAG_FILE);
+        await dumpDiag(relatorio, FLOW_DIAG_FILE, true);
         return fail$1(withNotes(`O Premiere recusou: ${transactionError}`, context.notes));
       }
       if (!committed) {
@@ -2571,9 +2856,10 @@
           baked.add(ticks);
         }
         if (baked.size === 0) {
-          bakedByParam.delete(record.key);
+          forgetParam(record.key);
         }
       }
+      await persistRegistry(project2);
       let linearCommitted = false;
       let linearFiled = 0;
       if (toLinear.length > 0) {
@@ -2632,13 +2918,14 @@
         );
       }
       const verified = await verify(plans, refreshedByKey);
+      const torto = swept > 0 || reparados > 0 || refused > 0 || wanted > 0 && verified === 0;
       relatorio.depois = {
         varridos: swept,
         verificados: verified,
-        keyframes: await keyframesByParam(plans, refreshedByKey),
+        keyframes: DIAG_ENABLED || torto ? await keyframesByParam(plans, refreshedByKey) : "(diag desligado)",
         notas: context.notes.slice()
       };
-      await dumpDiag(relatorio, FLOW_DIAG_FILE);
+      await dumpDiag(relatorio, FLOW_DIAG_FILE, torto);
       if (wanted > 0 && verified === 0) {
         context.notes.push("Não consegui reler os keyframes — confira o Effect Controls.");
       }
@@ -2655,20 +2942,6 @@
     } catch (cause) {
       return fail$1(`Falhou: ${describeError$1(cause)}`);
     }
-  }
-  async function rawShapeAt(param, time) {
-    let raw;
-    try {
-      raw = await param.getValueAtTime(time);
-    } catch (cause) {
-      return `(erro: ${describeError$1(cause)})`;
-    }
-    const inner = raw && typeof raw === "object" ? raw.value : void 0;
-    return {
-      forma: describeShape(raw),
-      formaInterna: describeShape(inner),
-      valor: unwrapValue(raw)
-    };
   }
   async function clipClocks(byKey, targets) {
     const out = {};
@@ -2982,19 +3255,6 @@
         }
       });
     }
-    build.diag.push({
-      param: safeDisplayName(param),
-      startTicks,
-      endTicks,
-      startSeconds,
-      endSeconds,
-      frames,
-      steps,
-      de: { forma: await rawShapeAt(param, startTime), lido: from },
-      para: { forma: await rawShapeAt(param, endTime), lido: to },
-      ease: [0, 0.1, 0.25, 0.5, 0.75, 0.9, 1].map((t) => [t, ease(t)]),
-      add
-    });
     if (add.length === 0) {
       build.notes.push("Nenhum frame livre entre os keyframes do trecho.");
       return null;
@@ -3174,6 +3434,21 @@
   function fail$1(message) {
     return { ok: false, message };
   }
+  const FLOW_DEFAULTS = {
+    density: DENSITY_DEFAULT,
+    curveId: "ease-out"
+  };
+  const flowSettings = createToolSettings(
+    "flow-config.json",
+    FLOW_DEFAULTS,
+    (raw) => ({
+      density: Math.round(
+        clampNumber(raw.density, DENSITY_MIN, DENSITY_MAX, DENSITY_DEFAULT)
+      ),
+      curveId: typeof raw.curveId === "string" && raw.curveId !== "custom" ? raw.curveId : FLOW_DEFAULTS.curveId
+    })
+  );
+  warmToolSettings(flowSettings);
   let livePicker = null;
   let densitySlider = null;
   const flowTool = {
@@ -3185,9 +3460,10 @@
     glyph: "curve",
     available: true,
     mount(container, context) {
+      const saved = flowSettings.peek() ?? FLOW_DEFAULTS;
       let params = [];
       let report = null;
-      let density = DENSITY_DEFAULT;
+      let density = saved.density;
       let scanning = false;
       const picked = /* @__PURE__ */ new Map();
       container.innerHTML = shellMarkup(density);
@@ -3207,11 +3483,16 @@
       const curveZone = container.querySelector("[data-curve-zone]");
       livePicker?.destroy();
       livePicker = mountCurvePicker(curveZone, {
-        curveId: "ease-out",
+        curveId: saved.curveId,
         renderPreview: renderCurvePreview,
-        onChange: () => {
-        }
+        onChange: () => remember()
       });
+      function remember() {
+        flowSettings.patch({
+          density,
+          curveId: livePicker?.curve().id ?? FLOW_DEFAULTS.curveId
+        });
+      }
       function renderList(keepStatus = false) {
         if (params.length === 0) {
           list.innerHTML = '<p class="work-note">Nenhum parâmetro com keyframes no clipe selecionado. Selecione na timeline o clipe que tem a animação e toque em Reler.</p>' + scanMarkup(report);
@@ -3323,9 +3604,17 @@
             Number(button.dataset.densityPreset) === density
           );
         }
+        remember();
       }
       setDensity(density);
       void reload();
+      void flowSettings.read().then((stored) => {
+        if (!container.isConnected) {
+          return;
+        }
+        setDensity(stored.density);
+        livePicker?.setCurveId(stored.curveId);
+      });
       context.setApplyLabel("Aplicar curva");
       context.setApplyEnabled(false);
       context.setResetLabel("Linear");
@@ -3361,6 +3650,7 @@
       context.setRefreshHandler(() => void reload());
     },
     unmount() {
+      void flowSettings.flush();
       densitySlider?.destroy();
       densitySlider = null;
       livePicker?.destroy();
@@ -3942,6 +4232,13 @@
       return { mode: "denied", error: describe(cause), ticket: null };
     }
   }
+  async function stampVerdict() {
+    try {
+      return (await agentStatus()).up ? "busy" : "dead";
+    } catch {
+      return "dead";
+    }
+  }
   async function withdraw(ticket) {
     if (!ticket) {
       return;
@@ -4131,7 +4428,15 @@
       "  Dim h",
       "  On Error Resume Next",
       "  Set h = fso.CreateTextFile(aliveF, True)",
-      `  h.Write Epoch() & " ${AGENT_VERSION}"`,
+      // Terceiro campo, como no Unix. Ele não é decorativo: `agentStatus`
+      // lê exatamente esta posição, e sem ela o diagnóstico do painel
+      // dizia "de pé, nativo (?)" em TODA máquina Windows. Aqui não há
+      // Rosetta, então a resposta honesta é o nome da arquitetura que o
+      // próprio Windows informa.
+      "  Dim arch",
+      '  arch = sh.Environment("Process")("PROCESSOR_ARCHITECTURE")',
+      '  If arch = "" Then arch = "windows"',
+      `  h.Write Epoch() & " ${AGENT_VERSION} " & arch`,
       "  h.Close",
       "  On Error GoTo 0",
       "End Sub",
@@ -4260,7 +4565,9 @@
         onManual?.(scriptPath, launchError);
       }
     }
-    const stampDeadline = Date.now() + 8e3;
+    let stampDeadline = Date.now() + 8e3;
+    const BUSY_GRACE_MS = 8e3;
+    const BUSY_LIMIT = Date.now() + 18e4;
     const started = Date.now();
     const deadline = started + TIMEOUT_MS$2;
     let lastDone = -1;
@@ -4270,9 +4577,13 @@
         return { ok: false, error: "cancelled", ffmpegPath: null, scriptPath };
       }
       if (awaitingStamp && Date.now() > stampDeadline) {
-        awaitingStamp = false;
-        if (!readText$1(space, runStarted)) {
-          console.warn("[Silêncios] sem carimbo do agente — caindo para o Terminal.");
+        const verdict = await stampVerdict();
+        if (verdict === "busy" && Date.now() < BUSY_LIMIT) {
+          stampDeadline = Date.now() + BUSY_GRACE_MS;
+          console.log("[Silêncios] na fila: o agente está com outro trabalho.");
+        } else if (!readText$1(space, runStarted)) {
+          awaitingStamp = false;
+          console.warn("[Silêncios] agente não respondeu — caindo para o Terminal.");
           await withdraw(sent.ticket);
           try {
             await shell.openPath(scriptPath, "Extrair o áudio dos clipes selecionados.");
@@ -4280,6 +4591,8 @@
             launchError = describe(cause);
             onManual?.(scriptPath, launchError);
           }
+        } else {
+          awaitingStamp = false;
         }
       }
       if (tick % 3 === 0) {
@@ -4464,6 +4777,22 @@
       "set -u",
       `WORK=${shellQuote(folder)}`,
       `printf 1 > "$WORK/${STARTED_FILE$2}"`,
+      /*
+       * FFMPEG nasce vazia, e isso NÃO é enfeite.
+       *
+       * Com `set -u` ligado, ler uma variável que nunca recebeu valor
+       * aborta o bash na hora. O laço abaixo só atribui FFMPEG quando
+       * ENCONTRA o binário, e a primeira leitura dela é justamente o
+       * teste que decide baixar o FFmpeg. Ou seja: na máquina onde
+       * nenhum dos caminhos tem ffmpeg — exatamente a primeira execução
+       * de um usuário novo — o script morria em "unbound variable"
+       * antes de escrever o resultado, o bloco de download logo abaixo
+       * nunca rodava, e o painel esperava os 20 minutos do tempo limite
+       * para depois acusar problema de autorização que não existia.
+       *
+       * O whisper.ts e o ytdlp.ts já faziam isto. Só este arquivo não.
+       */
+      "FFMPEG=''",
       `CUSTOM=${shellQuote(ffmpegPath)}`,
       // A ordem procura primeiro o que o editor escolheu, depois o diretório
       // integrado do Framelab, Homebrew, MacPorts, PATH e a pasta de trabalho.
@@ -4583,6 +4912,11 @@
       "#!/bin/bash",
       `printf '\\033]0;Framelab — teste\\007'`,
       "set -u",
+      // Pelo mesmo motivo do script de extração: sem isto o teste morria
+      // em "unbound variable" na máquina sem ffmpeg, e o diagnóstico
+      // respondia "sem resposta em 20s" — culpando a autorização do
+      // sistema por um erro de script nosso.
+      "FFMPEG=''",
       `CUSTOM=${shellQuote(ffmpegPath)}`,
       'for candidate in "$CUSTOM" "$HOME/Library/Application Support/Framelab/bin/ffmpeg" "/Library/Application Support/Framelab/bin/ffmpeg" /opt/homebrew/bin/ffmpeg /usr/local/bin/ffmpeg /opt/local/bin/ffmpeg /usr/bin/ffmpeg ' + shellQuote(join(folder, "ffmpeg")) + "; do",
       '  if [ -n "$candidate" ] && [ -x "$candidate" ]; then FFMPEG="$candidate"; break; fi',
@@ -4941,7 +5275,7 @@
     }
     const jobs = [];
     const pending = [];
-    const runTag = Date.now().toString(36);
+    const runTag2 = Date.now().toString(36);
     let index = 0;
     for (const need of needs.values()) {
       const cached2 = cachedEnvelope(cacheKey(need.mediaPath, need.from, need.to));
@@ -4957,7 +5291,7 @@
         // O carimbo isola execuções: cancelar deixa um script órfão
         // terminando de escrever, e sem nomes próprios a varredura
         // seguinte lia o PCM DELE como se fosse o dela.
-        file: `audio-${runTag}-${index}.pcm`
+        file: `audio-${runTag2}-${index}.pcm`
       });
       pending.push(need);
     }
@@ -5060,18 +5394,31 @@
       }
       const perSecond = ticksPerSecond(ppro);
       const runs = groupIntoRuns(ready);
-      const snapshot = {
+      const snapshot2 = {
         runs: [],
         clipCount: ready.length,
         cuts: scan.cuts,
         removedSeconds: scan.removedSeconds
       };
       let totalWrites = 0;
+      let totalDropped = 0;
+      let originalTicks = 0n;
+      let keptTicks = 0n;
       const plannedRuns = runs.map((run2) => {
-        const writes = planRun(run2, scan, perSecond);
-        totalWrites += writes.length;
-        return { run: run2, writes };
+        const planned = planRun(run2, scan, perSecond);
+        totalWrites += planned.writes.length;
+        totalDropped += planned.dropped;
+        if (planned.writes.length > 0) {
+          keptTicks += planned.keptTicks;
+          for (const clip of run2) {
+            if (clip.plan) {
+              originalTicks += BigInt(clip.outTicks) - BigInt(clip.inTicks);
+            }
+          }
+        }
+        return { run: run2, writes: planned.writes };
       });
+      const writtenRuns = plannedRuns.filter((entry) => entry.writes.length > 0).length;
       let done = 0;
       for (const { run: run2, writes } of plannedRuns) {
         if (writes.length === 0) {
@@ -5082,12 +5429,12 @@
           return {
             ok: false,
             message: removed.message,
-            snapshot: snapshot.runs.length > 0 ? snapshot : null
+            snapshot: snapshot2.runs.length > 0 ? snapshot2 : null
           };
         }
         const runStart = BigInt(run2[0].startTicks);
         const lastWrite = writes[writes.length - 1];
-        snapshot.runs.push({
+        snapshot2.runs.push({
           trackVideo: run2[0].trackVideo,
           trackAudio: run2[0].trackAudio,
           writtenStart: runStart.toString(),
@@ -5108,12 +5455,13 @@
           return {
             ok: false,
             message: stepMessage("a escrita de um trecho", written.error) + " Use Desfazer corte para recuperar os clipes originais.",
-            snapshot
+            snapshot: snapshot2
           };
         }
       }
-      const message = `${scan.cuts} ${scan.cuts === 1 ? "corte feito" : "cortes feitos"} em ${ready.length} ${ready.length === 1 ? "clipe" : "clipes"} · ${formatClock$1(scan.removedSeconds)} removidos.`;
-      return { ok: true, message, snapshot };
+      const removedSeconds = originalTicks > 0n ? Number(originalTicks - keptTicks) / Number(perSecond) : scan.removedSeconds;
+      const message = `${scan.cuts} ${scan.cuts === 1 ? "corte feito" : "cortes feitos"} em ${ready.length} ${ready.length === 1 ? "clipe" : "clipes"} · ${formatClock$1(removedSeconds)} removidos.` + (totalDropped > 0 ? ` ${totalDropped} trecho(s) curto(s) demais foram absorvidos no corte.` : "") + (writtenRuns > 1 ? ` Sobrou espaço vazio entre ${writtenRuns} blocos: o corte não é ripple.` : "");
+      return { ok: true, message, snapshot: snapshot2 };
     } catch (cause) {
       return { ok: false, message: describeError$1(cause), snapshot: null };
     }
@@ -5272,6 +5620,8 @@
   }
   function planRun(run2, scan, perSecond) {
     const writes = [];
+    let dropped = 0;
+    let keptTicks = 0n;
     const frame = scan.ticksPerFrame;
     let cursor = BigInt(run2[0].startTicks);
     for (const clip of run2) {
@@ -5294,6 +5644,7 @@
           to = outTicks;
         }
         if (to - from < minimum) {
+          dropped += 1;
           continue;
         }
         writes.push({
@@ -5306,9 +5657,10 @@
           trackAudio: clip.trackAudio
         });
         cursor += to - from;
+        keptTicks += to - from;
       }
     }
-    return writes;
+    return { writes, dropped, keptTicks };
   }
   async function removeRun(ppro, host, run2) {
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -5457,21 +5809,21 @@
     const projectItem = fresh ?? write2.fallbackItem;
     return { projectItem, clipItem: ppro.ClipProjectItem.cast(projectItem) };
   }
-  async function undoCuts(snapshot) {
+  async function undoCuts(snapshot2) {
     const ppro = getPremiere();
     if (!ppro) {
-      return { ok: false, message: "Premiere UXP runtime indisponível.", snapshot };
+      return { ok: false, message: "Premiere UXP runtime indisponível.", snapshot: snapshot2 };
     }
     try {
       const opened = await openHost(ppro);
       if (!opened.ok) {
-        return { ok: false, message: opened.message, snapshot };
+        return { ok: false, message: opened.message, snapshot: snapshot2 };
       }
       const host = opened.host;
-      for (const run2 of snapshot.runs) {
+      for (const run2 of snapshot2.runs) {
         const cleared = await clearRange(ppro, host, run2);
         if (!cleared.ok) {
-          return { ok: false, message: cleared.message, snapshot };
+          return { ok: false, message: cleared.message, snapshot: snapshot2 };
         }
         const writes = run2.originals.map((original) => ({
           projectItemId: original.projectItemId,
@@ -5488,17 +5840,17 @@
           return {
             ok: false,
             message: stepMessage("a recolocação dos clipes originais", restored.error),
-            snapshot
+            snapshot: snapshot2
           };
         }
       }
       return {
         ok: true,
-        message: `${snapshot.clipCount} ${snapshot.clipCount === 1 ? "clipe restaurado" : "clipes restaurados"}.`,
+        message: `${snapshot2.clipCount} ${snapshot2.clipCount === 1 ? "clipe restaurado" : "clipes restaurados"}.`,
         snapshot: null
       };
     } catch (cause) {
-      return { ok: false, message: describeError$1(cause), snapshot };
+      return { ok: false, message: describeError$1(cause), snapshot: snapshot2 };
     }
   }
   async function clearRange(ppro, host, run2) {
@@ -5832,11 +6184,12 @@
   };
   let cancelActiveScan$1 = null;
   let releaseSliders$1 = null;
+  let snapshot$1 = null;
   const silenceTool = {
     id: "silence",
     name: "Corte de Silêncios",
     summary: "Remove pausas e fecha o corte automaticamente",
-    hint: "Selecione os clipes falados na timeline e analise. Os trechos com fala são mantidos e encostados na timeline.",
+    hint: "Selecione os clipes falados na timeline e analise. Os trechos com fala são mantidos e encostados entre si. O corte não é ripple: clipes não selecionados ficam onde estão, e entre blocos separados por eles sobra o buraco do que saiu.",
     category: "edicao",
     glyph: "cut",
     available: true,
@@ -5845,7 +6198,6 @@
       let mode = "waveform";
       let ffmpegPath = "";
       let scan = null;
-      let snapshot = null;
       let scanning = false;
       let cancelRequested = false;
       container.innerHTML = markup$4(params);
@@ -5881,7 +6233,7 @@
       context.setApplyLabel("CORTAR SILÊNCIOS");
       context.setApplyEnabled(false);
       context.setResetLabel("DESFAZER CORTE");
-      context.setResetHandler(null);
+      context.setResetHandler(snapshot$1 ? () => void runUndo() : null);
       void readConfig$2().then((config) => {
         ffmpegPath = config.ffmpegPath;
         if (config.mode === "transcript" || config.mode === "waveform") {
@@ -6141,7 +6493,7 @@
         });
         context.setStatus(result.message, result.ok ? "done" : "error");
         if (result.snapshot) {
-          snapshot = result.snapshot;
+          snapshot$1 = result.snapshot;
           context.setResetHandler(() => void runUndo());
         }
         if (result.ok) {
@@ -6158,14 +6510,14 @@
         context.refreshSelection();
       });
       async function runUndo() {
-        if (!snapshot) {
+        if (!snapshot$1) {
           return;
         }
         context.setStatus("Restaurando clipes originais…");
-        const result = await undoCuts(snapshot);
+        const result = await undoCuts(snapshot$1);
         context.setStatus(result.message, result.ok ? "done" : "error");
         if (result.ok) {
-          snapshot = null;
+          snapshot$1 = null;
           context.setResetHandler(null);
           scan = null;
           if (reportEl) {
@@ -6427,21 +6779,10 @@
   function parseChannelsFromColumns(raw) {
     return raw ? firstMatch(raw, COLUMN_PATTERNS) : null;
   }
-  const PROBE_LIMIT = 2;
-  const PROBE_CHARS = 1200;
-  let probesLeft = PROBE_LIMIT;
-  function resetChannelProbe() {
-    probesLeft = PROBE_LIMIT;
-  }
   function probe(name, source, raw) {
-    if (probesLeft <= 0) {
+    {
       return;
     }
-    probesLeft -= 1;
-    console.log(
-      `[Organize] sonda de metadados (${source}) de "${name}" — ${raw.length} caracteres, primeiros ${PROBE_CHARS}:
-` + raw.slice(0, PROBE_CHARS)
-    );
   }
   async function readAudioChannels(ppro, item, name) {
     const metadata = ppro.Metadata;
@@ -6467,10 +6808,25 @@
   }
   function commitTransaction$1(project2, label, build) {
     let committed = false;
-    project2.lockedAccess(() => {
-      committed = project2.executeTransaction(build, label);
-    });
+    let error = null;
+    try {
+      project2.lockedAccess(() => {
+        try {
+          committed = project2.executeTransaction(build, label);
+        } catch (cause) {
+          error = cause;
+        }
+      });
+    } catch (cause) {
+      error = error ?? cause;
+    }
+    if (error) {
+      console.error(`[Organize] transação "${label}" falhou:`, error);
+    }
     return committed;
+  }
+  function undoableSnapshot(snapshot2) {
+    return snapshot2.moves.length > 0 || snapshot2.createdBinIds.length > 0 ? snapshot2 : null;
   }
   const VIDEO_EXTS = /* @__PURE__ */ new Set([
     "mp4",
@@ -6661,9 +7017,6 @@
       const ext = extensionOf(mediaPath || name);
       return MUSIC_LEANING_EXTS.has(ext) ? "music" : null;
     })();
-    console.log(
-      `[Organize] audio "${name}" | ${seconds2 === null ? "duração ilegível" : `${seconds2.toFixed(1)}s`} | canais ${channels ?? "?"} | nome de sequência: ${namesAPiece ? "sim" : "não"} | pasta "${folder}" | -> ${decided ?? "solto em Audio"}`
-    );
     return decided;
   }
   const AUDIO_KIND_LABELS = {
@@ -6766,7 +7119,16 @@
     }
     return false;
   }
-  async function scanProject() {
+  const SCAN_CANCELLED = "Varredura cancelada.";
+  function isScanCancelled(cause) {
+    return cause instanceof Error && cause.message === SCAN_CANCELLED;
+  }
+  function stopIfCancelled(options) {
+    if (options.cancelled?.()) {
+      throw new Error(SCAN_CANCELLED);
+    }
+  }
+  async function scanProject(options = {}) {
     const ppro = getPremiere();
     if (!ppro) {
       throw new Error("Premiere UXP runtime indisponível.");
@@ -6775,9 +7137,11 @@
     if (!project2) {
       throw new Error("Nenhum projeto aberto.");
     }
-    resetChannelProbe();
+    options.onStage?.("Lendo a raiz do projeto…");
     const rootFolder = await project2.getRootItem();
     const rootLooseItems = await collectRootLooseItems(ppro, rootFolder);
+    stopIfCancelled(options);
+    options.onStage?.("Lendo as sequências do projeto…");
     const projectSequenceGuids = /* @__PURE__ */ new Set();
     const projectSequenceNames = /* @__PURE__ */ new Set();
     let projectSequences = [];
@@ -6799,14 +7163,20 @@
     const sequenceNamesLower = new Set(
       [...projectSequenceNames].map((seqName) => seqName.trim().toLowerCase())
     );
+    stopIfCancelled(options);
     const nestedDetection = await detectNestedSequences(
       ppro,
       projectSequences,
-      projectSequenceNames
+      projectSequenceNames,
+      options
     );
     const classified = [];
-    const diagnostics = [];
+    let scanned = 0;
+    options.onStage?.("Classificando os itens soltos…");
     for (const { item, parentId } of rootLooseItems) {
+      stopIfCancelled(options);
+      scanned += 1;
+      options.onProgress?.(scanned, rootLooseItems.length);
       const id = item.getId();
       const name = item.name ?? "";
       if (item.type === ppro.ProjectItem.TYPE_BIN || item.type === ppro.ProjectItem.TYPE_ROOT) {
@@ -6891,11 +7261,6 @@
           sequenceNames: sequenceNamesLower
         });
       }
-      diagnostics.push(
-        `  ${category.padEnd(16)} ${name}
-      isSequence=${claimsSequence} contentType=${String(contentTypeRaw)} guid=${ownGuid ?? "—"} noProjeto=${ownGuid !== null && projectSequenceGuids.has(ownGuid)} nomeNaLista=${projectSequenceNames.has(name)} isNestedByName=${isNestedSequenceName(name)} isNestedByTimeline=${nestedDetection.ids.has(id) || nestedDetection.names.has(name.trim().toLowerCase())}
-      ext="${ext}" mídia="${mediaPath}"`
-      );
       classified.push({
         item,
         clip,
@@ -6926,11 +7291,6 @@
       }
     }
     const totalSequences = counts.sequence + counts["sequence-nested"];
-    console.log(
-      `[Organize] o projeto declara ${projectSequenceNames.size} sequência(s): ${[...projectSequenceNames].join(", ") || "—"}
-[Organize] classificação:
-` + diagnostics.join("\n")
-    );
     const allSequences = classified.filter(
       (c) => c.category === "sequence" || c.category === "sequence-nested"
     );
@@ -7052,7 +7412,7 @@
     }
     return result;
   }
-  async function detectNestedSequences(ppro, sequences, projectSequenceNames) {
+  async function detectNestedSequences(ppro, sequences, projectSequenceNames, options) {
     const ids = /* @__PURE__ */ new Set();
     const names = /* @__PURE__ */ new Set();
     const guids = /* @__PURE__ */ new Set();
@@ -7126,7 +7486,12 @@
       } catch {
       }
     };
+    let walked = 0;
+    options.onStage?.("Procurando sequências aninhadas…");
     for (const seq of sequences) {
+      stopIfCancelled(options);
+      walked += 1;
+      options.onProgress?.(walked, sequences.length);
       let parentName = "";
       try {
         parentName = (seq.name ?? "").trim();
@@ -7156,7 +7521,7 @@
     if (!project2) {
       return { ok: false, message: "Nenhum projeto aberto.", snapshot: null };
     }
-    const snapshot = { moves: [], createdBinIds: [] };
+    const snapshot2 = { moves: [], createdBinIds: [] };
     let phase = "iniciar";
     try {
       phase = "ler a raiz do projeto";
@@ -7196,7 +7561,7 @@
         return {
           ok: false,
           message: "O Premiere recusou a criação das pastas principais. Nada foi alterado.",
-          snapshot: null
+          snapshot: undoableSnapshot(snapshot2)
         };
       }
       phase = "reler as pastas principais";
@@ -7205,7 +7570,7 @@
       for (const [cat, folder] of afterTop.top) {
         if (!existingTopNames.has(TOP_CATEGORY_LABELS[cat])) {
           const id = afterTop.ids.get(folder);
-          if (id) snapshot.createdBinIds.push(id);
+          if (id) snapshot2.createdBinIds.push(id);
         }
       }
       const hadPrincipal = !!afterTop.seqPrincipal;
@@ -7246,36 +7611,36 @@
           }
         }
       );
-      if (plannedSub > 0 && !subCreated) {
-        return {
-          ok: false,
-          message: "O Premiere recusou a criação das subpastas. As pastas principais podem ter sido criadas; nenhum item foi movido.",
-          snapshot: null
-        };
-      }
       phase = "reler a estrutura de pastas";
       root = await project2.getRootItem();
       const layout = await readBinLayout(ppro, root);
       if (layout.seqPrincipal && !hadPrincipal) {
         const id = layout.ids.get(layout.seqPrincipal);
-        if (id) snapshot.createdBinIds.push(id);
+        if (id) snapshot2.createdBinIds.push(id);
       }
       if (layout.seqNested && !hadNested) {
         const id = layout.ids.get(layout.seqNested);
-        if (id) snapshot.createdBinIds.push(id);
+        if (id) snapshot2.createdBinIds.push(id);
       }
       for (const [name, folder] of layout.seqGroups) {
         if (!hadSeqGroups.has(name)) {
           const id = layout.ids.get(folder);
-          if (id) snapshot.createdBinIds.push(id);
+          if (id) snapshot2.createdBinIds.push(id);
         }
       }
       for (const kind of AUDIO_KIND_ORDER) {
         const folder = layout.audioKind.get(kind);
         if (folder && !hadAudioKinds.has(kind)) {
           const id = layout.ids.get(folder);
-          if (id) snapshot.createdBinIds.push(id);
+          if (id) snapshot2.createdBinIds.push(id);
         }
+      }
+      if (plannedSub > 0 && !subCreated) {
+        return {
+          ok: false,
+          message: "O Premiere recusou a criação das subpastas. Nenhum item foi movido; use Desfazer para remover as pastas que já haviam sido criadas.",
+          snapshot: undoableSnapshot(snapshot2)
+        };
       }
       phase = "indexar os itens";
       const freshItems = /* @__PURE__ */ new Map();
@@ -7310,7 +7675,7 @@
           if (layout.ids.get(targetBin) === parentId) continue;
           const freshItem = freshItems.get(classified.id);
           if (!freshItem) continue;
-          snapshot.moves.push({
+          snapshot2.moves.push({
             itemId: classified.id,
             originalParentId: parentId
           });
@@ -7319,34 +7684,36 @@
         }
       });
       if (movedCount > 0 && !moved) {
+        snapshot2.moves.length = 0;
         return {
           ok: false,
-          message: "O Premiere recusou a movimentação. Nada foi alterado.",
-          snapshot: null
+          message: "O Premiere recusou a movimentação. Nenhum item foi movido; use Desfazer para remover as pastas que já haviam sido criadas.",
+          snapshot: undoableSnapshot(snapshot2)
         };
       }
       if (movedCount === 0 && missingTargets > 0) {
         return {
           ok: false,
           message: `${missingTargets} ${missingTargets === 1 ? "item ficou" : "itens ficaram"} sem pasta de destino. Confira se as pastas do plugin existem na raiz do projeto.`,
-          snapshot: null
+          snapshot: undoableSnapshot(snapshot2)
         };
       }
       return {
         ok: true,
         message: movedCount > 0 ? `${movedCount} ${movedCount === 1 ? "item organizado" : "itens organizados"} com sucesso.` + (missingTargets > 0 ? ` ${missingTargets} sem pasta de destino.` : "") : "Nada a mover — tudo já está no lugar.",
-        snapshot
+        snapshot: snapshot2
       };
     } catch (cause) {
       console.error(`[Organize] falhou ao ${phase}:`, cause);
+      const partial = undoableSnapshot(snapshot2);
       return {
         ok: false,
-        message: `Falha ao ${phase}: ${describeError$1(cause)}`,
-        snapshot: null
+        message: `Falha ao ${phase}: ${describeError$1(cause)}` + (partial ? " Use Desfazer para reverter o que já foi feito." : ""),
+        snapshot: partial
       };
     }
   }
-  async function undoOrganize(snapshot) {
+  async function undoOrganize(snapshot2) {
     const ppro = getPremiere();
     if (!ppro) {
       return { ok: false, message: "Premiere UXP runtime indisponível.", snapshot: null };
@@ -7362,37 +7729,55 @@
       allBins.set("__root__", rootFolder);
       const allItemsById = /* @__PURE__ */ new Map();
       await indexAllItems(ppro, rootFolder, allItemsById);
-      let restoredCount = 0;
-      let lostCount = 0;
+      const parentBefore = /* @__PURE__ */ new Map();
+      await indexItemParents(ppro, rootFolder, "__root__", parentBefore);
+      let plannedMoves = 0;
       const restored = commitTransaction$1(
         project2,
         "Desfazer Organização — Restaurar Itens",
         (tx) => {
-          for (const move of snapshot.moves) {
+          for (const move of snapshot2.moves) {
+            if (parentBefore.get(move.itemId) === move.originalParentId) {
+              continue;
+            }
             const item = allItemsById.get(move.itemId);
             const originalParent = allBins.get(move.originalParentId);
             if (!item || !originalParent) {
-              lostCount++;
               continue;
             }
             const moveAction = rootFolder.createMoveItemAction(item, originalParent);
             tx.addAction(moveAction);
-            restoredCount++;
+            plannedMoves++;
           }
         }
       );
-      if (restoredCount > 0 && !restored) {
+      if (plannedMoves > 0 && !restored) {
         return {
           ok: false,
           message: "O Premiere recusou a restauração dos itens. Nada foi movido de volta.",
-          snapshot
+          snapshot: snapshot2
         };
       }
       const rootAfterRestore = await project2.getRootItem();
       const updatedBins = /* @__PURE__ */ new Map();
       await indexBins(ppro, rootAfterRestore, updatedBins);
+      const parentAfter = /* @__PURE__ */ new Map();
+      await indexItemParents(ppro, rootAfterRestore, "__root__", parentAfter);
+      let restoredCount = 0;
+      let missingCount = 0;
+      let stuckCount = 0;
+      for (const move of snapshot2.moves) {
+        const parent = parentAfter.get(move.itemId);
+        if (parent === void 0) {
+          missingCount++;
+        } else if (parent === move.originalParentId) {
+          restoredCount++;
+        } else {
+          stuckCount++;
+        }
+      }
       const candidates2 = [];
-      for (const id of snapshot.createdBinIds) {
+      for (const id of snapshot2.createdBinIds) {
         const folder = updatedBins.get(id);
         if (!folder) {
           continue;
@@ -7439,27 +7824,33 @@
           `${keptBins} ${keptBins === 1 ? "pasta mantida" : "pastas mantidas"} por ter conteúdo novo dentro.`
         );
       }
-      if (lostCount > 0) {
+      if (stuckCount > 0) {
         notes.push(
-          `${lostCount} ${lostCount === 1 ? "item não foi encontrado" : "itens não foram encontrados"} no projeto.`
+          `${stuckCount} ${stuckCount === 1 ? "item continuou" : "itens continuaram"} na pasta nova.`
+        );
+      }
+      if (missingCount > 0) {
+        notes.push(
+          `${missingCount} ${missingCount === 1 ? "item não foi encontrado" : "itens não foram encontrados"} no projeto.`
         );
       }
       if (!binsRemoved) {
         notes.push("O Premiere recusou a remoção das pastas vazias.");
       }
+      const undone = binsRemoved && stuckCount === 0 && missingCount === 0;
       return {
-        ok: true,
+        ok: undone,
         message: [
           `${restoredCount} ${restoredCount === 1 ? "item restaurado" : "itens restaurados"}.`,
           ...notes
         ].join(" "),
-        snapshot: null
+        snapshot: undone ? null : snapshot2
       };
     } catch (cause) {
       return {
         ok: false,
         message: `Falha ao desfazer: ${describeError$1(cause)}`,
-        snapshot
+        snapshot: snapshot2
       };
     }
   }
@@ -7542,6 +7933,22 @@
       }
     }
   }
+  async function indexItemParents(ppro, folder, parentId, map) {
+    const children = await folder.getItems();
+    for (const child of children) {
+      const id = safeId(child);
+      if (id) {
+        map.set(id, parentId);
+      }
+      if (child.type === ppro.ProjectItem.TYPE_BIN) {
+        try {
+          const sub = ppro.FolderItem.cast(child);
+          await indexItemParents(ppro, sub, id, map);
+        } catch {
+        }
+      }
+    }
+  }
   async function indexAllItems(ppro, folder, map) {
     const children = await folder.getItems();
     for (const child of children) {
@@ -7565,6 +7972,7 @@
     premiere: "🎛",
     other: "📦"
   };
+  let lastSnapshot = null;
   const organizeTool = {
     id: "organize",
     name: "Organizar Pastas",
@@ -7576,8 +7984,9 @@
     usesSelection: false,
     mount(container, context) {
       let scan = null;
-      let lastSnapshot = null;
       let scanning = false;
+      let cancelRequested = false;
+      let stage = "Escaneando itens soltos…";
       container.innerHTML = emptyMarkup();
       const scanBtn = container.querySelector("[data-scan]");
       const treeEl = container.querySelector("[data-tree]");
@@ -7586,18 +7995,28 @@
       context.setApplyLabel("ORGANIZAR PROJETO");
       context.setApplyEnabled(false);
       context.setResetLabel("DESFAZER");
-      context.setResetHandler(null);
+      context.setResetHandler(lastSnapshot ? () => void runUndo() : null);
       async function runScan() {
-        if (scanning) return;
-        scanning = true;
-        context.setStatus("Escaneando itens soltos…");
-        context.setApplyEnabled(false);
-        if (scanBtn) {
-          scanBtn.setAttribute("aria-disabled", "true");
-          scanBtn.textContent = "Escaneando…";
+        if (scanning) {
+          cancelRequested = true;
+          context.setStatus("Cancelando…");
+          return;
         }
+        scanning = true;
+        cancelRequested = false;
+        stage = "Escaneando itens soltos…";
+        context.setStatus(stage);
+        context.setApplyEnabled(false);
+        setScanBusy(true);
         try {
-          scan = await scanProject();
+          scan = await scanProject({
+            onStage: (text2) => {
+              stage = text2;
+              context.setStatus(text2);
+            },
+            onProgress: (done, total) => context.setStatus(`${stage} ${done}/${total}`),
+            cancelled: () => cancelRequested
+          });
           renderTree();
           renderStats();
           context.setApplyEnabled(scan.items.length > 0);
@@ -7606,15 +8025,23 @@
             "done"
           );
         } catch (cause) {
-          const msg = cause instanceof Error ? cause.message : String(cause);
-          context.setStatus(msg, "error");
+          if (isScanCancelled(cause)) {
+            context.setStatus("Varredura cancelada.", "idle");
+          } else {
+            const msg = cause instanceof Error ? cause.message : String(cause);
+            context.setStatus(msg, "error");
+          }
+          context.setApplyEnabled(scan !== null && scan.items.length > 0);
         } finally {
           scanning = false;
-          if (scanBtn) {
-            scanBtn.removeAttribute("aria-disabled");
-            scanBtn.textContent = "Escanear Projeto";
-          }
+          cancelRequested = false;
+          setScanBusy(false);
         }
+      }
+      function setScanBusy(busy) {
+        if (!scanBtn) return;
+        scanBtn.classList.toggle("is-busy", busy);
+        scanBtn.textContent = busy ? "Cancelar" : "Escanear Projeto";
       }
       scanBtn?.addEventListener("click", () => void runScan());
       context.setApplyHandler(async () => {
@@ -7623,9 +8050,11 @@
         context.setApplyEnabled(false);
         const result = await organizeProject(scan);
         context.setStatus(result.message, result.ok ? "done" : "error");
-        if (result.ok && result.snapshot) {
+        if (result.snapshot) {
           lastSnapshot = result.snapshot;
           context.setResetHandler(() => void runUndo());
+        }
+        if (result.ok && result.snapshot) {
           scan = null;
           if (treeEl) treeEl.innerHTML = organizedMarkup(result.snapshot.moves.length);
           if (statsEl) statsEl.innerHTML = "";
@@ -7810,18 +8239,23 @@
   const FILE_MARKER = "FRAMELAB_FILE:";
   const FILE_PRINT = `after_move:${FILE_MARKER}%(filepath)j`;
   const STARTED_FILE$1 = "dl-started.txt";
+  const CANCEL_FILE = "dl-cancel.txt";
   const CONFIG_FILE$1 = "download-config.json";
   const SCRIPT_FILE$1 = "download.command";
   const SCRIPT_FILE_WIN$1 = "download.bat";
   const LOCAL_BIN_WIN = "yt-dlp.exe";
-  function infoFile(index) {
-    return `dl-info-${index}.json`;
+  function runTag() {
+    return Date.now().toString(36);
   }
-  function scriptName$1() {
-    return isWindows() ? SCRIPT_FILE_WIN$1 : SCRIPT_FILE$1;
+  function infoFile(tag, index) {
+    return `dl-${tag}-info-${index}.json`;
+  }
+  function scriptName$1(tag) {
+    return `dl-${tag}-${isWindows() ? SCRIPT_FILE_WIN$1 : SCRIPT_FILE$1}`;
   }
   const POLL_MS$1 = 250;
-  const PROBE_TIMEOUT_MS = 8 * 60 * 1e3;
+  const PROBE_TIMEOUT_MS = 90 * 1e3;
+  const PROBE_SETUP_TIMEOUT_MS = 8 * 60 * 1e3;
   const DOWNLOAD_TIMEOUT_MS = 90 * 60 * 1e3;
   const INSTALL_TIMEOUT_MS = 5 * 60 * 1e3;
   const DEFAULT_CONFIG = {
@@ -8028,25 +8462,28 @@
     }
     return [...new Set(files)];
   }
-  let previousRunFiles = [];
+  let previousRunFiles$1 = [];
   async function run(launch) {
     const shell = shellModule();
     if (!shell) {
       return fail("uxp-unavailable", null);
     }
     const space = await workspace();
-    const scriptPath = nativePath(space, scriptName$1());
-    const tag = Date.now().toString(36);
+    const scriptFile = scriptName$1(launch.tag);
+    const scriptPath = nativePath(space, scriptFile);
+    const tag = launch.tag;
     const runFiles = {
       result: `dl-${tag}-result.json`,
       progress: `dl-${tag}-progress.txt`,
       log: `dl-${tag}-log.txt`,
       files: `dl-${tag}-files.txt`,
-      started: `dl-${tag}-started.txt`
+      started: `dl-${tag}-started.txt`,
+      cancel: `dl-${tag}-cancel.txt`
     };
     for (const name of [
       ...Object.values(runFiles),
-      ...previousRunFiles,
+      ...launch.owned ?? [],
+      ...previousRunFiles$1,
       RESULT_FILE$1,
       PROGRESS_FILE,
       LOG_FILE,
@@ -8056,11 +8493,19 @@
     ]) {
       await remove(space, name);
     }
-    previousRunFiles = Object.values(runFiles);
-    const script = launch.build(space).split(RESULT_FILE$1).join(runFiles.result).split(PROGRESS_FILE).join(runFiles.progress).split(LOG_FILE).join(runFiles.log).split(FILES_FILE).join(runFiles.files).split(STARTED_FILE$1).join(runFiles.started);
-    await write(space, scriptName$1(), script, true);
+    previousRunFiles$1 = [
+      runFiles.result,
+      runFiles.progress,
+      runFiles.log,
+      runFiles.files,
+      runFiles.started,
+      ...launch.owned ?? [],
+      scriptFile
+    ];
+    const script = launch.build(space).split(RESULT_FILE$1).join(runFiles.result).split(PROGRESS_FILE).join(runFiles.progress).split(LOG_FILE).join(runFiles.log).split(FILES_FILE).join(runFiles.files).split(STARTED_FILE$1).join(runFiles.started).split(CANCEL_FILE).join(runFiles.cancel);
+    await write(space, scriptFile, script, true);
     let launchError = null;
-    const sent = await dispatch(scriptName$1());
+    const sent = await dispatch(scriptFile);
     let awaitingStamp = sent.mode !== "denied";
     if (!awaitingStamp) {
       console.error("[Download] agente recusado:", sent.error);
@@ -8072,18 +8517,32 @@
         launch.onManual?.(scriptPath, launchError);
       }
     }
-    const stampDeadline = Date.now() + 8e3;
+    let stampDeadline = Date.now() + 8e3;
+    const BUSY_GRACE_MS = 8e3;
     const deadline = Date.now() + launch.timeoutMs;
     let lastSignature = "";
     let tick = 0;
     while (Date.now() < deadline) {
       tick += 1;
       if (launch.cancelled?.()) {
-        return { ...fail("cancelled", scriptPath) };
+        await write(space, runFiles.cancel, "1");
+        await withdraw(sent.ticket);
+        return {
+          ...fail("cancelled", scriptPath),
+          log: tail(space, runFiles.log),
+          filesFile: runFiles.files,
+          // `after_move` só imprime depois do arquivo estar no nome
+          // final: o que está nessa lista está inteiro.
+          downloadedFiles: parseDownloadedFiles(readText$1(space, runFiles.log) ?? "")
+        };
       }
       if (awaitingStamp && Date.now() > stampDeadline) {
-        awaitingStamp = false;
-        if (!readText$1(space, runFiles.started)) {
+        const verdict = await stampVerdict();
+        if (verdict === "busy") {
+          stampDeadline = Date.now() + BUSY_GRACE_MS;
+          launch.onQueued?.("na fila do agente — outro trabalho está rodando…");
+        } else if (!readText$1(space, runFiles.started)) {
+          awaitingStamp = false;
           console.warn("[Download] sem carimbo do agente — caindo para o Terminal.");
           await withdraw(sent.ticket);
           try {
@@ -8092,6 +8551,8 @@
             launchError = describe(cause);
             launch.onManual?.(scriptPath, launchError);
           }
+        } else {
+          awaitingStamp = false;
         }
       }
       if (launch.onProgress && tick % 4 === 0) {
@@ -8178,22 +8639,30 @@
     const id = /^ERROR:\s*\[[^\]]+\]\s*([^\s:]+):/.exec(line)?.[1];
     return !!id && id.length >= 4 && url.includes(id);
   }
-  async function probeUrls(urls, config, onProgress, cancelled, onManual) {
-    const stale = urls.map((_, index) => infoFile(index));
-    const result = await run({
-      build: (space2) => isWindows() ? probeScriptWin(urls, config, space2.nativeBase) : probeScriptUnix(urls, config, space2.nativeBase),
-      timeoutMs: PROBE_TIMEOUT_MS,
+  async function probeUrls(urls, config, onProgress, cancelled, onManual, onQueued) {
+    const tag = runTag();
+    const infoFiles = urls.map((_, index) => infoFile(tag, index));
+    const stale = urls.map((_, index) => `dl-info-${index}.json`);
+    const attempt = await run({
+      build: (space2) => isWindows() ? probeScriptWin(urls, tag, config, space2.nativeBase) : probeScriptUnix(urls, tag, config, space2.nativeBase),
+      tag,
+      // Sem caminho guardado é a primeira vez: o script vai provisionar
+      // antes de consultar, e 90s não cobrem 35 MB numa linha ruim.
+      timeoutMs: config.ytdlpPath ? PROBE_TIMEOUT_MS : PROBE_SETUP_TIMEOUT_MS,
       stale,
+      owned: infoFiles,
       onProgress,
+      onQueued,
       total: urls.length,
       cancelled,
       onManual,
       purpose: "Consultar os dados dos vídeos com o yt-dlp."
     });
+    const result = attempt.error === "timeout" ? { ...attempt, error: "probe-timeout" } : attempt;
     const space = await workspace();
     const complaints = complaintsByIndex(urls, result.log);
     const probes = urls.map((url, index) => {
-      const raw = readText$1(space, infoFile(index));
+      const raw = readText$1(space, infoFiles[index]);
       if (!raw) {
         return {
           url,
@@ -8219,14 +8688,16 @@
     });
     return { result, probes };
   }
-  async function downloadUrls(urls, quality, config, direct = [], onProgress, cancelled, onManual) {
+  async function downloadUrls(urls, quality, config, direct = [], onProgress, cancelled, onManual, onQueued) {
     const destination = config.destination || await defaultDestination();
     const customFfmpeg = urls.length > 0 ? (await readConfig$2()).ffmpegPath : "";
     const result = await run({
       build: (space2) => isWindows() ? downloadScriptWin(urls, quality, config, space2.nativeBase, destination, direct, customFfmpeg) : downloadScriptUnix(urls, quality, config, space2.nativeBase, destination, direct, customFfmpeg),
+      tag: runTag(),
       timeoutMs: DOWNLOAD_TIMEOUT_MS,
       stale: [],
       onProgress,
+      onQueued,
       total: urls.length + direct.length,
       cancelled,
       onManual,
@@ -8241,15 +8712,18 @@
     }
     return { ...result, files };
   }
-  async function installYtdlp(onManual) {
-    return run({
+  async function installYtdlp(onManual, cancelled) {
+    const result = await run({
       build: (space) => isWindows() ? installScriptWin(space.nativeBase) : installScriptUnix(space.nativeBase),
+      tag: runTag(),
       timeoutMs: INSTALL_TIMEOUT_MS,
       stale: [],
       total: 1,
+      cancelled,
       onManual,
       purpose: "Baixar o yt-dlp oficial para a pasta do plugin."
     });
+    return result.error === "cancelled" ? { ...result, error: "install-cancelled" } : result;
   }
   async function openWorkFolder() {
     const shell = shellModule();
@@ -8385,24 +8859,42 @@
       'if [ -n "$FFMPEG" ]; then FFDIR="$(dirname "$FFMPEG")"; fi'
     ];
   }
+  const UNIX_CLOSE_WINDOW = `if pgrep -xq Terminal; then osascript -e 'tell application "Terminal" to close (every window whose name contains "Framelab")' >/dev/null 2>&1 & fi`;
   const UNIX_CLOSE = [
     'echo "Pronto. Pode voltar ao Premiere."',
-    // Fecha só a própria janela, achada pelo título posto no preâmbulo.
-    // Se o macOS negar a automação, a janela fica aberta e nada quebra.
-    // Só fecha janela se o Terminal JÁ estiver aberto. `tell application
-    // "Terminal"` LANÇA o Terminal quando ele não está rodando — era isto
-    // que fazia uma janela vazia aparecer no FIM de cada trabalho, mesmo
-    // com o agente silencioso funcionando.
-    `if pgrep -xq Terminal; then osascript -e 'tell application "Terminal" to close (every window whose name contains "Framelab")' >/dev/null 2>&1 & fi`,
+    UNIX_CLOSE_WINDOW,
     "exit 0"
   ];
-  function probeScriptUnix(urls, config, folder) {
+  function unixCancelGuard() {
+    return [
+      `if [ -f "$WORK/${CANCEL_FILE}" ]; then`,
+      `  rm -f "$WORK/${CANCEL_FILE}"`,
+      '  echo "Cancelado pelo painel."',
+      `  ${UNIX_CLOSE_WINDOW}`,
+      "  exit 0",
+      "fi"
+    ];
+  }
+  const WIN_CANCEL_LABEL = "fl_cancelado";
+  function winCancelGuard() {
+    return `if exist "%WORK%\\${CANCEL_FILE}" goto :${WIN_CANCEL_LABEL}`;
+  }
+  function winCancelTail() {
+    return [
+      `:${WIN_CANCEL_LABEL}`,
+      `del /q "%WORK%\\${CANCEL_FILE}" >nul 2>&1`,
+      "echo Cancelado pelo painel.",
+      "exit /b 0"
+    ];
+  }
+  function probeScriptUnix(urls, tag, config, folder) {
     const lines = [...unixBase(folder), ...unixYtdlpSetup(config)];
     lines.push("FAILED=0");
     urls.forEach((url, index) => {
-      const target = `"$WORK/${infoFile(index)}"`;
+      const target = `"$WORK/${infoFile(tag, index)}"`;
       const extra = extraSiteArgs(url);
       lines.push(
+        ...unixCancelGuard(),
         `echo "[${index + 1}/${urls.length}] consultando…"`,
         `printf '%s/%s' ${index + 1} ${urls.length} > "$WORK/${PROGRESS_FILE}"`,
         `if "$YTDLP" --no-warnings --no-playlist --ignore-config --extractor-retries 5 --retry-sleep extractor:3 \${DENO:+--js-runtimes "deno:$DENO"} ${cookiesArg(config)}${extra}-J ${q$1(url)} > ${target}.tmp 2>> "$WORK/${LOG_FILE}"; then`,
@@ -8430,6 +8922,7 @@
     direct.forEach((job, index) => {
       const target = `"$DEST/"${q$1(job.fileName)}`;
       lines.push(
+        ...unixCancelGuard(),
         `echo "[${index + 1}/${total}] ${escapeEcho(job.fileName)}"`,
         `printf '%s/%s' ${index + 1} ${total} > "$WORK/${PROGRESS_FILE}"`,
         `if curl -fL --progress-bar --retry 3 -o ${target} ${q$1(job.mediaUrl)} 2>> "$WORK/${LOG_FILE}"; then`,
@@ -8452,6 +8945,7 @@
       const step2 = direct.length + index + 1;
       const extra = extraSiteArgs(url);
       lines.push(
+        ...unixCancelGuard(),
         `echo "[${step2}/${total}] ${escapeEcho(url)}"`,
         `printf '%s\\n' ${q$1(`[${step2}/${total}] ${url}`)} >> "$WORK/${LOG_FILE}"`,
         `printf '%s/%s' ${step2} ${total} > "$WORK/${PROGRESS_FILE}"`,
@@ -8575,12 +9069,13 @@
       'if not "%DENO%"=="" set JSARGS=--js-runtimes "deno:%DENO%"'
     ];
   }
-  function probeScriptWin(urls, config, folder) {
+  function probeScriptWin(urls, tag, config, folder) {
     const lines = [...winBase(folder), ...winYtdlpSetup(config)];
     urls.forEach((url, index) => {
-      const target = `"%WORK%\\${infoFile(index)}"`;
+      const target = `"%WORK%\\${infoFile(tag, index)}"`;
       const extra = extraSiteArgs(url, true);
       lines.push(
+        winCancelGuard(),
         `echo [${index + 1}/${urls.length}] consultando...`,
         `>"%WORK%\\${PROGRESS_FILE}" echo ${index + 1}/${urls.length}`,
         `"%YTDLP%" --no-warnings --no-playlist --ignore-config --extractor-retries 5 --retry-sleep extractor:3 %JSARGS% ${cookiesArg(config)}${extra}-J ${bq(url)} > ${target} 2>>"%WORK%\\${LOG_FILE}"`,
@@ -8590,7 +9085,8 @@
     lines.push(
       `>"%WORK%\\${RESULT_FILE$1}.tmp" echo {"ok":true,"ytdlp":"%YTDLP%","failed":%FAILED%}`,
       `move /y "%WORK%\\${RESULT_FILE$1}.tmp" "%WORK%\\${RESULT_FILE$1}" >nul`,
-      "exit /b 0"
+      "exit /b 0",
+      ...winCancelTail()
     );
     return lines.join("\r\n") + "\r\n";
   }
@@ -8606,6 +9102,7 @@
     const total = direct.length + urls.length;
     direct.forEach((job, index) => {
       lines.push(
+        winCancelGuard(),
         `echo [${index + 1}/${total}] ${batValue(job.fileName)}`,
         `>"%WORK%\\${PROGRESS_FILE}" echo ${index + 1}/${total}`,
         `curl.exe -fSL --retry 3 -o "%DEST%\\${batValue(job.fileName)}" ${bq(job.mediaUrl)} >>"%WORK%\\${LOG_FILE}" 2>&1`,
@@ -8644,6 +9141,7 @@
       const step2 = direct.length + index + 1;
       const extra = extraSiteArgs(url, true);
       lines.push(
+        winCancelGuard(),
         `echo [${step2}/${total}]`,
         `>"%WORK%\\${PROGRESS_FILE}" echo ${step2}/${total}`,
         `"%YTDLP%" ${shared} ${media} ${extra}-P "%DEST%" %FFARGS% %JSARGS% ${bq(url)} >>"%WORK%\\${LOG_FILE}" 2>&1`,
@@ -8657,7 +9155,8 @@
       `  >"%WORK%\\${RESULT_FILE$1}.tmp" echo {"ok":false,"error":"ytdlp-failed","failed":%FAILED%}`,
       ")",
       `move /y "%WORK%\\${RESULT_FILE$1}.tmp" "%WORK%\\${RESULT_FILE$1}" >nul`,
-      "exit /b 0"
+      "exit /b 0",
+      ...winCancelTail()
     );
     return lines.join("\r\n") + "\r\n";
   }
@@ -8696,8 +9195,12 @@
         return 'O yt-dlp baixou mas não executou. No macOS isso costuma ser o Gatekeeper: abra a pasta e autorize o binário, ou use "brew install yt-dlp".';
       case "timeout":
         return "O download passou do tempo limite e foi abandonado.";
+      case "probe-timeout":
+        return "A consulta travou e foi abandonada. Tente de novo; se repetir, confira a internet ou o caminho do yt-dlp nos ajustes avançados.";
       case "cancelled":
-        return "Download cancelado.";
+        return "Cancelado. Um download já iniciado ainda pode terminar em segundo plano.";
+      case "install-cancelled":
+        return "Instalação cancelada. O yt-dlp continua como estava.";
       case "uxp-unavailable":
         return "Este build do Premiere não expõe shell/fs do UXP.";
       default:
@@ -8831,9 +9334,15 @@
       return null;
     }
   }
-  async function fetchManyTikTok(urls) {
+  async function fetchManyTikTok(urls, cancelled) {
     const out = [];
     for (let index = 0; index < urls.length; index += 1) {
+      if (cancelled?.()) {
+        while (out.length < urls.length) {
+          out.push(null);
+        }
+        break;
+      }
       if (index > 0) {
         await wait(BATCH_STEP_MS);
       }
@@ -8871,6 +9380,7 @@
   }
   const CHUNK_BYTES = 4 * 1024 * 1024;
   const MAX_BYTES = 300 * 1024 * 1024;
+  const GAVE_UP = "cancelado pelo editor";
   function stageError(stage, cause) {
     const detail = cause instanceof Error ? cause.message : String(cause);
     return new Error(`${stage}: ${detail}`);
@@ -8894,9 +9404,6 @@
     }
     return { lfs, binary: storage?.formats?.binary };
   }
-  function fileUrl$2(nativePathValue) {
-    return "file://" + nativePathValue.replace(/\\/g, "/").split("/").map((part) => encodeURIComponent(part)).join("/");
-  }
   async function destinationFolder(destination, token) {
     const api = storageApi();
     if (!api) {
@@ -8911,7 +9418,7 @@
     }
     try {
       try {
-        const folder = await api.lfs.getEntryWithUrl(fileUrl$2(destination));
+        const folder = await api.lfs.getEntryWithUrl(fileUrl(destination));
         return { folder, binary: api.binary };
       } catch {
       }
@@ -8920,7 +9427,7 @@
       if (cut <= 0) {
         throw new Error("sem pasta-mãe");
       }
-      const parent = await api.lfs.getEntryWithUrl(fileUrl$2(normalized.slice(0, cut)));
+      const parent = await api.lfs.getEntryWithUrl(fileUrl(normalized.slice(0, cut)));
       const leaf = normalized.slice(cut + 1);
       try {
         const folder = await parent.createFolder(leaf);
@@ -8933,11 +9440,11 @@
       throw stageError("destino", cause);
     }
   }
-  async function downloadInPanel(job, destination, token, onProgress) {
+  async function downloadInPanel(job, destination, token, onProgress, cancelled) {
     const { folder, binary } = await destinationFolder(destination, token);
     let combined;
     try {
-      combined = await fetchAllBytes(job.mediaUrl, onProgress);
+      combined = await fetchAllBytes(job.mediaUrl, onProgress, cancelled);
     } catch (cause) {
       throw stageError("rede", cause);
     }
@@ -8956,11 +9463,14 @@
       throw stageError("escrita", cause);
     }
   }
-  async function fetchAllBytes(mediaUrl, onProgress) {
+  async function fetchAllBytes(mediaUrl, onProgress, cancelled) {
     const parts = [];
     let received = 0;
     let total = null;
     for (; ; ) {
+      if (cancelled?.()) {
+        throw new Error(GAVE_UP);
+      }
       const from = received;
       const to = from + CHUNK_BYTES - 1;
       let response;
@@ -8992,6 +9502,9 @@
       const chunk = await response.arrayBuffer();
       parts.push(new Uint8Array(chunk));
       received += chunk.byteLength;
+      if (received > MAX_BYTES) {
+        throw new Error("arquivo grande demais para o painel");
+      }
       if (total === null) {
         const range = response.headers.get("content-range");
         const match = range ? /\/(\d+)\s*$/.exec(range) : null;
@@ -9016,9 +9529,12 @@
     }
     return combined;
   }
-  async function fastLaneByIndex(list) {
+  async function fastLaneByIndex(list, cancelled) {
     const positions = list.map((url, index) => ({ url, index })).filter((entry) => isTikTokUrl(entry.url));
-    const infos = await fetchManyTikTok(positions.map((entry) => entry.url));
+    const infos = await fetchManyTikTok(
+      positions.map((entry) => entry.url),
+      cancelled
+    );
     const byIndex = /* @__PURE__ */ new Map();
     positions.forEach((entry, at) => {
       const info = infos[at];
@@ -9043,6 +9559,7 @@
     brave: "Brave"
   };
   let releaseDocument$2 = null;
+  let cancelActiveRun$1 = null;
   const downloadTool = {
     id: "download",
     name: "Baixar Vídeos",
@@ -9155,8 +9672,8 @@
       function syncApply() {
         const list = urls();
         context.setApplyEnabled(!busy && list.length > 0);
-        if (scanEl) {
-          setDisabled(scanEl, busy || list.length === 0);
+        if (scanEl && !busy) {
+          setDisabled(scanEl, list.length === 0);
         }
         if (list.length === 0) {
           const typed = countLines(urlsEl?.value ?? "");
@@ -9174,17 +9691,22 @@
         }
         syncApply();
       });
-      scanEl?.addEventListener("click", () => void runProbe());
+      scanEl?.addEventListener("click", () => {
+        if (busy) {
+          requestCancel();
+          return;
+        }
+        void runProbe();
+      });
       async function runProbe() {
         const list = urls();
         if (busy || list.length === 0) {
           return;
         }
         startBusy("Consultando os links…");
-        if (scanEl) scanEl.textContent = "Consultando…";
         showProgress("consulta", null, "lendo os links…");
         try {
-          const fast = await fastLaneByIndex(list);
+          const fast = await fastLaneByIndex(list, () => cancelled);
           const byIndex = /* @__PURE__ */ new Map();
           const slow = [];
           const slowAt = [];
@@ -9207,10 +9729,19 @@
                 showLog(log);
               },
               () => cancelled,
-              showManual
+              showManual,
+              showLog
             );
             result = { ...result, ...scripted.result };
             scripted.probes.forEach((probe2, at) => byIndex.set(slowAt[at], probe2));
+          }
+          if (cancelled) {
+            probes = [];
+            renderList();
+            renderQualities();
+            showLog("");
+            context.setStatus("Consulta cancelada.", "idle");
+            return;
           }
           probes = list.map((_, index) => byIndex.get(index)).filter((p) => !!p);
           renderList();
@@ -9231,10 +9762,9 @@
             rememberFoundBinary(result.ytdlpPath);
           }
         } catch (cause) {
-          context.setStatus(describeError$1(cause), "error");
+          context.setStatus(failureMessage("consultar os links", cause), "error");
         } finally {
           showProgress(null, null);
-          if (scanEl) scanEl.textContent = "Analisar links";
           endBusy();
         }
       }
@@ -9253,7 +9783,7 @@
         try {
           const direct = [];
           const slow = [];
-          const fast = await fastLaneByIndex(list);
+          const fast = await fastLaneByIndex(list, () => cancelled);
           list.forEach((url, index) => {
             const info = fast.get(index) ?? null;
             const job = info ? directJobFor(url, info, quality) : null;
@@ -9279,16 +9809,23 @@
                   size ? done / size * 100 : null,
                   size ? `${formatBytes(done)} de ${formatBytes(size)}` : formatBytes(done)
                 );
-              }
+              },
+              () => cancelled
             );
           };
           for (let index = 0; index < direct.length; index += 1) {
+            if (cancelled) {
+              break;
+            }
             const job = direct[index];
             const step2 = `${index + 1}/${total}`;
             try {
               panelFiles.push(await tryPanel(job, step2));
               continue;
             } catch (cause) {
+              if (cancelled) {
+                break;
+              }
               const reason = cause instanceof Error ? cause.message : String(cause);
               console.warn("[Download] painel recusou:", reason);
               if (reason.startsWith("destino") && !config.destinationToken) {
@@ -9321,7 +9858,7 @@
             log: "",
             files: []
           };
-          if (slow.length > 0 || scriptDirect.length > 0) {
+          if (!cancelled && (slow.length > 0 || scriptDirect.length > 0)) {
             const scripted = await downloadUrls(
               slow,
               quality,
@@ -9336,13 +9873,18 @@
                 showLog(log);
               },
               () => cancelled,
-              showManual
+              showManual,
+              showLog
             );
             outcome = { ...outcome, ...scripted };
           }
           const files = [...panelFiles, ...outcome.files];
           showProgress(null, null);
           showLog(outcome.ok && outcome.failed === 0 ? "" : outcome.log);
+          if (cancelled) {
+            await finishCancelled(files, outcome.error === "cancelled");
+            return;
+          }
           if (files.length === 0) {
             context.setStatus(
               describeRunError(outcome.error ?? "ytdlp-failed", outcome.log),
@@ -9360,11 +9902,27 @@
           renderFiles(files);
           context.setResetHandler(() => clearAll());
         } catch (cause) {
-          context.setStatus(describeError$1(cause), "error");
+          context.setStatus(failureMessage("baixar", cause), "error");
         } finally {
           endBusy();
         }
       });
+      async function finishCancelled(files, scriptWasRunning) {
+        const note = scriptWasRunning ? describeRunError("cancelled", "") : "Download cancelado.";
+        if (files.length === 0) {
+          context.setStatus(note, "idle");
+          return;
+        }
+        const count = files.length;
+        const saved = `${count} ${count === 1 ? "arquivo já estava salvo" : "arquivos já estavam salvos"}`;
+        const imported = config.importToProject ? await importFiles(files) : null;
+        context.setStatus(
+          imported === null ? `${note} ${saved}.` : `${note} ${saved} · ${imported}.`,
+          "idle"
+        );
+        renderFiles(files);
+        context.setResetHandler(() => clearAll());
+      }
       async function importFiles(files) {
         if (files.length === 0) {
           return "nada para importar";
@@ -9402,13 +9960,29 @@
         hideManual();
         context.setStatus(message);
         context.setApplyEnabled(false);
-        if (scanEl) setDisabled(scanEl, true);
+        setScanBusy(true);
         if (installEl) setDisabled(installEl, true);
       }
       function endBusy() {
         busy = false;
+        cancelled = false;
+        setScanBusy(false);
         if (installEl) setDisabled(installEl, false);
         syncApply();
+      }
+      function setScanBusy(running) {
+        if (!scanEl) return;
+        scanEl.classList.toggle("is-busy", running);
+        scanEl.textContent = running ? "Cancelar" : "Analisar links";
+        setDisabled(scanEl, running ? false : urls().length === 0);
+      }
+      function requestCancel() {
+        if (!busy || cancelled) {
+          return;
+        }
+        cancelled = true;
+        context.setStatus("Cancelando…");
+        if (scanEl) setDisabled(scanEl, true);
       }
       function renderQualities() {
         const offered = availableQualities(probes);
@@ -9473,16 +10047,19 @@
         startBusy("Baixando o yt-dlp…");
         if (installEl) installEl.textContent = "Baixando…";
         try {
-          const result = await installYtdlp(showManual);
+          const result = await installYtdlp(showManual, () => cancelled);
           showLog(result.log);
           if (result.ok && result.ytdlpPath) {
             rememberFoundBinary(result.ytdlpPath);
             context.setStatus("yt-dlp instalado na pasta do plugin.", "done");
           } else {
-            context.setStatus(describeRunError(result.error, result.log), "error");
+            context.setStatus(
+              describeRunError(result.error, result.log),
+              result.error === "install-cancelled" ? "idle" : "error"
+            );
           }
         } catch (cause) {
-          context.setStatus(describeError$1(cause), "error");
+          context.setStatus(failureMessage("instalar o yt-dlp", cause), "error");
         } finally {
           if (installEl) installEl.textContent = "Reinstalar yt-dlp";
           endBusy();
@@ -9490,7 +10067,7 @@
       }
       folderEl?.addEventListener("click", () => {
         void openWorkFolder().catch((cause) => {
-          context.setStatus(describeError$1(cause), "error");
+          context.setStatus(failureMessage("abrir a pasta", cause), "error");
         });
       });
       function renderSegs() {
@@ -9539,8 +10116,13 @@
         }
       }
       context.setRefreshHandler(null);
+      cancelActiveRun$1 = () => {
+        cancelled = true;
+      };
     },
     unmount() {
+      cancelActiveRun$1?.();
+      cancelActiveRun$1 = null;
       releaseDocument$2?.();
       releaseDocument$2 = null;
     }
@@ -9587,6 +10169,38 @@
       fileName: tiktokFileName(info, "mp4"),
       sourceUrl: url
     };
+  }
+  const FAILURES = [
+    {
+      // O `fs` do UXP roteia por esquema; caminho nativo cai fora da rota
+      // e volta com este nome interno. Ver silence/workspace.ts — a
+      // mensagem não fala de permissão, não fala de caminho, e apareceu
+      // na barra de status como a única explicação de um download que não
+      // aconteceu.
+      test: /route not found/i,
+      message: "Este build do Premiere não deixou o plugin escrever na pasta de trabalho. Feche e reabra o painel; se continuar, reinstale o plugin."
+    },
+    {
+      test: /nenhum caminho gravável|require\("fs"\)|shell não resolveu|storage do UXP/i,
+      message: "O Premiere não deu ao plugin uma pasta onde trabalhar. Feche e reabra o painel; se continuar, reinstale o plugin."
+    },
+    {
+      test: /^destino:|não abre o seletor|sem pasta-mãe/i,
+      message: 'A pasta de destino não aceitou a escrita. Escolha a pasta de novo em "Destino › Escolher…".'
+    },
+    {
+      test: /^rede:|failed to fetch|networkerror|net::|ENOTFOUND|ECONNRESET|timed? ?out/i,
+      message: "A conexão caiu no meio do caminho. Confira a internet e tente de novo."
+    }
+  ];
+  function failureMessage(step2, cause) {
+    const raw = describeError$1(cause).trim();
+    console.error(`[Download] falha ao ${step2}:`, cause);
+    const known2 = FAILURES.find((failure) => failure.test.test(raw));
+    if (known2) {
+      return known2.message;
+    }
+    return raw ? `Falha ao ${step2}: ${/[.!?]$/.test(raw) ? raw : `${raw}.`}` : `Falha ao ${step2}.`;
   }
   function qualityMeta(quality, probes) {
     const ok = probes.filter((probe2) => probe2.ok);
@@ -9801,6 +10415,31 @@
   let cancelActiveScan = null;
   let padSlider = null;
   let stretchSlider = null;
+  let snapshot = null;
+  const fillerSettings = createToolSettings(
+    "fillers-config.json",
+    FILLER_DEFAULTS,
+    (raw) => ({
+      useTags: raw.useTags !== false,
+      stretchedSeconds: clampNumber(raw.stretchedSeconds, 0, 1, FILLER_DEFAULTS.stretchedSeconds),
+      padSeconds: clampNumber(raw.padSeconds, 0, 0.4, FILLER_DEFAULTS.padSeconds)
+    })
+  );
+  warmToolSettings(fillerSettings);
+  function mensagemDeFalha$1(cause) {
+    const cru = cause instanceof Error ? cause.message : String(cause);
+    console.error("[Muletas] a varredura falhou:", cause);
+    if (/no longer valid/i.test(cru)) {
+      return "O Premiere trocou a sequência embaixo do painel. Selecione os clipes de novo e analise.";
+    }
+    if (/route not found|no such file|ENOENT/i.test(cru)) {
+      return "Não consegui chegar na pasta de trabalho do plugin. Reabra o painel.";
+    }
+    if (/transcri|transcript/i.test(cru)) {
+      return "Não achei a transcrição do clipe. Use a janela Texto → Transcrever no Premiere e analise de novo.";
+    }
+    return `Falha ao analisar: ${cru}`;
+  }
   const fillersTool = {
     id: "fillers",
     name: "Cortar Muletas",
@@ -9810,10 +10449,9 @@
     glyph: "speech",
     available: true,
     mount(container, context) {
-      const params = { ...FILLER_DEFAULTS };
+      const params = { ...fillerSettings.peek() ?? FILLER_DEFAULTS };
       let scan = null;
       let plans = /* @__PURE__ */ new Map();
-      let snapshot = null;
       let scanning = false;
       container.innerHTML = markup$2(params);
       const scanBtn = container.querySelector("[data-scan]");
@@ -9827,7 +10465,7 @@
       context.setApplyLabel("CORTAR MULETAS");
       context.setApplyEnabled(false);
       context.setResetLabel("DESFAZER");
-      context.setResetHandler(null);
+      context.setResetHandler(snapshot ? () => void runUndo() : null);
       function syncOutputs() {
         padSlider?.set(params.padSeconds);
         stretchSlider?.set(params.stretchedSeconds);
@@ -9837,6 +10475,7 @@
             String(item.dataset.tag === "on" === params.useTags)
           );
         }
+        fillerSettings.patch({ ...params });
       }
       if (padRail) {
         padSlider = mountSlider(padRail, {
@@ -9878,6 +10517,15 @@
         syncOutputs();
         rebuild();
       });
+      void fillerSettings.read().then((stored) => {
+        if (!container.isConnected) {
+          return;
+        }
+        params.useTags = stored.useTags;
+        params.padSeconds = stored.padSeconds;
+        params.stretchedSeconds = stored.stretchedSeconds;
+        syncOutputs();
+      });
       scanBtn?.addEventListener("click", () => void runScan());
       async function runScan() {
         if (scanning) return;
@@ -9904,7 +10552,7 @@
         } catch (cause) {
           scan = null;
           plans = /* @__PURE__ */ new Map();
-          context.setStatus(cause instanceof Error ? cause.message : String(cause), "error");
+          context.setStatus(mensagemDeFalha$1(cause), "error");
         } finally {
           scanning = false;
           cancelActiveScan = null;
@@ -10048,6 +10696,7 @@
       context.setRefreshHandler(null);
     },
     unmount() {
+      void fillerSettings.flush();
       cancelActiveScan?.();
       cancelActiveScan = null;
       padSlider?.destroy();
@@ -10311,6 +10960,9 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
   const STARTED_FILE = "cc-started.txt";
   const TIMING_FILE = "cc-timing.txt";
   const OUT_BASE = "cc-out";
+  const AUDIO_FILE = "cc-audio.wav";
+  const PROBE_FILE = "cc-probe.wav";
+  const DETECT_FILE = "cc-detect.txt";
   const SCRIPT_FILE = "captions.command";
   const SCRIPT_FILE_WIN = "captions.bat";
   const POLL_MS = 400;
@@ -10372,28 +11024,56 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
   function findModel(id) {
     return MODELS.find((model) => model.id === id) ?? MODELS[1];
   }
-  function readTiming(space) {
-    const raw = readText$1(space, TIMING_FILE);
+  function readTiming(space, timingFile) {
+    const raw = readText$1(space, timingFile);
     if (!raw) return null;
     const [gasto, audio] = raw.split(/\s+/).map((n) => Number.parseFloat(n));
     return Number.isFinite(gasto) && Number.isFinite(audio) ? { elapsedSeconds: gasto, audioSeconds: audio } : null;
   }
+  let previousRunFiles = [];
   async function transcribe(job, model, language, prompt, onStage, cancelled, onManual) {
     const shell = shellModule();
     if (!shell) {
       return { ok: false, error: "uxp-unavailable", json: null, scriptPath: null };
     }
     const space = await workspace();
-    const scriptPath = nativePath(space, scriptName());
-    const outJson = `${OUT_BASE}.json`;
-    for (const name of [RESULT_FILE, STAGE_FILE, STARTED_FILE, WHISPER_LOG, TIMING_FILE, outJson, "cc-audio.wav"]) {
+    const tag = Date.now().toString(36);
+    const run2 = {
+      result: `cc-${tag}-result.json`,
+      stage: `cc-${tag}-stage.txt`,
+      started: `cc-${tag}-started.txt`,
+      log: `cc-${tag}-whisper.log`,
+      timing: `cc-${tag}-timing.txt`,
+      outBase: `cc-${tag}-out`,
+      audio: `cc-${tag}-audio.wav`,
+      probe: `cc-${tag}-probe.wav`,
+      detect: `cc-${tag}-detect.txt`,
+      script: scriptName(tag)
+    };
+    const outJson = `${run2.outBase}.json`;
+    const scriptPath = nativePath(space, run2.script);
+    for (const name of [
+      ...previousRunFiles,
+      RESULT_FILE,
+      STAGE_FILE,
+      STARTED_FILE,
+      WHISPER_LOG,
+      TIMING_FILE,
+      `${OUT_BASE}.json`,
+      AUDIO_FILE,
+      PROBE_FILE,
+      DETECT_FILE,
+      SCRIPT_FILE,
+      SCRIPT_FILE_WIN
+    ]) {
       await remove(space, name);
     }
-    const script = isWindows() ? windowsScript(job, model, language, space.nativeBase, prompt) : unixScript(job, model, language, space.nativeBase, prompt);
-    await write(space, scriptName(), script, true);
+    previousRunFiles = [...Object.values(run2), outJson];
+    const script = (isWindows() ? windowsScript(job, model, language, space.nativeBase, prompt) : unixScript(job, model, language, space.nativeBase, prompt)).split(RESULT_FILE).join(run2.result).split(STAGE_FILE).join(run2.stage).split(STARTED_FILE).join(run2.started).split(WHISPER_LOG).join(run2.log).split(TIMING_FILE).join(run2.timing).split(AUDIO_FILE).join(run2.audio).split(PROBE_FILE).join(run2.probe).split(DETECT_FILE).join(run2.detect).split(OUT_BASE).join(run2.outBase);
+    await write(space, run2.script, script, true);
     const PURPOSE = "Transcrever o áudio das faixas escolhidas.";
     let launchError = null;
-    const sent = await dispatch(scriptName());
+    const sent = await dispatch(run2.script);
     let awaitingStamp = sent.mode !== "denied";
     if (!awaitingStamp) {
       console.error("[Legendas] agente recusado:", sent.error);
@@ -10404,7 +11084,9 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
         onManual?.(scriptPath, launchError);
       }
     }
-    const stampDeadline = Date.now() + 8e3;
+    let stampDeadline = Date.now() + 8e3;
+    const BUSY_GRACE_MS = 8e3;
+    const BUSY_LIMIT = Date.now() + 18e4;
     const deadline = Date.now() + TIMEOUT_MS;
     let lastStage = "";
     while (Date.now() < deadline) {
@@ -10412,8 +11094,12 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
         return { ok: false, error: "cancelled", json: null, scriptPath };
       }
       if (awaitingStamp && Date.now() > stampDeadline) {
-        awaitingStamp = false;
-        if (!readText$1(space, STARTED_FILE)) {
+        const verdict = await stampVerdict();
+        if (verdict === "busy" && Date.now() < BUSY_LIMIT) {
+          stampDeadline = Date.now() + BUSY_GRACE_MS;
+          console.log("[Legendas] na fila: o agente está com outro trabalho.");
+        } else if (!readText$1(space, run2.started)) {
+          awaitingStamp = false;
           await withdraw(sent.ticket);
           try {
             await shell.openPath(scriptPath, PURPOSE);
@@ -10421,16 +11107,18 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
             launchError = describe(cause);
             onManual?.(scriptPath, launchError);
           }
+        } else {
+          awaitingStamp = false;
         }
       }
-      const stage = readText$1(space, STAGE_FILE);
-      const percent = stage?.startsWith("Transcrevendo") ? whisperProgress(space) : null;
+      const stage = readText$1(space, run2.stage);
+      const percent = stage?.startsWith("Transcrevendo") ? whisperProgress(space, run2.log) : null;
       const shown = percent === null ? stage : `${stage} ${percent}%`;
       if (shown && shown !== lastStage) {
         lastStage = shown;
         onStage?.(shown);
       }
-      const raw = readText$1(space, RESULT_FILE);
+      const raw = readText$1(space, run2.result);
       if (raw) {
         try {
           const parsed = JSON.parse(raw);
@@ -10443,12 +11131,15 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
               scriptPath
             };
           }
+          if (cancelled?.()) {
+            return { ok: false, error: "cancelled", json: null, scriptPath };
+          }
           return {
             ok: true,
             error: null,
             json: readJson(space, outJson),
             scriptPath,
-            timing: readTiming(space)
+            timing: readTiming(space, run2.timing)
           };
         } catch {
         }
@@ -10462,8 +11153,8 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
       scriptPath
     };
   }
-  function whisperProgress(space) {
-    const log = readText$1(space, WHISPER_LOG);
+  function whisperProgress(space, logFile) {
+    const log = readText$1(space, logFile);
     if (!log) return null;
     const hits = log.match(/progress\s*=\s*(\d+)%/g);
     if (!hits) return null;
@@ -10478,8 +11169,9 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
     }
     return raw;
   }
-  function scriptName() {
-    return isWindows() ? SCRIPT_FILE_WIN : SCRIPT_FILE;
+  function scriptName(tag) {
+    const base = isWindows() ? SCRIPT_FILE_WIN : SCRIPT_FILE;
+    return tag ? base.replace(".", `-${tag}.`) : base;
   }
   function unixScript(job, model, language, folder, prompt = "") {
     const lines = [
@@ -10518,7 +11210,7 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
       "fi",
       // ── áudio: a faixa inteira montada em tempo de sequência ──
       'stage "Montando o áudio da faixa…"',
-      `"$FFMPEG" -v error -y ` + job.inputs.map((args) => args.map(q).join(" ")).join(" ") + ` -filter_complex ${q(job.filter)} -map "[out]" -t ${job.durationSeconds.toFixed(6)} -vn -ac 1 -ar 16000 -c:a pcm_s16le "$WORK/cc-audio.wav" || fail audio-extract`,
+      `"$FFMPEG" -v error -y ` + job.inputs.map((args) => args.map(q).join(" ")).join(" ") + ` -filter_complex ${q(job.filter)} -map "[out]" -t ${job.durationSeconds.toFixed(6)} -vn -ac 1 -ar 16000 -c:a pcm_s16le "$WORK/${AUDIO_FILE}" || fail audio-extract`,
       /*
        * O IDIOMA É CONFERIDO ANTES.
        *
@@ -10541,9 +11233,9 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
         // antes de decidir isso: numa faixa de uma hora são ~115 MB
         // de PCM carregados para usar meio por cento deles. Um
         // recorte custa centésimos de segundo e poupa a leitura.
-        `"$FFMPEG" -v error -y -t 30 -i "$WORK/cc-audio.wav" -c copy "$WORK/cc-probe.wav" 2>/dev/null || cp "$WORK/cc-audio.wav" "$WORK/cc-probe.wav"`,
-        `DET=$("$WHISPER" -m "$MODEL" -f "$WORK/cc-probe.wav" -dl 2>&1 || true)`,
-        'rm -f "$WORK/cc-probe.wav"',
+        `"$FFMPEG" -v error -y -t 30 -i "$WORK/${AUDIO_FILE}" -c copy "$WORK/${PROBE_FILE}" 2>/dev/null || cp "$WORK/${AUDIO_FILE}" "$WORK/${PROBE_FILE}"`,
+        `DET=$("$WHISPER" -m "$MODEL" -f "$WORK/${PROBE_FILE}" -dl 2>&1 || true)`,
+        `rm -f "$WORK/${PROBE_FILE}"`,
         `DETLANG=$(printf '%s' "$DET" | sed -n 's/.*auto-detected language: \\([a-z][a-z]*\\).*/\\1/p' | head -1)`,
         `DETP=$(printf '%s' "$DET" | sed -n 's/.*p = \\([0-9.]*\\).*/\\1/p' | head -1)`,
         // A probabilidade entra como VARIÁVEL do awk. Escrita como
@@ -10554,7 +11246,7 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
         `if [ -n "$DETLANG" ] && [ "$DETLANG" != ${q(language)} ] && awk -v p="$DETP" 'BEGIN{exit !(p+0 > 0.70)}' 2>/dev/null; then`,
         `  printf '{"ok":false,"error":"language-mismatch","detected":"%s","p":"%s"}' "$DETLANG" "$DETP" > "$WORK/${RESULT_FILE}.tmp"`,
         `  mv "$WORK/${RESULT_FILE}.tmp" "$WORK/${RESULT_FILE}"`,
-        '  rm -f "$WORK/cc-audio.wav"',
+        `  rm -f "$WORK/${AUDIO_FILE}"`,
         "  exit 1",
         "fi"
       ],
@@ -10592,14 +11284,14 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
        * painel. O stderr vai para o log, não para o nada: é dele que
        * saem o percentual e o diagnóstico de lentidão.
        */
-      `"$WHISPER" -m "$MODEL" -f "$WORK/cc-audio.wav" -l ${q(language)} -t "$THREADS" $FA -bs ${model.beamSize} -bo ${model.beamSize} -sns -et 2.4 -lpt -1.0 ` + (prompt ? `--prompt ${q(prompt)} ` : "") + `-ojf -of "$WORK/${OUT_BASE}" -pp >/dev/null 2>"$WORK/${WHISPER_LOG}" || fail whisper-failed`,
+      `"$WHISPER" -m "$MODEL" -f "$WORK/${AUDIO_FILE}" -l ${q(language)} -t "$THREADS" $FA -bs ${model.beamSize} -bo ${model.beamSize} -sns -et 2.4 -lpt -1.0 ` + (prompt ? `--prompt ${q(prompt)} ` : "") + `-ojf -of "$WORK/${OUT_BASE}" -pp >/dev/null 2>"$WORK/${WHISPER_LOG}" || fail whisper-failed`,
       // Quanto levou, e para quantos segundos de áudio. É o número que
       // transforma "está lento" em algo que dá para conferir.
       `printf '%s %s' "$(( $(date +%s) - T0 ))" ${q(job.durationSeconds.toFixed(1))} > "$WORK/${TIMING_FILE}"`,
       `if [ ! -f "$WORK/${OUT_BASE}.json" ]; then fail no-output; fi`,
       // O WAV de 16 kHz de uma hora de fala são ~115 MB; some assim que
       // vira transcrição.
-      'rm -f "$WORK/cc-audio.wav"',
+      `rm -f "$WORK/${AUDIO_FILE}"`,
       'stage "Pronto."',
       `printf '{"ok":true}' > "$WORK/${RESULT_FILE}.tmp"`,
       `mv "$WORK/${RESULT_FILE}.tmp" "$WORK/${RESULT_FILE}"`,
@@ -10614,6 +11306,10 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
   }
   function windowsScript(job, model, language, folder, prompt = "") {
     const bat = (value) => value.replace(/[\r\n"]/g, "").replace(/%/g, "%%");
+    const emit = (json, indent = "") => [
+      `${indent}>"%WORK%\\${RESULT_FILE}.tmp" echo ${json}`,
+      `${indent}move /y "%WORK%\\${RESULT_FILE}.tmp" "%WORK%\\${RESULT_FILE}" >nul`
+    ];
     const lines = [
       "@echo off",
       "rem Gerado pelo Framelab - Legendas. Pode apagar.",
@@ -10625,34 +11321,104 @@ ${BASE_GLOSSARY}` : BASE_GLOSSARY;
       'for %%i in (ffmpeg.exe) do @set "FFMPEG=%%~$PATH:i"',
       `if "%FFMPEG%"=="" if exist "%WORK%\\ffmpeg.exe" set "FFMPEG=%WORK%\\ffmpeg.exe"`,
       'if "%FFMPEG%"=="" (',
-      `  >"%WORK%\\${RESULT_FILE}" echo {"ok":false,"error":"ffmpeg-not-found"}`,
+      ...emit('{"ok":false,"error":"ffmpeg-not-found"}', "  "),
       "  exit /b 1",
       ")",
       'set "WHISPER="',
       'for %%i in (whisper-cli.exe) do @set "WHISPER=%%~$PATH:i"',
       'if "%WHISPER%"=="" (',
-      `  >"%WORK%\\${RESULT_FILE}" echo {"ok":false,"error":"whisper-not-found"}`,
+      ...emit('{"ok":false,"error":"whisper-not-found"}', "  "),
       "  exit /b 1",
       ")",
       `set "MODEL=%WORK%\\${bat(model.file)}"`,
+      /*
+       * O modelo baixa para `.tmp` e só então vira o nome final — o
+       * mesmo `curl -o "$MODEL.tmp"` do macOS.
+       *
+       * Escrevendo direto no nome final, uma internet que caiu no meio
+       * do gigabyte deixava o arquivo truncado LÁ, e a execução seguinte
+       * só olhava `if not exist`: o modelo "existia", o whisper morria
+       * ao carregá-lo, e o painel dizia whisper-failed — uma falha de
+       * rede vestida de falha do motor, que não se conserta sozinha
+       * nunca mais, porque o download nunca mais é tentado.
+       *
+       * `if errorlevel 1` e não `%ERRORLEVEL%`: dentro de um bloco entre
+       * parênteses o segundo é expandido na hora de LER o bloco, quando
+       * o curl ainda nem rodou. (Como o resto do .bat, não testado num
+       * Windows real.)
+       */
       'if not exist "%MODEL%" (',
       `  >"%WORK%\\${STAGE_FILE}" echo Baixando o modelo (${model.megabytes} MB)...`,
-      `  curl.exe -fsSL --retry 3 -o "%MODEL%" "${model.url}"`,
+      `  curl.exe -fsSL --retry 3 -o "%MODEL%.tmp" "${model.url}"`,
+      "  if errorlevel 1 (",
+      `    del /q "%MODEL%.tmp" 2>nul`,
+      ...emit('{"ok":false,"error":"model-download"}', "    "),
+      "    exit /b 1",
+      "  )",
+      `  move /y "%MODEL%.tmp" "%MODEL%" >nul`,
       ")",
       `>"%WORK%\\${STAGE_FILE}" echo Montando o audio da faixa...`,
-      `"%FFMPEG%" -v error -y ` + job.inputs.map((args) => args.map((a) => `"${bat(a)}"`).join(" ")).join(" ") + ` -filter_complex "${bat(job.filter)}" -map "[out]" -t ${job.durationSeconds.toFixed(6)} -vn -ac 1 -ar 16000 -c:a pcm_s16le "%WORK%\\cc-audio.wav"`,
+      `"%FFMPEG%" -v error -y ` + job.inputs.map((args) => args.map((a) => `"${bat(a)}"`).join(" ")).join(" ") + ` -filter_complex "${bat(job.filter)}" -map "[out]" -t ${job.durationSeconds.toFixed(6)} -vn -ac 1 -ar 16000 -c:a pcm_s16le "%WORK%\\${AUDIO_FILE}"`,
       "if errorlevel 1 (",
-      `  >"%WORK%\\${RESULT_FILE}" echo {"ok":false,"error":"audio-extract"}`,
+      ...emit('{"ok":false,"error":"audio-extract"}', "  "),
       "  exit /b 1",
       ")",
+      /*
+       * O MESMO gate de idioma do macOS, pelo mesmo motivo: forçar `-l fr`
+       * num áudio em português não dá erro, dá francês inventado com
+       * pontuação perfeita — minutos de motor para produzir uma tradução
+       * que ninguém pediu. Detectar custa ~4s contra isso.
+       *
+       * Duas diferenças de tradução para o cmd, ambas sem Windows real
+       * para conferir (vale para o arquivo inteiro):
+       *  · `!VAR:*texto=!` corta tudo até o texto, inclusive — é o que o
+       *    `sed` faz do outro lado, e não depende do prefixo que o
+       *    whisper imprime antes de "auto-detected language:".
+       *  · o cmd não compara número com ponto. `gtr` entre "0.99" e
+       *    "0.70" é comparação de TEXTO, que dá o mesmo resultado aqui
+       *    porque o whisper sempre imprime a probabilidade com um dígito
+       *    antes do ponto.
+       */
+      ...language === "auto" ? [] : [
+        `>"%WORK%\\${STAGE_FILE}" echo Conferindo o idioma...`,
+        // O `-dl` só olha os primeiros 30s, mas lê o arquivo inteiro
+        // antes de decidir isso. O recorte poupa a leitura.
+        `"%FFMPEG%" -v error -y -t 30 -i "%WORK%\\${AUDIO_FILE}" -c copy "%WORK%\\${PROBE_FILE}" 2>nul`,
+        `if not exist "%WORK%\\${PROBE_FILE}" copy /y "%WORK%\\${AUDIO_FILE}" "%WORK%\\${PROBE_FILE}" >nul`,
+        `"%WHISPER%" -m "%MODEL%" -f "%WORK%\\${PROBE_FILE}" -dl >"%WORK%\\${DETECT_FILE}" 2>&1`,
+        `del /q "%WORK%\\${PROBE_FILE}" 2>nul`,
+        "setlocal enabledelayedexpansion",
+        'set "DETLINE="',
+        'set "DETLANG="',
+        'set "DETP="',
+        `for /f "delims=" %%L in ('findstr /c:"auto-detected language" "%WORK%\\${DETECT_FILE}"') do set "DETLINE=%%L"`,
+        'set "DETREST=!DETLINE:*auto-detected language: =!"',
+        // `pt (p = 0.99)` com espaço e parênteses por delimitador:
+        // token 1 é o idioma, token 4 é a probabilidade.
+        'for /f "tokens=1,4 delims= ()" %%a in ("!DETREST!") do (set "DETLANG=%%a" & set "DETP=%%b")',
+        // Detecção muda ou insegura: quem manda é a escolha do editor.
+        'if "!DETLANG!"=="" goto :cc_lang_ok',
+        `if /i "!DETLANG!"=="${bat(language)}" goto :cc_lang_ok`,
+        'if not "!DETP!" gtr "0.70" goto :cc_lang_ok',
+        `>"%WORK%\\${RESULT_FILE}.tmp" echo {"ok":false,"error":"language-mismatch","detected":"!DETLANG!","p":"!DETP!"}`,
+        `move /y "%WORK%\\${RESULT_FILE}.tmp" "%WORK%\\${RESULT_FILE}" >nul`,
+        `del /q "%WORK%\\${AUDIO_FILE}" 2>nul`,
+        "endlocal",
+        "exit /b 1",
+        ":cc_lang_ok",
+        "endlocal"
+      ],
       `>"%WORK%\\${STAGE_FILE}" echo Transcrevendo...`,
-      `"%WHISPER%" -m "%MODEL%" -f "%WORK%\\cc-audio.wav" -l ${bat(language)} -bs 5 -bo 5 -sns -et 2.4 -lpt -1.0 ` + (prompt ? `--prompt "${bat(prompt)}" ` : "") + `-ojf -of "%WORK%\\${OUT_BASE}" -pp >nul 2>"%WORK%\\${WHISPER_LOG}"`,
+      // O feixe vem do modelo, não de um 5 fixo: é o mesmo botão de
+      // velocidade que o macOS usa, e num modelo grande ele é o
+      // principal responsável pela espera.
+      `"%WHISPER%" -m "%MODEL%" -f "%WORK%\\${AUDIO_FILE}" -l ${bat(language)} -bs ${model.beamSize} -bo ${model.beamSize} -sns -et 2.4 -lpt -1.0 ` + (prompt ? `--prompt "${bat(prompt)}" ` : "") + `-ojf -of "%WORK%\\${OUT_BASE}" -pp >nul 2>"%WORK%\\${WHISPER_LOG}"`,
       "if errorlevel 1 (",
-      `  >"%WORK%\\${RESULT_FILE}" echo {"ok":false,"error":"whisper-failed"}`,
+      ...emit('{"ok":false,"error":"whisper-failed"}', "  "),
       "  exit /b 1",
       ")",
-      `del /q "%WORK%\\cc-audio.wav" 2>nul`,
-      `>"%WORK%\\${RESULT_FILE}" echo {"ok":true}`,
+      `del /q "%WORK%\\${AUDIO_FILE}" 2>nul`,
+      ...emit('{"ok":true}'),
       "exit /b 0"
     ];
     return lines.join("\r\n") + "\r\n";
@@ -11256,9 +12022,21 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
   }
   function commitTransaction(project2, label, build) {
     let committed = false;
-    project2.lockedAccess(() => {
-      committed = project2.executeTransaction(build, label);
-    });
+    let error = null;
+    try {
+      project2.lockedAccess(() => {
+        try {
+          committed = project2.executeTransaction(build, label);
+        } catch (cause) {
+          error = cause;
+        }
+      });
+    } catch (cause) {
+      error = error ?? cause;
+    }
+    if (error) {
+      throw error;
+    }
     return committed;
   }
   async function scanTracks() {
@@ -11417,6 +12195,17 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
         cues: 0
       };
     }
+    if (options.cancelled?.()) {
+      stages.push("cancelado depois de o motor terminar; nada foi gravado");
+      return {
+        ok: false,
+        message: describeError("cancelled"),
+        imported: 0,
+        stages,
+        srtPath: null,
+        cues: 0
+      };
+    }
     stages.push("motor: concluiu");
     options.onStage?.("Processando transcrição e glossário…");
     const sequenceWide = whisperToAdobe(result.json, assembled.baseOffset);
@@ -11522,9 +12311,6 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       cues
     };
   }
-  function fileUrl$1(nativePathValue) {
-    return "file://" + nativePathValue.replace(/\\/g, "/").split("/").map((part) => encodeURIComponent(part)).join("/");
-  }
   async function writeSrtToDestination(destination, token, fileName, content) {
     const storage = uxpModule("uxp")?.storage;
     const lfs = storage?.localFileSystem;
@@ -11541,7 +12327,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
     }
     if (!folder && typeof lfs.getEntryWithUrl === "function") {
       try {
-        folder = await lfs.getEntryWithUrl(fileUrl$1(destination));
+        folder = await lfs.getEntryWithUrl(fileUrl(destination));
       } catch (cause) {
         console.warn("[Legendas] getEntryWithUrl falhou:", cause);
       }
@@ -11854,6 +12640,29 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       format: asSeconds
     }
   ];
+  const HOST_FAILURES = [
+    {
+      match: /no longer valid/i,
+      say: 'O Premiere soltou a sequência — ela mudou, foi fechada ou o painel recarregou. Clique em "Reler a sequência" e tente de novo.'
+    },
+    {
+      match: /route not found/i,
+      say: "Este build do Premiere recusou a escrita na pasta de trabalho do plugin. Reinicie o Premiere; se continuar, me mande o console do UXP."
+    },
+    {
+      match: /is not a function|undefined is not an object/i,
+      say: "Esta versão do Premiere não expõe uma parte da API que a ferramenta usa. Atualize o Premiere — o console do UXP diz qual peça falta."
+    }
+  ];
+  function hostMessage(step2, cause) {
+    const raw = describeError$1(cause).trim();
+    console.error(`[Legendas] ${step2}:`, cause);
+    const known2 = HOST_FAILURES.find((entry) => entry.match.test(raw));
+    if (known2) {
+      return known2.say;
+    }
+    return raw || `Não foi possível ${step2}.`;
+  }
   let cancelActiveRun = null;
   let releaseDocument$1 = null;
   let releaseTimer = null;
@@ -12156,7 +12965,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
           const result = await rebuildSrt(config.srt, config.srtDestination, config.srtDestinationToken);
           context.setStatus(result.message, result.ok ? "done" : "error");
         } catch (cause) {
-          context.setStatus(describeError$1(cause), "error");
+          context.setStatus(hostMessage("refazer o .srt", cause), "error");
         } finally {
           busy = false;
           if (redoBtn) {
@@ -12200,7 +13009,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
         } catch (cause) {
           scan = null;
           if (!silent) {
-            context.setStatus(describeError$1(cause), "error");
+            context.setStatus(hostMessage("ler a sequência", cause), "error");
           }
         } finally {
           busy = false;
@@ -12272,8 +13081,9 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
           renderReport();
           lastRun = await readLastRun();
           syncCaptionFormat();
-          context.setStatus(result.message, result.ok ? "done" : "error");
-          showStages(result.ok ? [] : result.stages);
+          const partial = result.ok && result.imported === 0;
+          context.setStatus(result.message, result.ok ? partial ? "idle" : "done" : "error");
+          showStages(result.ok && !partial ? [] : result.stages);
           if (result.imported > 0) {
             context.setResetHandler(() => clearAll());
           } else {
@@ -12281,7 +13091,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
           }
         } catch (cause) {
           showProgress(null);
-          context.setStatus(describeError$1(cause), "error");
+          context.setStatus(hostMessage("transcrever", cause), "error");
           context.setApplyEnabled(true);
         } finally {
           showProgress(null);
@@ -12338,7 +13148,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
             "done"
           );
         } catch (cause) {
-          context.setStatus(describeError$1(cause), "error");
+          context.setStatus(hostMessage("ler as correções", cause), "error");
         } finally {
           busy = false;
           if (learnBtn) {
@@ -12869,9 +13679,6 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
   const COPY_SCRIPT = "translate-copy.command";
   const COPY_OUT = "tr-input.srt";
   const COPY_DONE = "tr-copy-done.txt";
-  function fileUrl(caminho) {
-    return "file://" + caminho.replace(/\\/g, "/").split("/").map((parte) => encodeURIComponent(parte)).join("/");
-  }
   async function readAnyPath(nativePath2) {
     const falhas = [];
     const lfs = localFs();
@@ -12948,6 +13755,44 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
   }
   let releaseDocument = null;
   let cancelActive = null;
+  const TRANSLATE_DEFAULTS = { from: "auto", to: "pt" };
+  const translateSettings = createToolSettings(
+    "translate-config.json",
+    TRANSLATE_DEFAULTS,
+    (raw) => ({
+      from: typeof raw.from === "string" && (raw.from === "auto" || SOURCE_LANGUAGES.some((l) => l.id === raw.from)) ? raw.from : "auto",
+      to: typeof raw.to === "string" && TARGET_LANGUAGES.some((l) => l.id === raw.to) ? raw.to : "pt"
+    })
+  );
+  warmToolSettings(translateSettings);
+  const FALHAS = [
+    [
+      /no longer valid/i,
+      "O Premiere trocou o projeto embaixo do painel. Clique em LIMPAR e escolha a legenda de novo."
+    ],
+    [
+      /route not found|no such file|ENOENT/i,
+      "Não achei o arquivo nesse caminho. Ele pode ter sido movido ou estar num disco que saiu."
+    ],
+    [
+      /permission|denied|EACCES/i,
+      "O sistema negou o acesso ao arquivo. Confira as permissões da pasta."
+    ],
+    [
+      /network|fetch|ETIMEDOUT|ECONNRESET/i,
+      "A tradução depende da internet e a conexão falhou. Tente de novo."
+    ]
+  ];
+  function mensagemDeFalha(passo, cause) {
+    const cru = describeError$1(cause);
+    console.error(`[Traduzir] falha ao ${passo}:`, cause);
+    for (const [padrao, frase] of FALHAS) {
+      if (padrao.test(cru)) {
+        return frase;
+      }
+    }
+    return `Falha ao ${passo}: ${cru}`;
+  }
   const translateTool = {
     id: "translate",
     name: "Traduzir Legenda",
@@ -12958,11 +13803,11 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
     available: true,
     usesSelection: false,
     mount(container, context) {
+      const saved = translateSettings.peek() ?? TRANSLATE_DEFAULTS;
       let carregada = null;
-      let from = "auto";
-      let to = "pt";
+      let from = saved.from;
+      let to = saved.to;
       let busy = false;
-      let ultimoSrt = null;
       container.innerHTML = markup();
       const vazioEl = container.querySelector("[data-empty]");
       const arquivoEl = container.querySelector("[data-file]");
@@ -12982,6 +13827,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
         selected: () => from,
         onPick: (id) => {
           from = id;
+          translateSettings.patch({ from });
           fromPick?.render();
         }
       }) : null;
@@ -12990,9 +13836,19 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
         selected: () => to,
         onPick: (id) => {
           to = id;
+          translateSettings.patch({ to });
           toPick?.render();
         }
       }) : null;
+      void translateSettings.read().then((stored) => {
+        if (!container.isConnected) {
+          return;
+        }
+        from = stored.from;
+        to = stored.to;
+        fromPick?.render();
+        toPick?.render();
+      });
       const fechar = (alvo) => {
         fromPick?.closeUnless(alvo);
         toPick?.closeUnless(alvo);
@@ -13017,7 +13873,6 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
           return;
         }
         carregada = { name: nome, text: texto, cues: doc.cues.length };
-        ultimoSrt = null;
         renderArquivo();
         esconderLista();
         renderPrevia([]);
@@ -13041,7 +13896,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
               context.setStatus("Nenhum arquivo escolhido.", "idle");
             }
           } catch (cause) {
-            context.setStatus(describeError$1(cause), "error");
+            context.setStatus(mensagemDeFalha("abrir o arquivo", cause), "error");
           } finally {
             busy = false;
           }
@@ -13076,7 +13931,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
             "done"
           );
         } catch (cause) {
-          context.setStatus(describeError$1(cause), "error");
+          context.setStatus(mensagemDeFalha("procurar legendas no projeto", cause), "error");
         } finally {
           busy = false;
           if (projetoEl) {
@@ -13096,7 +13951,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
           try {
             carregar(nome, await readAnyPath(caminho));
           } catch (cause) {
-            context.setStatus(describeError$1(cause), "error");
+            context.setStatus(mensagemDeFalha("ler a legenda", cause), "error");
           } finally {
             busy = false;
           }
@@ -13125,7 +13980,6 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
           const nome = nomeTraduzido(carregada.name, to);
           const espaco = await workspace();
           await write(espaco, nome, resultado.content);
-          ultimoSrt = { nome, conteudo: resultado.content };
           renderPrevia(previewPairs(carregada.text, resultado.content, 3));
           const caminho = nativePath(espaco, nome);
           let noProjeto = false;
@@ -13143,7 +13997,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
             "done"
           );
         } catch (cause) {
-          context.setStatus(describeError$1(cause), "error");
+          context.setStatus(mensagemDeFalha("traduzir", cause), "error");
         } finally {
           busy = false;
           cancelActive = null;
@@ -13153,7 +14007,6 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       });
       function limpar() {
         carregada = null;
-        ultimoSrt = null;
         renderArquivo();
         renderPrevia([]);
         esconderLista();
@@ -13194,6 +14047,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       }
     },
     unmount() {
+      void translateSettings.flush();
       cancelActive?.();
       cancelActive = null;
       releaseDocument?.();
@@ -13298,6 +14152,10 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
     return '<svg viewBox="0 0 14 14" aria-hidden="true" fill="currentColor">' + shapes + "</svg>";
   }
   const GITHUB_REPO = "SidyFurtado/framelab";
+  function versionTag(version) {
+    const clean = version.trim();
+    return clean.startsWith("v") ? clean : `v${clean}`;
+  }
   const VERSION_MANIFEST_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/main/version.json`;
   class PluginUpdater {
     constructor(currentVersion) {
@@ -13378,15 +14236,19 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
         }
         const fs = uxp.storage.localFileSystem;
         const pluginFolder = await fs.getPluginFolder();
+        const tag = versionTag(manifest.version);
         const filesToUpdate = manifest.bundleFiles ?? {
-          "manifest.json": `https://raw.githubusercontent.com/${GITHUB_REPO}/main/dist/manifest.json`,
-          "index.html": `https://raw.githubusercontent.com/${GITHUB_REPO}/main/dist/index.html`,
-          "index.js": `https://raw.githubusercontent.com/${GITHUB_REPO}/main/dist/index.js`,
-          "index.css": `https://raw.githubusercontent.com/${GITHUB_REPO}/main/dist/index.css`
+          "manifest.json": `https://raw.githubusercontent.com/${GITHUB_REPO}/${tag}/dist/manifest.json`,
+          "index.html": `https://raw.githubusercontent.com/${GITHUB_REPO}/${tag}/dist/index.html`,
+          "index.js": `https://raw.githubusercontent.com/${GITHUB_REPO}/${tag}/dist/index.js`,
+          "index.css": `https://raw.githubusercontent.com/${GITHUB_REPO}/${tag}/dist/index.css`
         };
         const allowedUrl = `https://raw.githubusercontent.com/${GITHUB_REPO}/`;
         const fileEntries = Object.entries(filesToUpdate).filter(
-          ([filename, fileUrl2]) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(filename) && fileUrl2.startsWith(allowedUrl)
+          ([filename, fileUrl2]) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(filename) && fileUrl2.startsWith(allowedUrl) && // Um manifesto que aponte de volta para um ramo móvel traz de
+          // volta o problema que a tag resolve, então ele é recusado
+          // aqui mesmo — inclusive o nosso, se um dia regredir.
+          !/^(main|master|HEAD)\//.test(fileUrl2.slice(allowedUrl.length))
         );
         if (fileEntries.length === 0) {
           throw new Error("Manifesto sem arquivos válidos para atualizar.");
@@ -13490,9 +14352,9 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
     return null;
   }
   function isNewerVersion(candidate, current) {
-    const parse = (v) => v.replace(/^v/, "").split("-")[0].split(".").map((part) => parseInt(part, 10) || 0);
-    const [cMajor = 0, cMinor = 0, cPatch = 0] = parse(candidate);
-    const [curMajor = 0, curMinor = 0, curPatch = 0] = parse(current);
+    const parse2 = (v) => v.replace(/^v/, "").split("-")[0].split(".").map((part) => parseInt(part, 10) || 0);
+    const [cMajor = 0, cMinor = 0, cPatch = 0] = parse2(candidate);
+    const [curMajor = 0, curMinor = 0, curPatch = 0] = parse2(current);
     if (cMajor > curMajor) return true;
     if (cMajor < curMajor) return false;
     if (cMinor > curMinor) return true;
@@ -13535,7 +14397,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       }
       const topbar = document.createElement("header");
       topbar.className = "topbar";
-      topbar.innerHTML = `<div class="brand" aria-label="${escapeHtml(PRODUCT_NAME)}"><b>${escapeHtml(PRODUCT_NAME.toLowerCase())}</b><span aria-hidden="true">/</span></div><label class="search">` + searchGlyph() + `<input type="text" placeholder="Buscar ferramenta…" aria-label="Buscar ferramenta" spellcheck="false"></label><span class="version" title="build ${"2026-09-20 13:19:38"}">v${VERSION}</span>`;
+      topbar.innerHTML = `<div class="brand" aria-label="${escapeHtml(PRODUCT_NAME)}"><b>${escapeHtml(PRODUCT_NAME.toLowerCase())}</b><span aria-hidden="true">/</span></div><label class="search">` + searchGlyph() + `<input type="text" placeholder="Buscar ferramenta…" aria-label="Buscar ferramenta" spellcheck="false"></label><span class="version" title="build ${"2026-09-20 14:01:11"}">v${VERSION}</span>`;
       this.topbarEl = topbar;
       this.navToggle = createControl("nav-toggle");
       this.navToggle.innerHTML = panelToggleGlyph();
@@ -13558,7 +14420,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       empty2.textContent = "Nenhuma ferramenta encontrada.";
       const navFooter = document.createElement("div");
       navFooter.className = "nav-footer";
-      navFooter.innerHTML = `<span class="nav-footer-mark" aria-hidden="true">${premiereGlyph()}</span><span>${escapeHtml(PRODUCT_TAGLINE)} Pro</span><span class="nav-footer-version" title="build ${"2026-09-20 13:19:38"}">v${VERSION}</span>`;
+      navFooter.innerHTML = `<span class="nav-footer-mark" aria-hidden="true">${premiereGlyph()}</span><span>${escapeHtml(PRODUCT_TAGLINE)} Pro</span><span class="nav-footer-version" title="build ${"2026-09-20 14:01:11"}">v${VERSION}</span>`;
       this.navEl.append(this.navScroll, empty2, navFooter);
       const work = document.createElement("div");
       work.className = "work";
@@ -13730,9 +14592,9 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       });
       const body = document.createElement("div");
       body.className = "update-body";
-      const versionTag = document.createElement("p");
-      versionTag.className = "update-version-tag";
-      versionTag.innerHTML = `Nova versão <b>v${escapeHtml(manifest.version)}</b> pronta para instalar. (Versão atual: v${VERSION})`;
+      const versionTag2 = document.createElement("p");
+      versionTag2.className = "update-version-tag";
+      versionTag2.innerHTML = `Nova versão <b>v${escapeHtml(manifest.version)}</b> pronta para instalar. (Versão atual: v${VERSION})`;
       const changelog = document.createElement("div");
       changelog.className = "update-changelog";
       changelog.textContent = manifest.changelog || "Melhorias de desempenho e estabilidade.";
@@ -13740,7 +14602,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       progressWrap.className = "update-progress-wrap";
       progressWrap.hidden = true;
       progressWrap.innerHTML = '<div class="update-progress-track"><div class="update-progress-fill"></div></div><span class="update-progress-status">Preparando download...</span>';
-      body.append(versionTag, changelog, progressWrap);
+      body.append(versionTag2, changelog, progressWrap);
       const actions = document.createElement("div");
       actions.className = "update-actions";
       const btnManual = document.createElement("button");
@@ -14086,7 +14948,7 @@ ${srtTime(cue.start)} --> ${srtTime(cue.end)}
       return;
     }
     try {
-      console.log(`[Framelab] build ${"2026-09-20 13:19:38"}`);
+      console.log(`[Framelab] build ${"2026-09-20 14:01:11"}`);
       new ProductShell(root).start();
     } catch (cause) {
       console.error("[Framelab] falha ao iniciar:", cause);

@@ -14,8 +14,14 @@
  * curve is being drawn, when the editor takes the slot instead.
  */
 import { CONTROL, escapeHtml } from "../shell/controls";
+import {
+  clampNumber,
+  createToolSettings,
+  warmToolSettings,
+} from "../bridge/settings";
 import { mountCurveEditor, type CurveEditorHandle } from "./curveEditor";
 import {
+  clampPoints,
   CURVES,
   curvePath,
   customCurve,
@@ -49,6 +55,15 @@ export interface CurvePicker {
    * away a curve someone drew for another one.
    */
   reset(): void;
+  /**
+   * Põe o seletor num preset, como se ele tivesse sido clicado.
+   *
+   * É como uma ferramenta restaura a curva que o editor usou da última
+   * vez: o `mount` é síncrono e os ajustes salvos chegam do disco um
+   * instante depois. Um id desconhecido é ignorado — um arquivo de
+   * ajustes de uma versão com outros presets não muda nada.
+   */
+  setCurveId(id: string): void;
   destroy(): void;
 }
 
@@ -58,6 +73,49 @@ export interface CurvePicker {
  * it is one curve vocabulary, not two.
  */
 let drawnPoints: CurvePoints = { ...CUSTOM_DEFAULT };
+
+/**
+ * A curva desenhada, em disco.
+ *
+ * Ela já era compartilhada entre as ferramentas de propósito — desenhar
+ * no Zoom e encontrá-la esperando nas Curvas é o objetivo. Só que
+ * morria junto com a sessão: quem passou cinco minutos ajustando os
+ * dois pontos de controle recomeçava do zero no dia seguinte. Fica no
+ * mesmo arquivo para todas as ferramentas, porque é uma curva só.
+ */
+const drawnSettings = createToolSettings<CurvePoints>(
+  "curve-drawn.json",
+  { ...CUSTOM_DEFAULT },
+  (raw) => clampPoints({
+    x1: clampNumber(raw.x1, -4, 4, CUSTOM_DEFAULT.x1),
+    y1: clampNumber(raw.y1, -4, 4, CUSTOM_DEFAULT.y1),
+    x2: clampNumber(raw.x2, -4, 4, CUSTOM_DEFAULT.x2),
+    y2: clampNumber(raw.y2, -4, 4, CUSTOM_DEFAULT.y2),
+  })
+);
+
+warmToolSettings(drawnSettings);
+
+/** True assim que alguém mexe nos pontos nesta sessão. */
+let drawnTouched = false;
+
+/**
+ * O disco só fala enquanto ninguém tiver desenhado nesta sessão: um
+ * `read()` que chega atrasado não pode passar por cima da curva que o
+ * editor acabou de ajustar.
+ */
+void drawnSettings.read().then((stored) => {
+  if (!drawnTouched) {
+    drawnPoints = stored;
+  }
+});
+
+/** Troca a curva desenhada e manda gravar. */
+function setDrawnPoints(next: CurvePoints): void {
+  drawnPoints = next;
+  drawnTouched = true;
+  drawnSettings.save({ ...next });
+}
 
 const PREVIEW_WIDTH = 200;
 const PREVIEW_HEIGHT = 84;
@@ -100,7 +158,7 @@ export function mountCurvePicker(
         editor = mountCurveEditor(slot, {
           points: drawnPoints,
           onChange: (next) => {
-            drawnPoints = next;
+            setDrawnPoints(next);
             writeTag();
             options.onChange(curve());
           },
@@ -135,7 +193,7 @@ export function mountCurvePicker(
     if (next === CUSTOM_CURVE && curveId !== CUSTOM_CURVE) {
       const seed = findCurve(curveId).points;
       if (seed) {
-        drawnPoints = { ...seed };
+        setDrawnPoints({ ...seed });
       }
     }
     curveId = next;
@@ -155,7 +213,7 @@ export function mountCurvePicker(
   meta?.addEventListener("click", (event) => {
     const target = event.target;
     if (target instanceof Element && target.closest("[data-curve-reset]")) {
-      drawnPoints = { ...CUSTOM_DEFAULT };
+      setDrawnPoints({ ...CUSTOM_DEFAULT });
       editor?.setPoints(drawnPoints);
       writeTag();
       options.onChange(curve());
@@ -169,6 +227,12 @@ export function mountCurvePicker(
     refresh: render,
     reset(): void {
       select(initialCurveId);
+    },
+    setCurveId(id: string): void {
+      const known = id === CUSTOM_CURVE || CURVES.some((entry) => entry.id === id);
+      if (known && id !== curveId) {
+        select(id);
+      }
     },
     destroy(): void {
       editor?.destroy();

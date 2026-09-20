@@ -16,6 +16,64 @@ import { CONTROL } from "../../shell/controls";
 import type { EasingCurve } from "../../curves/easing";
 import { mountCurvePicker, type CurvePicker } from "../../curves/picker";
 import { mountSlider, type SliderHandle } from "../../shell/slider";
+import {
+  clampNumber,
+  createToolSettings,
+  pickOneOf,
+  warmToolSettings,
+} from "../../bridge/settings";
+
+/**
+ * O que o Zoom lembra de uma sessão para a outra.
+ *
+ * A curva desenhada à mão não entra aqui: ela é do seletor, é
+ * compartilhada por todas as ferramentas, e o próprio seletor a guarda.
+ * Por isso `curveId` nunca é gravado como "custom" — restaurar o modo
+ * de desenho sem a forma desenhada seria devolver o editor a um estado
+ * que ele não deixou.
+ */
+interface ZoomSettings {
+  direction: ZoomDirection;
+  style: ZoomStyle;
+  scalePercent: number;
+  punchDuration: number;
+  curveId: string;
+  /** Se o editor já mexeu na intensidade à mão. Ver `setStyle`. */
+  scaleTouched: boolean;
+}
+
+const ZOOM_DEFAULTS: ZoomSettings = {
+  direction: "in",
+  style: "punch",
+  scalePercent: SCALE_DEFAULTS.punch,
+  punchDuration: PUNCH_DURATION_DEFAULT,
+  curveId: "punch",
+  scaleTouched: false,
+};
+
+const zoomSettings = createToolSettings<ZoomSettings>(
+  "zoom-config.json",
+  ZOOM_DEFAULTS,
+  (raw) => ({
+    direction: pickOneOf(raw.direction, ["in", "out"] as const, "in"),
+    style: pickOneOf(raw.style, ["punch", "full"] as const, "punch"),
+    scalePercent: Math.round(
+      clampNumber(raw.scalePercent, SCALE_MIN, SCALE_MAX, SCALE_DEFAULTS.punch)
+    ),
+    punchDuration: clampNumber(
+      raw.punchDuration,
+      PUNCH_DURATION_MIN,
+      PUNCH_DURATION_MAX,
+      PUNCH_DURATION_DEFAULT
+    ),
+    curveId: typeof raw.curveId === "string" && raw.curveId !== "custom"
+      ? raw.curveId
+      : "punch",
+    scaleTouched: raw.scaleTouched === true,
+  })
+);
+
+warmToolSettings(zoomSettings);
 
 /** The live picker, so unmount can release the editor it may hold. */
 let livePicker: CurvePicker | null = null;
@@ -53,12 +111,15 @@ export const zoomTool: Tool = {
   available: true,
 
   mount(container: HTMLElement, context: ToolContext): void {
-    let direction: ZoomDirection = "in";
-    let style: ZoomStyle = "punch";
-    let scalePercent = SCALE_DEFAULTS.punch;
-    let punchDuration = PUNCH_DURATION_DEFAULT;
+    // Do cache, que foi aquecido quando o módulo carregou. Frio, o
+    // `read()` mais abaixo corrige assim que o disco responder.
+    const saved = zoomSettings.peek() ?? ZOOM_DEFAULTS;
+    let direction: ZoomDirection = saved.direction;
+    let style: ZoomStyle = saved.style;
+    let scalePercent = saved.scalePercent;
+    let punchDuration = saved.punchDuration;
     /** True once the editor has moved the scale slider themselves. */
-    let scaleTouched = false;
+    let scaleTouched = saved.scaleTouched;
 
     container.innerHTML = markup(direction, style, scalePercent, punchDuration);
 
@@ -76,7 +137,7 @@ export const zoomTool: Tool = {
 
     livePicker?.destroy();
     livePicker = mountCurvePicker(curveZone, {
-      curveId: "punch",
+      curveId: saved.curveId,
       renderPreview: (slot, curve) => renderRamp(slot, curve),
       onChange: () => draw(),
     });
@@ -122,6 +183,23 @@ export const zoomTool: Tool = {
       if (durationField) {
         durationField.hidden = style === "full";
       }
+      remember();
+    }
+
+    /**
+     * Guarda o estado atual. Pendurado no `draw` de propósito: todo
+     * ajuste desta ferramenta passa por ele, inclusive a troca de
+     * curva, então não há caminho que escape sem ser lembrado.
+     */
+    function remember(): void {
+      zoomSettings.patch({
+        direction,
+        style,
+        scalePercent,
+        punchDuration,
+        scaleTouched,
+        curveId: livePicker?.curve().id ?? ZOOM_DEFAULTS.curveId,
+      });
     }
 
     function setStyle(next: ZoomStyle): void {
@@ -228,6 +306,26 @@ export const zoomTool: Tool = {
 
     draw();
 
+    /*
+     * A conferência com o disco.
+     *
+     * O `mount` é síncrono e desenhou com o cache. Se ele estava frio
+     * — primeira abertura do painel na sessão — o que apareceu foi o
+     * padrão, e é aqui que os ajustes salvos entram. Com o cache já
+     * quente isto reaplica os mesmos valores e não muda nada.
+     */
+    void zoomSettings.read().then((stored) => {
+      if (!container.isConnected) {
+        return;
+      }
+      scaleTouched = stored.scaleTouched;
+      setDirection(stored.direction);
+      setStyle(stored.style);
+      setScale(stored.scalePercent);
+      setDuration(stored.punchDuration);
+      livePicker?.setCurveId(stored.curveId);
+    });
+
     context.setApplyLabel("APLICAR ZOOM");
     context.setApplyEnabled(true);
     context.setResetHandler(() => {
@@ -260,6 +358,9 @@ export const zoomTool: Tool = {
   },
 
   unmount(): void {
+    // O que estiver pendente vai para o disco agora: fechar o painel é
+    // exatamente quando a gravação adiada perderia o último ajuste.
+    void zoomSettings.flush();
     // The editor listens on window for resizes; the Shell wiping the
     // body would leave that listener behind on a detached node.
     scaleSlider?.destroy();

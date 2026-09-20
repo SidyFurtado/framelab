@@ -76,11 +76,17 @@ export function parseChannelsFromColumns(raw: string): AudioChannels | null {
  * A sonda.
  *
  * A tipagem do host promete uma string e não diz o que vem dentro dela.
- * Enquanto isso não estiver confirmado num projeto de verdade, cada
- * varredura imprime uma amostra crua no console: é o que permite ajustar
- * os padrões acima para o que o Premiere realmente responde, em vez de
- * para o que a documentação sugere.
+ * Isso continua sem confirmação num projeto de verdade — a leitura de
+ * mono/estéreo ainda é uma suposição, e nada aqui deve ser tratado como
+ * fato só por já estar escrito.
+ *
+ * Por isso a sonda fica: ligada à mão, ela imprime uma amostra crua do
+ * que o Premiere responde, que é o único jeito de ajustar os padrões
+ * acima para o formato real em vez de para o que a documentação sugere.
+ * Desligada porque cada amostra são 1200 caracteres no console, duas
+ * vezes por varredura, em toda varredura que o editor fizer.
  */
+const PROBE_METADATA = false;
 const PROBE_LIMIT = 2;
 const PROBE_CHARS = 1200;
 let probesLeft = PROBE_LIMIT;
@@ -91,7 +97,7 @@ export function resetChannelProbe(): void {
 }
 
 function probe(name: string, source: string, raw: string): void {
-  if (probesLeft <= 0) {
+  if (!PROBE_METADATA || probesLeft <= 0) {
     return;
   }
   probesLeft -= 1;

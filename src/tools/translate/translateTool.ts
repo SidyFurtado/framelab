@@ -24,6 +24,7 @@ import { nativePath, workspace, write } from "../silence/workspace";
 import { parseSrt } from "./srtFile";
 import { translateSrt, previewPairs } from "./applyTranslate";
 import { SOURCE_LANGUAGES, TARGET_LANGUAGES, labelOf } from "./languages";
+import { createToolSettings, warmToolSettings } from "../../bridge/settings";
 import { findSrtInProject, pickSrtFile, readAnyPath } from "./source";
 
 let releaseDocument: (() => void) | null = null;
@@ -33,6 +34,72 @@ interface Carregada {
   name: string;
   text: string;
   cues: number;
+}
+
+/**
+ * O que o Traduzir lembra de uma sessão para a outra.
+ */
+interface TranslateSettings {
+  from: string;
+  to: string;
+}
+
+const TRANSLATE_DEFAULTS: TranslateSettings = { from: "auto", to: "pt" };
+
+const translateSettings = createToolSettings<TranslateSettings>(
+  "translate-config.json",
+  TRANSLATE_DEFAULTS,
+  (raw) => ({
+    from:
+      typeof raw.from === "string" &&
+      (raw.from === "auto" || SOURCE_LANGUAGES.some((l) => l.id === raw.from))
+        ? raw.from
+        : "auto",
+    to:
+      typeof raw.to === "string" && TARGET_LANGUAGES.some((l) => l.id === raw.to)
+        ? raw.to
+        : "pt",
+  })
+);
+
+warmToolSettings(translateSettings);
+
+/**
+ * Falhas do host, ditas em português.
+ *
+ * O que chegava na barra de status era o texto cru do Premiere ou do
+ * UXP — "Route not found", "The script object is no longer valid" —
+ * que não diz a um editor o que fazer. O texto cru continua indo para
+ * o console, que é onde ele serve.
+ */
+const FALHAS: ReadonlyArray<[RegExp, string]> = [
+  [
+    /no longer valid/i,
+    "O Premiere trocou o projeto embaixo do painel. Clique em LIMPAR e escolha a legenda de novo.",
+  ],
+  [
+    /route not found|no such file|ENOENT/i,
+    "Não achei o arquivo nesse caminho. Ele pode ter sido movido ou estar num disco que saiu.",
+  ],
+  [
+    /permission|denied|EACCES/i,
+    "O sistema negou o acesso ao arquivo. Confira as permissões da pasta.",
+  ],
+  [
+    /network|fetch|ETIMEDOUT|ECONNRESET/i,
+    "A tradução depende da internet e a conexão falhou. Tente de novo.",
+  ],
+];
+
+function mensagemDeFalha(passo: string, cause: unknown): string {
+  const cru = describeError(cause);
+  console.error(`[Traduzir] falha ao ${passo}:`, cause);
+  for (const [padrao, frase] of FALHAS) {
+    if (padrao.test(cru)) {
+      return frase;
+    }
+  }
+  return `Falha ao ${passo}: ${cru}`;
 }
 
 export const translateTool: Tool = {
@@ -48,11 +115,13 @@ export const translateTool: Tool = {
   usesSelection: false,
 
   mount(container: HTMLElement, context: ToolContext): void {
+    // Do cache, aquecido quando o módulo carregou. Quem traduz sempre
+    // para o mesmo idioma reescolhia os dois a cada sessão.
+    const saved = translateSettings.peek() ?? TRANSLATE_DEFAULTS;
     let carregada: Carregada | null = null;
-    let from = "auto";
-    let to = "pt";
+    let from = saved.from;
+    let to = saved.to;
     let busy = false;
-    let ultimoSrt: { nome: string; conteudo: string } | null = null;
 
     container.innerHTML = markup();
 
@@ -79,6 +148,7 @@ export const translateTool: Tool = {
           selected: () => from,
           onPick: (id) => {
             from = id;
+            translateSettings.patch({ from });
             fromPick?.render();
           },
         })
@@ -90,10 +160,25 @@ export const translateTool: Tool = {
           selected: () => to,
           onPick: (id) => {
             to = id;
+            translateSettings.patch({ to });
             toPick?.render();
           },
         })
       : null;
+
+    /*
+     * A conferência com o disco. O `mount` é síncrono e desenhou com o
+     * cache; se ele estava frio, o que apareceu foi o padrão.
+     */
+    void translateSettings.read().then((stored) => {
+      if (!container.isConnected) {
+        return;
+      }
+      from = stored.from;
+      to = stored.to;
+      fromPick?.render();
+      toPick?.render();
+    });
 
     const fechar = (alvo: Element | null): void => {
       fromPick?.closeUnless(alvo);
@@ -122,7 +207,6 @@ export const translateTool: Tool = {
         return;
       }
       carregada = { name: nome, text: texto, cues: doc.cues.length };
-      ultimoSrt = null;
       renderArquivo();
       esconderLista();
       renderPrevia([]);
@@ -150,7 +234,7 @@ export const translateTool: Tool = {
             context.setStatus("Nenhum arquivo escolhido.", "idle");
           }
         } catch (cause) {
-          context.setStatus(describeError(cause), "error");
+          context.setStatus(mensagemDeFalha("abrir o arquivo", cause), "error");
         } finally {
           busy = false;
         }
@@ -193,7 +277,7 @@ export const translateTool: Tool = {
           "done"
         );
       } catch (cause) {
-        context.setStatus(describeError(cause), "error");
+        context.setStatus(mensagemDeFalha("procurar legendas no projeto", cause), "error");
       } finally {
         busy = false;
         if (projetoEl) {
@@ -214,7 +298,7 @@ export const translateTool: Tool = {
         try {
           carregar(nome, await readAnyPath(caminho));
         } catch (cause) {
-          context.setStatus(describeError(cause), "error");
+          context.setStatus(mensagemDeFalha("ler a legenda", cause), "error");
         } finally {
           busy = false;
         }
@@ -250,7 +334,6 @@ export const translateTool: Tool = {
         const nome = nomeTraduzido(carregada.name, to);
         const espaco = await workspace();
         await write(espaco, nome, resultado.content);
-        ultimoSrt = { nome, conteudo: resultado.content };
         renderPrevia(previewPairs(carregada.text, resultado.content, 3));
 
         const caminho = nativePath(espaco, nome);
@@ -277,7 +360,7 @@ export const translateTool: Tool = {
           "done"
         );
       } catch (cause) {
-        context.setStatus(describeError(cause), "error");
+        context.setStatus(mensagemDeFalha("traduzir", cause), "error");
       } finally {
         busy = false;
         cancelActive = null;
@@ -288,7 +371,6 @@ export const translateTool: Tool = {
 
     function limpar(): void {
       carregada = null;
-      ultimoSrt = null;
       renderArquivo();
       renderPrevia([]);
       esconderLista();
@@ -346,10 +428,11 @@ export const translateTool: Tool = {
       }
     }
 
-    void ultimoSrt;
   },
 
   unmount(): void {
+    // O que estiver pendente vai para o disco agora.
+    void translateSettings.flush();
     cancelActive?.();
     cancelActive = null;
     releaseDocument?.();

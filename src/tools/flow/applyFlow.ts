@@ -31,7 +31,14 @@ import {
   snapTicksToFrame,
 } from "../../bridge/premiere";
 import type { EasingCurve } from "../../curves/easing";
-import { dumpDiag, probeKeyframes, unwrapValue } from "../zoom/diag";
+import { DIAG_ENABLED, dumpDiag, probeKeyframes, unwrapValue } from "../zoom/diag";
+import {
+  bakedFor,
+  bakedIfAny,
+  ensureRegistryLoaded,
+  forgetParam,
+  persistRegistry,
+} from "./bakeRegistry";
 
 /**
  * O relatório do Curvas, em disco — `flow-diag.json`, ao lado do do Zoom.
@@ -92,28 +99,15 @@ export interface FlowTarget {
 
 const MAX_PARAMS = 40;
 
-/**
- * Ticks this session baked, per parameter.
+/*
+ * O registro de assadura mora em `bakeRegistry.ts`, em disco.
  *
- * Premiere offers no place to mark a keyframe as the plugin's, and no
- * way to read which keyframes the editor selected, so the only way to
- * tell an anchor from a baked key is to remember what we wrote. Keyed by
- * `ClipRef.key`, which survives dragging the clip along the timeline —
- * a registry keyed on the clip's start forgot the bake on every move,
- * and re-applying then multiplied the keyframes instead of replacing
- * them. Session scoped: reopen the panel and every keyframe reads as an
- * anchor again, which is the old behaviour rather than a wrong one.
+ * Enquanto ele vivia só na memória deste módulo, fechar o painel
+ * bastava para os keyframes assados voltarem a ser lidos como âncoras
+ * do editor — e a segunda curva assava entre cada par deles, levando
+ * um parâmetro de dezoito para cerca de cento e vinte keyframes sem
+ * dizer nada. O arquivo explica a cerca que impede o contrário.
  */
-const bakedByParam = new Map<string, Set<string>>();
-
-function bakedFor(key: string): Set<string> {
-  let set = bakedByParam.get(key);
-  if (!set) {
-    set = new Set<string>();
-    bakedByParam.set(key, set);
-  }
-  return set;
-}
 
 /**
  * Time Remapping's Speed is permanently "animated" and its keyframes are
@@ -152,6 +146,9 @@ export async function readAnimatedParams(): Promise<ScanResult> {
       report.lines.push("Nenhuma sequência ativa.");
       return { params: [], report };
     }
+
+    // Antes de decidir o que é âncora e o que é assado.
+    await ensureRegistryLoaded(project);
 
     const clips = await collectSelectedVideoClips(ppro, sequence);
     report.clips = clips.length;
@@ -260,7 +257,7 @@ async function keyframeTimes(param: ComponentParam): Promise<TickTime[]> {
  * anchors is not trusted — the whole list comes back instead.
  */
 function anchorsOf(key: string, keyTicks: string[]): string[] {
-  const baked = bakedByParam.get(key);
+  const baked = bakedIfAny(key);
   if (!baked || baked.size === 0) {
     return keyTicks.slice();
   }
@@ -396,6 +393,8 @@ async function runOnTargets(
       return fail("Abra uma sequência na timeline primeiro.");
     }
 
+    await ensureRegistryLoaded(project);
+
     const clips = await collectSelectedVideoClips(ppro, sequence);
     if (clips.length === 0) {
       return fail("Nenhum clipe de vídeo selecionado na timeline.");
@@ -462,7 +461,7 @@ async function runOnTargets(
         keyTicks: target.param.keyTicks,
         anchorTicks: target.param.anchorTicks,
       })),
-      relogios: await clipClocks(byKey, targets),
+      relogios: DIAG_ENABLED ? await clipClocks(byKey, targets) : "(diag desligado)",
       trechos: context.diag,
       planos: plans.map((plan) => ({
         param: plan.descriptor?.label ?? safeDisplayName(plan.param),
@@ -470,7 +469,7 @@ async function runOnTargets(
         add: plan.add,
         existentes: plan.existing,
       })),
-      antes: await keyframesByParam(plans, byKey),
+      antes: DIAG_ENABLED ? await keyframesByParam(plans, byKey) : "(diag desligado)",
       notas: context.notes.slice(),
     };
     await dumpDiag(relatorio, FLOW_DIAG_FILE);
@@ -577,7 +576,7 @@ async function runOnTargets(
 
     relatorio.transacao = { committed, added, refused, transactionError, filed };
     if (transactionError) {
-      await dumpDiag(relatorio, FLOW_DIAG_FILE);
+      await dumpDiag(relatorio, FLOW_DIAG_FILE, true);
       return fail(withNotes(`O Premiere recusou: ${transactionError}`, context.notes));
     }
     if (!committed) {
@@ -599,9 +598,12 @@ async function runOnTargets(
         baked.add(ticks);
       }
       if (baked.size === 0) {
-        bakedByParam.delete(record.key);
+        forgetParam(record.key);
       }
     }
+    // Em disco agora, não no fim da função: daqui para baixo tudo é
+    // conferência e relatório, e qualquer um deles pode estourar.
+    await persistRegistry(project);
 
     // ── 2ª transação: LINEAR nos assados, agora que eles existem ─────
     // Sem LINEAR o Premiere suaviza por cima da assadura e a forma
@@ -686,13 +688,25 @@ async function runOnTargets(
       );
     }
     const verified = await verify(plans, refreshedByKey);
+    /*
+     * Algo saiu do trilho? Então o relatório vale o disco, mesmo com o
+     * diagnóstico desligado — é justamente o caso em que alguém vai
+     * precisar dele, e pedir para o editor reproduzir o problema com a
+     * flag ligada é a rodada de ping-pong que este arquivo existe para
+     * evitar.
+     */
+    const torto =
+      swept > 0 || reparados > 0 || refused > 0 || (wanted > 0 && verified === 0);
     relatorio.depois = {
       varridos: swept,
       verificados: verified,
-      keyframes: await keyframesByParam(plans, refreshedByKey),
+      keyframes:
+        DIAG_ENABLED || torto
+          ? await keyframesByParam(plans, refreshedByKey)
+          : "(diag desligado)",
       notas: context.notes.slice(),
     };
-    await dumpDiag(relatorio, FLOW_DIAG_FILE);
+    await dumpDiag(relatorio, FLOW_DIAG_FILE, torto);
     if (wanted > 0 && verified === 0) {
       context.notes.push("Não consegui reler os keyframes — confira o Effect Controls.");
     }
@@ -1173,7 +1187,10 @@ async function planSegment(
   }
 
   // O que o host respondeu nos âncoras, CRU — a forma e o valor — e a
-  // curva amostrada, para o relatório dizer onde o zero nasce.
+  // curva amostrada, para o relatório dizer onde o zero nasce. Custa
+  // duas perguntas a mais ao host por trecho, então só com o
+  // diagnóstico ligado.
+  if (DIAG_ENABLED) {
   build.diag.push({
     param: safeDisplayName(param),
     startTicks,
@@ -1187,6 +1204,7 @@ async function planSegment(
     ease: [0, 0.1, 0.25, 0.5, 0.75, 0.9, 1].map((t) => [t, ease(t)]),
     add,
   });
+  }
 
   if (add.length === 0) {
     build.notes.push("Nenhum frame livre entre os keyframes do trecho.");

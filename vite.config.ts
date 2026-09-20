@@ -1,4 +1,5 @@
 import { defineConfig } from "vite";
+import pkg from "./package.json";
 
 // UXP loads a classic script from index.html, so the bundle is emitted as a
 // single self-contained IIFE. Static shell files (manifest.json, index.html)
@@ -17,10 +18,22 @@ const BUILD_STAMP = new Date()
   .replace("T", " ")
   .slice(0, 19);
 
+/**
+ * A versão, lida do package.json na hora do build.
+ *
+ * Ela vivia copiada à mão no ProductShell, e é essa cópia que o
+ * atualizador compara para decidir se há novidade. Esquecer de bumpar
+ * justamente essa desliga a atualização para todo mundo, em silêncio:
+ * o manifesto anuncia a versão nova, o painel acha que já é ela, e
+ * ninguém recebe nada. Com uma fonte só, não há o que esquecer.
+ */
+const APP_VERSION = pkg.version;
+
 export default defineConfig({
   publicDir: "static",
   define: {
     __BUILD_STAMP__: JSON.stringify(BUILD_STAMP),
+    __APP_VERSION__: JSON.stringify(APP_VERSION),
   },
   build: {
     target: "es2020",

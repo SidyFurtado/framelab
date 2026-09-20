@@ -26,7 +26,7 @@
  * do plugin que ainda pede um passo do editor, e o painel diz isso na
  * cara em vez de falhar com erro genérico.
  */
-import { dispatch, withdraw } from "../download/runner";
+import { dispatch, stampVerdict, withdraw } from "../download/runner";
 import {
   describe,
   isWindows,
@@ -43,6 +43,15 @@ import {
 
 const q = shellQuote;
 
+/*
+ * Os nomes ABAIXO são moldes, não endereços.
+ *
+ * Os geradores de script escrevem estes nomes, e `transcribe` troca
+ * cada um pelo nome carimbado da execução antes de gravar o script
+ * (ver o bloco de carimbo lá). Ficam aqui num lugar só porque a troca
+ * é textual: um nome que aparecesse escrito à mão no script escaparia
+ * dela e voltaria a ser compartilhado entre execuções.
+ */
 const RESULT_FILE = "cc-result.json";
 const STAGE_FILE = "cc-stage.txt";
 /**
@@ -59,6 +68,18 @@ const STARTED_FILE = "cc-started.txt";
 /** Quanto o motor levou, escrito pelo script. Ver `readTiming`. */
 const TIMING_FILE = "cc-timing.txt";
 const OUT_BASE = "cc-out";
+/** O WAV de 16 kHz montado pelo ffmpeg. ~115 MB numa hora de fala. */
+const AUDIO_FILE = "cc-audio.wav";
+/** Os 30s que a detecção de idioma olha. Ver o gate nos dois scripts. */
+const PROBE_FILE = "cc-probe.wav";
+/**
+ * O que o `-dl` imprimiu, no Windows.
+ *
+ * O bash lê a saída para uma variável; o cmd não tem como fazer isso
+ * sem um `for /f` sobre um comando entre aspas dentro de aspas. O
+ * arquivo custa nada e fica legível quando a detecção erra.
+ */
+const DETECT_FILE = "cc-detect.txt";
 const SCRIPT_FILE = "captions.command";
 const SCRIPT_FILE_WIN = "captions.bat";
 
@@ -210,9 +231,10 @@ export interface TranscribeResult {
 
 /** Lê o carimbo de tempo que o script deixou. Ausente não é erro. */
 function readTiming(
-  space: Workspace
+  space: Workspace,
+  timingFile: string
 ): { elapsedSeconds: number; audioSeconds: number } | null {
-  const raw = readText(space, TIMING_FILE);
+  const raw = readText(space, timingFile);
   if (!raw) return null;
   const [gasto, audio] = raw.split(/\s+/).map((n) => Number.parseFloat(n));
   return Number.isFinite(gasto) && Number.isFinite(audio)
@@ -223,6 +245,15 @@ function readTiming(
 export interface StageReport {
   (stage: string): void;
 }
+
+/**
+ * Os arquivos da execução anterior, para a próxima limpar.
+ *
+ * Não dá para apagá-los no fim da execução: quando o editor cancela, é
+ * justamente o órfão que ainda vai escrever neles. Quem varre é a
+ * execução seguinte, que já não depende de nada daquela.
+ */
+let previousRunFiles: string[] = [];
 
 /**
  * Transcreve um trecho. Devolve o JSON cru do whisper — a conversão
@@ -245,22 +276,81 @@ export async function transcribe(
   }
 
   const space = await workspace();
-  const scriptPath = nativePath(space, scriptName());
-  const outJson = `${OUT_BASE}.json`;
 
-  for (const name of [RESULT_FILE, STAGE_FILE, STARTED_FILE, WHISPER_LOG, TIMING_FILE, outJson, "cc-audio.wav"]) {
+  /*
+   * Cada execução ganha os SEUS arquivos, e o SEU script.
+   *
+   * Cancelar no painel só levanta uma bandeira — o whisper e o ffmpeg
+   * seguem moendo. Com nomes fixos, o órfão terminava DEPOIS da
+   * execução seguinte e escrevia por cima do `cc-out.json` dela: a
+   * transcrição do vídeo abandonado entrava no projeto do vídeo novo,
+   * sem erro nenhum na tela. Carimbado por execução, o órfão escreve
+   * nos nomes velhos e ninguém mais os lê.
+   *
+   * O script vai junto no carimbo, e não só por simetria: reescrever
+   * o .command enquanto o bash dele ainda está rodando é trocar o
+   * texto que ele ainda vai ler.
+   */
+  const tag = Date.now().toString(36);
+  const run = {
+    result: `cc-${tag}-result.json`,
+    stage: `cc-${tag}-stage.txt`,
+    started: `cc-${tag}-started.txt`,
+    log: `cc-${tag}-whisper.log`,
+    timing: `cc-${tag}-timing.txt`,
+    outBase: `cc-${tag}-out`,
+    audio: `cc-${tag}-audio.wav`,
+    probe: `cc-${tag}-probe.wav`,
+    detect: `cc-${tag}-detect.txt`,
+    script: scriptName(tag),
+  };
+  const outJson = `${run.outBase}.json`;
+  const scriptPath = nativePath(space, run.script);
+
+  /*
+   * A limpeza é da execução ANTERIOR e dos nomes fixos que as versões
+   * antigas do plugin deixaram na pasta — nunca dos nomes desta, que
+   * ainda não existem. O WAV é o que pesa: cada órfão deixa ~115 MB
+   * por hora de fala.
+   */
+  for (const name of [
+    ...previousRunFiles,
+    RESULT_FILE,
+    STAGE_FILE,
+    STARTED_FILE,
+    WHISPER_LOG,
+    TIMING_FILE,
+    `${OUT_BASE}.json`,
+    AUDIO_FILE,
+    PROBE_FILE,
+    DETECT_FILE,
+    SCRIPT_FILE,
+    SCRIPT_FILE_WIN,
+  ]) {
     await remove(space, name);
   }
+  previousRunFiles = [...Object.values(run), outJson];
 
-  const script = isWindows()
+  const script = (isWindows()
     ? windowsScript(job, model, language, space.nativeBase, prompt)
-    : unixScript(job, model, language, space.nativeBase, prompt);
-  await write(space, scriptName(), script, true);
+    : unixScript(job, model, language, space.nativeBase, prompt))
+    .split(RESULT_FILE).join(run.result)
+    .split(STAGE_FILE).join(run.stage)
+    .split(STARTED_FILE).join(run.started)
+    .split(WHISPER_LOG).join(run.log)
+    .split(TIMING_FILE).join(run.timing)
+    .split(AUDIO_FILE).join(run.audio)
+    .split(PROBE_FILE).join(run.probe)
+    .split(DETECT_FILE).join(run.detect)
+    // Por último: "cc-out" é prefixo de nada, mas é substring curta o
+    // bastante para morder um nome já carimbado se vier antes.
+    .split(OUT_BASE).join(run.outBase);
+  await write(space, run.script, script, true);
 
   // Sem janela, como o resto do plugin. O Terminal é o plano B.
   const PURPOSE = "Transcrever o áudio das faixas escolhidas.";
   let launchError: string | null = null;
-  const sent = await dispatch(scriptName());
+  const sent = await dispatch(run.script);
   let awaitingStamp = sent.mode !== "denied";
   if (!awaitingStamp) {
     console.error("[Legendas] agente recusado:", sent.error);
@@ -272,7 +362,16 @@ export async function transcribe(
     }
   }
 
-  const stampDeadline = Date.now() + 8000;
+  let stampDeadline = Date.now() + 8000;
+  /** Quanto se espera por vez enquanto o agente estiver vivo e ocupado. */
+  const BUSY_GRACE_MS = 8000;
+  /*
+   * Até quando vale esperar na fila. Sem teto, um agente preso num
+   * trabalho eterno faria a transcrição esperar o tempo limite inteiro
+   * e terminar com a mensagem errada. Três minutos dá folga para o
+   * trabalho da frente sair; o que passar disso cai para o Terminal.
+   */
+  const BUSY_LIMIT = Date.now() + 180_000;
   const deadline = Date.now() + TIMEOUT_MS;
   let lastStage = "";
 
@@ -282,8 +381,20 @@ export async function transcribe(
     }
 
     if (awaitingStamp && Date.now() > stampDeadline) {
-      awaitingStamp = false;
-      if (!readText(space, STARTED_FILE)) {
+      /*
+       * O prazo estourou. Antes de desistir, pergunta se o agente está
+       * vivo: um agente que continua carimbando não morreu, só está
+       * ocupado com outro trabalho — baixar um vídeo e transcrevê-lo em
+       * seguida é o caso banal. Para esse a resposta certa é esperar,
+       * não abrir um Terminal com diálogo de autorização, que é
+       * exatamente o que o agente existe para evitar.
+       */
+      const verdict = await stampVerdict();
+      if (verdict === "busy" && Date.now() < BUSY_LIMIT) {
+        stampDeadline = Date.now() + BUSY_GRACE_MS;
+        console.log("[Legendas] na fila: o agente está com outro trabalho.");
+      } else if (!readText(space, run.started)) {
+        awaitingStamp = false;
         // Sai da fila antes: um agente que acordasse depois
         // transcreveria por cima do resultado já pronto.
         await withdraw(sent.ticket);
@@ -293,20 +404,23 @@ export async function transcribe(
           launchError = describe(cause);
           onManual?.(scriptPath, launchError);
         }
+      } else {
+        // O trabalho já começou: não há o que esperar nem para onde cair.
+        awaitingStamp = false;
       }
     }
 
-    const stage = readText(space, STAGE_FILE);
+    const stage = readText(space, run.stage);
     // "Transcrevendo…" por cinco minutos é o que faz parecer travado.
     // O whisper sabe o percentual; ele só nunca chegava até aqui.
-    const percent = stage?.startsWith("Transcrevendo") ? whisperProgress(space) : null;
+    const percent = stage?.startsWith("Transcrevendo") ? whisperProgress(space, run.log) : null;
     const shown = percent === null ? stage : `${stage} ${percent}%`;
     if (shown && shown !== lastStage) {
       lastStage = shown;
       onStage?.(shown);
     }
 
-    const raw = readText(space, RESULT_FILE);
+    const raw = readText(space, run.result);
     if (raw) {
       try {
         const parsed = JSON.parse(raw) as {
@@ -323,12 +437,19 @@ export async function transcribe(
             scriptPath,
           };
         }
+        // Conferido de novo AQUI, e não só no topo do laço: o motor
+        // pode terminar no mesmo instante em que o editor cancela, e
+        // um resultado que chega depois do cancelamento não é um
+        // resultado — é o trabalho anterior pedindo para entrar.
+        if (cancelled?.()) {
+          return { ok: false, error: "cancelled", json: null, scriptPath };
+        }
         return {
           ok: true,
           error: null,
           json: readJson(space, outJson),
           scriptPath,
-          timing: readTiming(space),
+          timing: readTiming(space, run.timing),
         };
       } catch {
         // JSON pela metade; o `mv` do script torna isso raro.
@@ -351,8 +472,8 @@ export async function transcribe(
  * leitura passa por aqui só para deixar o motivo claro no log.
  */
 /** O último `progress = N%` que o whisper escreveu, ou null. */
-function whisperProgress(space: Workspace): number | null {
-  const log = readText(space, WHISPER_LOG);
+function whisperProgress(space: Workspace, logFile: string): number | null {
+  const log = readText(space, logFile);
   if (!log) return null;
   const hits = log.match(/progress\s*=\s*(\d+)%/g);
   if (!hits) return null;
@@ -369,8 +490,10 @@ function readJson(space: Workspace, name: string): string | null {
   return raw;
 }
 
-function scriptName(): string {
-  return isWindows() ? SCRIPT_FILE_WIN : SCRIPT_FILE;
+/** Sem carimbo devolve o nome antigo — é o que a limpeza procura. */
+function scriptName(tag?: string): string {
+  const base = isWindows() ? SCRIPT_FILE_WIN : SCRIPT_FILE;
+  return tag ? base.replace(".", `-${tag}.`) : base;
 }
 
 // ── geração do script ──────────────────────────────────────────────
@@ -429,7 +552,7 @@ export function unixScript(
       job.inputs.map((args) => args.map(q).join(" ")).join(" ") +
       ` -filter_complex ${q(job.filter)} -map "[out]" ` +
       `-t ${job.durationSeconds.toFixed(6)} ` +
-      `-vn -ac 1 -ar 16000 -c:a pcm_s16le "$WORK/cc-audio.wav" || fail audio-extract`,
+      `-vn -ac 1 -ar 16000 -c:a pcm_s16le "$WORK/${AUDIO_FILE}" || fail audio-extract`,
 
     /*
      * O IDIOMA É CONFERIDO ANTES.
@@ -455,9 +578,9 @@ export function unixScript(
           // antes de decidir isso: numa faixa de uma hora são ~115 MB
           // de PCM carregados para usar meio por cento deles. Um
           // recorte custa centésimos de segundo e poupa a leitura.
-          `"$FFMPEG" -v error -y -t 30 -i "$WORK/cc-audio.wav" -c copy "$WORK/cc-probe.wav" 2>/dev/null || cp "$WORK/cc-audio.wav" "$WORK/cc-probe.wav"`,
-          `DET=$("$WHISPER" -m "$MODEL" -f "$WORK/cc-probe.wav" -dl 2>&1 || true)`,
-          'rm -f "$WORK/cc-probe.wav"',
+          `"$FFMPEG" -v error -y -t 30 -i "$WORK/${AUDIO_FILE}" -c copy "$WORK/${PROBE_FILE}" 2>/dev/null || cp "$WORK/${AUDIO_FILE}" "$WORK/${PROBE_FILE}"`,
+          `DET=$("$WHISPER" -m "$MODEL" -f "$WORK/${PROBE_FILE}" -dl 2>&1 || true)`,
+          `rm -f "$WORK/${PROBE_FILE}"`,
           `DETLANG=$(printf '%s' "$DET" | sed -n 's/.*auto-detected language: \\([a-z][a-z]*\\).*/\\1/p' | head -1)`,
           `DETP=$(printf '%s' "$DET" | sed -n 's/.*p = \\([0-9.]*\\).*/\\1/p' | head -1)`,
           // A probabilidade entra como VARIÁVEL do awk. Escrita como
@@ -470,7 +593,7 @@ export function unixScript(
           `  printf '{"ok":false,"error":"language-mismatch","detected":"%s","p":"%s"}' ` +
             `"$DETLANG" "$DETP" > "$WORK/${RESULT_FILE}.tmp"`,
           `  mv "$WORK/${RESULT_FILE}.tmp" "$WORK/${RESULT_FILE}"`,
-          '  rm -f "$WORK/cc-audio.wav"',
+          `  rm -f "$WORK/${AUDIO_FILE}"`,
           "  exit 1",
           "fi",
         ]),
@@ -509,7 +632,7 @@ export function unixScript(
      * painel. O stderr vai para o log, não para o nada: é dele que
      * saem o percentual e o diagnóstico de lentidão.
      */
-    `"$WHISPER" -m "$MODEL" -f "$WORK/cc-audio.wav" -l ${q(language)} ` +
+    `"$WHISPER" -m "$MODEL" -f "$WORK/${AUDIO_FILE}" -l ${q(language)} ` +
       `-t "$THREADS" $FA -bs ${model.beamSize} -bo ${model.beamSize} -sns -et 2.4 -lpt -1.0 ` +
       (prompt ? `--prompt ${q(prompt)} ` : "") +
       `-ojf -of "$WORK/${OUT_BASE}" -pp >/dev/null 2>"$WORK/${WHISPER_LOG}" || fail whisper-failed`,
@@ -520,7 +643,7 @@ export function unixScript(
 
     // O WAV de 16 kHz de uma hora de fala são ~115 MB; some assim que
     // vira transcrição.
-    'rm -f "$WORK/cc-audio.wav"',
+    `rm -f "$WORK/${AUDIO_FILE}"`,
     'stage "Pronto."',
     `printf '{"ok":true}' > "$WORK/${RESULT_FILE}.tmp"`,
     `mv "$WORK/${RESULT_FILE}.tmp" "$WORK/${RESULT_FILE}"`,
@@ -544,6 +667,18 @@ export function windowsScript(
 ): string {
   const bat = (value: string): string =>
     value.replace(/[\r\n"]/g, "").replace(/%/g, "%%");
+  /*
+   * Resultado em `.tmp` e só então `move` — como em todo o resto do
+   * plugin, e como o `fail()` do script do macOS. O painel relê o
+   * arquivo de resultado a cada 400ms; escrever direto no nome que ele
+   * observa abre uma janela em que a leitura pega meio JSON. O `mv` do
+   * lado Unix fechou essa janela há tempos; o .bat era o único lugar
+   * que ainda escrevia por cima do nome observado.
+   */
+  const emit = (json: string, indent = ""): string[] => [
+    `${indent}>"%WORK%\\${RESULT_FILE}.tmp" echo ${json}`,
+    `${indent}move /y "%WORK%\\${RESULT_FILE}.tmp" "%WORK%\\${RESULT_FILE}" >nul`,
+  ];
   const lines = [
     "@echo off",
     "rem Gerado pelo Framelab - Legendas. Pode apagar.",
@@ -555,41 +690,116 @@ export function windowsScript(
     'for %%i in (ffmpeg.exe) do @set "FFMPEG=%%~$PATH:i"',
     `if "%FFMPEG%"=="" if exist "%WORK%\\ffmpeg.exe" set "FFMPEG=%WORK%\\ffmpeg.exe"`,
     'if "%FFMPEG%"=="" (',
-    `  >"%WORK%\\${RESULT_FILE}" echo {"ok":false,"error":"ffmpeg-not-found"}`,
+    ...emit('{"ok":false,"error":"ffmpeg-not-found"}', "  "),
     "  exit /b 1",
     ")",
     'set "WHISPER="',
     'for %%i in (whisper-cli.exe) do @set "WHISPER=%%~$PATH:i"',
     'if "%WHISPER%"=="" (',
-    `  >"%WORK%\\${RESULT_FILE}" echo {"ok":false,"error":"whisper-not-found"}`,
+    ...emit('{"ok":false,"error":"whisper-not-found"}', "  "),
     "  exit /b 1",
     ")",
     `set "MODEL=%WORK%\\${bat(model.file)}"`,
+
+    /*
+     * O modelo baixa para `.tmp` e só então vira o nome final — o
+     * mesmo `curl -o "$MODEL.tmp"` do macOS.
+     *
+     * Escrevendo direto no nome final, uma internet que caiu no meio
+     * do gigabyte deixava o arquivo truncado LÁ, e a execução seguinte
+     * só olhava `if not exist`: o modelo "existia", o whisper morria
+     * ao carregá-lo, e o painel dizia whisper-failed — uma falha de
+     * rede vestida de falha do motor, que não se conserta sozinha
+     * nunca mais, porque o download nunca mais é tentado.
+     *
+     * `if errorlevel 1` e não `%ERRORLEVEL%`: dentro de um bloco entre
+     * parênteses o segundo é expandido na hora de LER o bloco, quando
+     * o curl ainda nem rodou. (Como o resto do .bat, não testado num
+     * Windows real.)
+     */
     'if not exist "%MODEL%" (',
     `  >"%WORK%\\${STAGE_FILE}" echo Baixando o modelo (${model.megabytes} MB)...`,
-    `  curl.exe -fsSL --retry 3 -o "%MODEL%" "${model.url}"`,
+    `  curl.exe -fsSL --retry 3 -o "%MODEL%.tmp" "${model.url}"`,
+    "  if errorlevel 1 (",
+    `    del /q "%MODEL%.tmp" 2>nul`,
+    ...emit('{"ok":false,"error":"model-download"}', "    "),
+    "    exit /b 1",
+    "  )",
+    `  move /y "%MODEL%.tmp" "%MODEL%" >nul`,
     ")",
     `>"%WORK%\\${STAGE_FILE}" echo Montando o audio da faixa...`,
     `"%FFMPEG%" -v error -y ` +
       job.inputs.map((args) => args.map((a) => `"${bat(a)}"`).join(" ")).join(" ") +
       ` -filter_complex "${bat(job.filter)}" -map "[out]" ` +
       `-t ${job.durationSeconds.toFixed(6)} ` +
-      `-vn -ac 1 -ar 16000 -c:a pcm_s16le "%WORK%\\cc-audio.wav"`,
+      `-vn -ac 1 -ar 16000 -c:a pcm_s16le "%WORK%\\${AUDIO_FILE}"`,
     "if errorlevel 1 (",
-    `  >"%WORK%\\${RESULT_FILE}" echo {"ok":false,"error":"audio-extract"}`,
+    ...emit('{"ok":false,"error":"audio-extract"}', "  "),
     "  exit /b 1",
     ")",
+
+    /*
+     * O MESMO gate de idioma do macOS, pelo mesmo motivo: forçar `-l fr`
+     * num áudio em português não dá erro, dá francês inventado com
+     * pontuação perfeita — minutos de motor para produzir uma tradução
+     * que ninguém pediu. Detectar custa ~4s contra isso.
+     *
+     * Duas diferenças de tradução para o cmd, ambas sem Windows real
+     * para conferir (vale para o arquivo inteiro):
+     *  · `!VAR:*texto=!` corta tudo até o texto, inclusive — é o que o
+     *    `sed` faz do outro lado, e não depende do prefixo que o
+     *    whisper imprime antes de "auto-detected language:".
+     *  · o cmd não compara número com ponto. `gtr` entre "0.99" e
+     *    "0.70" é comparação de TEXTO, que dá o mesmo resultado aqui
+     *    porque o whisper sempre imprime a probabilidade com um dígito
+     *    antes do ponto.
+     */
+    ...(language === "auto"
+      ? []
+      : [
+          `>"%WORK%\\${STAGE_FILE}" echo Conferindo o idioma...`,
+          // O `-dl` só olha os primeiros 30s, mas lê o arquivo inteiro
+          // antes de decidir isso. O recorte poupa a leitura.
+          `"%FFMPEG%" -v error -y -t 30 -i "%WORK%\\${AUDIO_FILE}" -c copy "%WORK%\\${PROBE_FILE}" 2>nul`,
+          `if not exist "%WORK%\\${PROBE_FILE}" copy /y "%WORK%\\${AUDIO_FILE}" "%WORK%\\${PROBE_FILE}" >nul`,
+          `"%WHISPER%" -m "%MODEL%" -f "%WORK%\\${PROBE_FILE}" -dl >"%WORK%\\${DETECT_FILE}" 2>&1`,
+          `del /q "%WORK%\\${PROBE_FILE}" 2>nul`,
+          "setlocal enabledelayedexpansion",
+          'set "DETLINE="',
+          'set "DETLANG="',
+          'set "DETP="',
+          `for /f "delims=" %%L in ('findstr /c:"auto-detected language" "%WORK%\\${DETECT_FILE}"') do set "DETLINE=%%L"`,
+          'set "DETREST=!DETLINE:*auto-detected language: =!"',
+          // `pt (p = 0.99)` com espaço e parênteses por delimitador:
+          // token 1 é o idioma, token 4 é a probabilidade.
+          'for /f "tokens=1,4 delims= ()" %%a in ("!DETREST!") do (set "DETLANG=%%a" & set "DETP=%%b")',
+          // Detecção muda ou insegura: quem manda é a escolha do editor.
+          "if \"!DETLANG!\"==\"\" goto :cc_lang_ok",
+          `if /i "!DETLANG!"=="${bat(language)}" goto :cc_lang_ok`,
+          'if not "!DETP!" gtr "0.70" goto :cc_lang_ok',
+          `>"%WORK%\\${RESULT_FILE}.tmp" echo {"ok":false,"error":"language-mismatch","detected":"!DETLANG!","p":"!DETP!"}`,
+          `move /y "%WORK%\\${RESULT_FILE}.tmp" "%WORK%\\${RESULT_FILE}" >nul`,
+          `del /q "%WORK%\\${AUDIO_FILE}" 2>nul`,
+          "endlocal",
+          "exit /b 1",
+          ":cc_lang_ok",
+          "endlocal",
+        ]),
+
     `>"%WORK%\\${STAGE_FILE}" echo Transcrevendo...`,
-    `"%WHISPER%" -m "%MODEL%" -f "%WORK%\\cc-audio.wav" -l ${bat(language)} ` +
-      `-bs 5 -bo 5 -sns -et 2.4 -lpt -1.0 ` +
+    // O feixe vem do modelo, não de um 5 fixo: é o mesmo botão de
+    // velocidade que o macOS usa, e num modelo grande ele é o
+    // principal responsável pela espera.
+    `"%WHISPER%" -m "%MODEL%" -f "%WORK%\\${AUDIO_FILE}" -l ${bat(language)} ` +
+      `-bs ${model.beamSize} -bo ${model.beamSize} -sns -et 2.4 -lpt -1.0 ` +
       (prompt ? `--prompt "${bat(prompt)}" ` : "") +
       `-ojf -of "%WORK%\\${OUT_BASE}" -pp >nul 2>"%WORK%\\${WHISPER_LOG}"`,
     "if errorlevel 1 (",
-    `  >"%WORK%\\${RESULT_FILE}" echo {"ok":false,"error":"whisper-failed"}`,
+    ...emit('{"ok":false,"error":"whisper-failed"}', "  "),
     "  exit /b 1",
     ")",
-    `del /q "%WORK%\\cc-audio.wav" 2>nul`,
-    `>"%WORK%\\${RESULT_FILE}" echo {"ok":true}`,
+    `del /q "%WORK%\\${AUDIO_FILE}" 2>nul`,
+    ...emit('{"ok":true}'),
     "exit /b 0",
   ];
   return lines.join("\r\n") + "\r\n";

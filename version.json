@@ -5,9 +5,9 @@
   "changelog": "ÍCONES DA INTERFACE: correção da renderização SVG no motor UXP do Premiere Pro. Todos os ícones do menu lateral (Corte de Silêncios, Cortar Muletas, Curvas de velocidade, Traduzir Legenda, Legendas, Baixar Vídeos, Organizar Pastas e Zoom) agora são exibidos com nitidez total e traços precisos no tema Tungsten 3200K. Melhorias de estabilidade e compatibilidade geral.",
   "downloadUrl": "https://github.com/SidyFurtado/framelab/releases/latest/download/Framelab-macOS.zip",
   "bundleFiles": {
-    "manifest.json": "https://raw.githubusercontent.com/SidyFurtado/framelab/main/dist/manifest.json",
-    "index.html": "https://raw.githubusercontent.com/SidyFurtado/framelab/main/dist/index.html",
-    "index.js": "https://raw.githubusercontent.com/SidyFurtado/framelab/main/dist/index.js",
-    "index.css": "https://raw.githubusercontent.com/SidyFurtado/framelab/main/dist/index.css"
+    "manifest.json": "https://raw.githubusercontent.com/SidyFurtado/framelab/v0.4.1/dist/manifest.json",
+    "index.html": "https://raw.githubusercontent.com/SidyFurtado/framelab/v0.4.1/dist/index.html",
+    "index.js": "https://raw.githubusercontent.com/SidyFurtado/framelab/v0.4.1/dist/index.js",
+    "index.css": "https://raw.githubusercontent.com/SidyFurtado/framelab/v0.4.1/dist/index.css"
   }
 }

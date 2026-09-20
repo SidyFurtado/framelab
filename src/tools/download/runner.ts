@@ -229,6 +229,35 @@ export async function dispatch(scriptName: string): Promise<DispatchResult> {
 }
 
 /**
+ * O agente não pegou o nosso trabalho no prazo. Morreu, ou só está
+ * ocupado com outro?
+ *
+ * ── Por que a pergunta importa ────────────────────────────────────
+ * O agente roda um trabalho por vez e BLOQUEIA em cada um (ver o laço
+ * `while kill -0` no script). Então uma sequência banal — baixar um
+ * clipe e logo em seguida analisar o silêncio dele — deixa o segundo
+ * pedido esperando na fila.
+ *
+ * O prazo de oito segundos existe para detectar um agente que nunca
+ * subiu. Quem o estourava por estar na fila era tratado como morto: o
+ * pedido era retirado e o script ia para o Terminal, com janela e
+ * diálogo de autorização — exatamente o que o agente existe para
+ * evitar — e sem dizer ao editor por quê.
+ *
+ * Um agente que continua carimbando está vivo. Para esse, a resposta
+ * certa é continuar esperando.
+ */
+export async function stampVerdict(): Promise<"busy" | "dead"> {
+  try {
+    return (await agentStatus()).up ? "busy" : "dead";
+  } catch {
+    // Sem conseguir perguntar, o antigo comportamento vale: cair para
+    // o Terminal é ruim, mas esperar por um agente morto é pior.
+    return "dead";
+  }
+}
+
+/**
  * Tira da fila um pedido que não vai mais ser esperado.
  *
  * Chamado quando quem pediu desistiu do agente e foi pelo caminho
@@ -469,7 +498,15 @@ export function agentVbs(space: Workspace): string {
     "  Dim h",
     "  On Error Resume Next",
     "  Set h = fso.CreateTextFile(aliveF, True)",
-    `  h.Write Epoch() & " ${AGENT_VERSION}"`,
+    // Terceiro campo, como no Unix. Ele não é decorativo: `agentStatus`
+    // lê exatamente esta posição, e sem ela o diagnóstico do painel
+    // dizia "de pé, nativo (?)" em TODA máquina Windows. Aqui não há
+    // Rosetta, então a resposta honesta é o nome da arquitetura que o
+    // próprio Windows informa.
+    '  Dim arch',
+    '  arch = sh.Environment("Process")("PROCESSOR_ARCHITECTURE")',
+    '  If arch = "" Then arch = "windows"',
+    `  h.Write Epoch() & " ${AGENT_VERSION} " & arch`,
     "  h.Close",
     "  On Error GoTo 0",
     "End Sub",

@@ -21,12 +21,16 @@ import {
 import { PluginUpdater, type VersionManifest } from "./updater";
 import { startAgentHeartbeat, stopAgentHeartbeat } from "../tools/download/runner";
 
-/** Cravado pelo vite no build. Ver o porquê em vite.config.ts. */
+/** Cravados pelo vite no build. Ver o porquê em vite.config.ts. */
 declare const __BUILD_STAMP__: string;
+declare const __APP_VERSION__: string;
 
 const PRODUCT_NAME = "Framelab";
 const PRODUCT_TAGLINE = "Premiere";
-const VERSION = "0.4.1";
+// Do package.json, via vite. Era uma cópia à mão, e é ela que o
+// atualizador compara: esquecer de bumpar aqui desligava a
+// atualização para todo mundo sem nenhum aviso.
+const VERSION = __APP_VERSION__;
 const NAV_PREFERENCE = "framelab.navigation.collapsed";
 
 

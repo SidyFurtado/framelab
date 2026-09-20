@@ -27,7 +27,7 @@
  * `workspace.ts`; a razão de existirem dois está lá.
  */
 import { EnvelopeBuilder, PCM_SAMPLE_RATE, type Envelope } from "./waveform";
-import { agentStatus, dispatch, withdraw } from "../download/runner";
+import { agentStatus, dispatch, stampVerdict, withdraw } from "../download/runner";
 import {
   describe,
   fsModule,
@@ -224,7 +224,19 @@ export async function extractAudio(
       onManual?.(scriptPath, launchError);
     }
   }
-  const stampDeadline = Date.now() + 8000;
+  let stampDeadline = Date.now() + 8000;
+  /** Quanto se espera por vez enquanto o agente estiver vivo e ocupado. */
+  const BUSY_GRACE_MS = 8000;
+  /*
+   * Até quando vale esperar na fila.
+   *
+   * Sem teto, um agente preso num trabalho eterno faria a extração
+   * esperar os vinte minutos inteiros e terminar com "passou de 20
+   * minutos" — que é a mensagem errada para uma fila. Três minutos é
+   * mais que suficiente para o trabalho da frente sair, e o que passar
+   * disso cai para o Terminal como antes.
+   */
+  const BUSY_LIMIT = Date.now() + 180_000;
 
   const started = Date.now();
   const deadline = started + TIMEOUT_MS;
@@ -236,9 +248,19 @@ export async function extractAudio(
     }
 
     if (awaitingStamp && Date.now() > stampDeadline) {
-      awaitingStamp = false;
-      if (!readText(space, runStarted)) {
-        console.warn("[Silêncios] sem carimbo do agente — caindo para o Terminal.");
+      /*
+       * O prazo estourou. Antes de desistir, pergunta se o agente está
+       * vivo: um agente que continua carimbando não morreu, só está
+       * ocupado com outro trabalho — e para esse a resposta certa é
+       * esperar, não abrir um Terminal com diálogo de autorização.
+       */
+      const verdict = await stampVerdict();
+      if (verdict === "busy" && Date.now() < BUSY_LIMIT) {
+        stampDeadline = Date.now() + BUSY_GRACE_MS;
+        console.log("[Silêncios] na fila: o agente está com outro trabalho.");
+      } else if (!readText(space, runStarted)) {
+        awaitingStamp = false;
+        console.warn("[Silêncios] agente não respondeu — caindo para o Terminal.");
         // Sai da fila antes: um agente que acordasse depois extrairia
         // o mesmo áudio uma segunda vez.
         await withdraw(sent.ticket);
@@ -248,6 +270,9 @@ export async function extractAudio(
           launchError = describe(cause);
           onManual?.(scriptPath, launchError);
         }
+      } else {
+        // O trabalho já começou: não há o que esperar nem para onde cair.
+        awaitingStamp = false;
       }
     }
 

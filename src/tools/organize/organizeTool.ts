@@ -12,6 +12,7 @@ import {
   scanProject,
   organizeProject,
   undoOrganize,
+  isScanCancelled,
   AUDIO_KIND_LABELS,
   AUDIO_KIND_ORDER,
   TOP_CATEGORY_LABELS,
@@ -34,6 +35,22 @@ const TOP_CAT_GLYPHS: Record<TopCategory, string> = {
   other: "📦",
 };
 
+/*
+ * O snapshot do Desfazer vive no MÓDULO, não no `mount`.
+ *
+ * Preso ao `mount`, ele morria ao trocar de ferramenta — sem aviso, e
+ * justamente onde dói: esta ferramenta reescreve os itens da faixa, os
+ * efeitos e keyframes do clipe cortado se vão junto, e o desfazer do
+ * host empilha um passo por segmento. Ou seja, o Desfazer do painel é
+ * o caminho prático de volta, e ele era descartado por um clique no
+ * navegador. Pior: abandonar uma execução travada é esse mesmo clique,
+ * então "cancelar" e "perder o desfazer" eram o mesmo gesto.
+ *
+ * No módulo ele sobrevive à troca, e o `mount` religa o botão quando
+ * encontra um snapshot esperando.
+ */
+let lastSnapshot: OrganizeSnapshot | null = null;
+
 export const organizeTool: Tool = {
   id: "organize",
   name: "Organizar Pastas",
@@ -49,8 +66,16 @@ export const organizeTool: Tool = {
 
   mount(container: HTMLElement, context: ToolContext): void {
     let scan: ScanResult | null = null;
-    let lastSnapshot: OrganizeSnapshot | null = null;
     let scanning = false;
+    let cancelRequested = false;
+    /*
+     * A frase da etapa, guardada para a contagem poder se pendurar nela.
+     *
+     * "Escaneando…" sozinho não dizia nem o que estava acontecendo nem
+     * quanto faltava, e uma varredura de minutos num projeto grande
+     * parecia o painel travado.
+     */
+    let stage = "Escaneando itens soltos…";
 
     container.innerHTML = emptyMarkup();
 
@@ -62,23 +87,38 @@ export const organizeTool: Tool = {
     context.setApplyLabel("ORGANIZAR PROJETO");
     context.setApplyEnabled(false);
     context.setResetLabel("DESFAZER");
-    context.setResetHandler(null);
+    // Um snapshot que sobreviveu à troca de ferramenta religa o
+    // botão: ele continua válido, e escondê-lo seria jogar fora o
+    // único caminho de volta que o editor tem.
+    context.setResetHandler(lastSnapshot ? () => void runUndo() : null);
 
     // ── scan ──────────────────────────────────────────────────
 
     async function runScan(): Promise<void> {
-      if (scanning) return;
-      scanning = true;
-      context.setStatus("Escaneando itens soltos…");
-      context.setApplyEnabled(false);
-
-      if (scanBtn) {
-        scanBtn.setAttribute("aria-disabled", "true");
-        scanBtn.textContent = "Escaneando…";
+      // O mesmo botão desiste da varredura. Ela chega a durar minutos, e
+      // antes disso a única saída do editor era fechar o Premiere.
+      if (scanning) {
+        cancelRequested = true;
+        context.setStatus("Cancelando…");
+        return;
       }
+      scanning = true;
+      cancelRequested = false;
+      stage = "Escaneando itens soltos…";
+      context.setStatus(stage);
+      context.setApplyEnabled(false);
+      setScanBusy(true);
 
       try {
-        scan = await scanProject();
+        scan = await scanProject({
+          onStage: (text) => {
+            stage = text;
+            context.setStatus(text);
+          },
+          onProgress: (done, total) =>
+            context.setStatus(`${stage} ${done}/${total}`),
+          cancelled: () => cancelRequested,
+        });
         renderTree();
         renderStats();
         context.setApplyEnabled(scan.items.length > 0);
@@ -87,15 +127,28 @@ export const organizeTool: Tool = {
           "done"
         );
       } catch (cause) {
-        const msg = cause instanceof Error ? cause.message : String(cause);
-        context.setStatus(msg, "error");
+        if (isScanCancelled(cause)) {
+          // Parou no meio: o que tinha sido lido não descreve o projeto
+          // inteiro, então quem continua valendo é a varredura anterior.
+          context.setStatus("Varredura cancelada.", "idle");
+        } else {
+          const msg = cause instanceof Error ? cause.message : String(cause);
+          context.setStatus(msg, "error");
+        }
+        // Sem isto, um erro deixava o Aplicar desligado mesmo havendo uma
+        // varredura boa de antes na tela.
+        context.setApplyEnabled(scan !== null && scan.items.length > 0);
       } finally {
         scanning = false;
-        if (scanBtn) {
-          scanBtn.removeAttribute("aria-disabled");
-          scanBtn.textContent = "Escanear Projeto";
-        }
+        cancelRequested = false;
+        setScanBusy(false);
       }
+    }
+
+    function setScanBusy(busy: boolean): void {
+      if (!scanBtn) return;
+      scanBtn.classList.toggle("is-busy", busy);
+      scanBtn.textContent = busy ? "Cancelar" : "Escanear Projeto";
     }
 
     scanBtn?.addEventListener("click", () => void runScan());
@@ -110,9 +163,20 @@ export const organizeTool: Tool = {
       const result = await organizeProject(scan);
       context.setStatus(result.message, result.ok ? "done" : "error");
 
-      if (result.ok && result.snapshot) {
+      /*
+       * O Desfazer é ligado por existir snapshot, não por ter dado certo.
+       *
+       * Uma aplicação que morre entre as fases já criou as pastas
+       * principais, e elas ficam no projeto. Enquanto isto dependia do
+       * `ok`, o editor via as pastas novas aparecerem junto com uma
+       * mensagem de erro e não tinha por onde tirá-las.
+       */
+      if (result.snapshot) {
         lastSnapshot = result.snapshot;
         context.setResetHandler(() => void runUndo());
+      }
+
+      if (result.ok && result.snapshot) {
         // Clear the tree — project is now organized
         scan = null;
         if (treeEl) treeEl.innerHTML = organizedMarkup(result.snapshot.moves.length);

@@ -20,6 +20,44 @@ import {
   type CurvePicker,
 } from "../../curves/picker";
 import { mountSlider, type SliderHandle } from "../../shell/slider";
+import {
+  clampNumber,
+  createToolSettings,
+  warmToolSettings,
+} from "../../bridge/settings";
+
+/**
+ * O que as Curvas lembram de uma sessão para a outra.
+ *
+ * A curva desenhada à mão não entra aqui: ela é do seletor e é
+ * compartilhada por todas as ferramentas, então quem a guarda é ele.
+ * Por isso `curveId` nunca é gravado como "custom".
+ */
+interface FlowSettings {
+  density: number;
+  curveId: string;
+}
+
+const FLOW_DEFAULTS: FlowSettings = {
+  density: DENSITY_DEFAULT,
+  curveId: "ease-out",
+};
+
+const flowSettings = createToolSettings<FlowSettings>(
+  "flow-config.json",
+  FLOW_DEFAULTS,
+  (raw) => ({
+    density: Math.round(
+      clampNumber(raw.density, DENSITY_MIN, DENSITY_MAX, DENSITY_DEFAULT)
+    ),
+    curveId:
+      typeof raw.curveId === "string" && raw.curveId !== "custom"
+        ? raw.curveId
+        : FLOW_DEFAULTS.curveId,
+  })
+);
+
+warmToolSettings(flowSettings);
 
 /** The live picker, so unmount can release the editor it may hold. */
 let livePicker: CurvePicker | null = null;
@@ -45,9 +83,12 @@ export const flowTool: Tool = {
   available: true,
 
   mount(container: HTMLElement, context: ToolContext): void {
+    // Do cache, aquecido quando o módulo carregou. Frio, o `read()`
+    // mais abaixo corrige assim que o disco responder.
+    const saved = flowSettings.peek() ?? FLOW_DEFAULTS;
     let params: AnimatedParam[] = [];
     let report: ScanReport | null = null;
-    let density = DENSITY_DEFAULT;
+    let density = saved.density;
     /** Guards against a rescan landing on top of another one. */
     let scanning = false;
     /** paramId -> segment index, or "all". */
@@ -73,10 +114,18 @@ export const flowTool: Tool = {
 
     livePicker?.destroy();
     livePicker = mountCurvePicker(curveZone, {
-      curveId: "ease-out",
+      curveId: saved.curveId,
       renderPreview: renderCurvePreview,
-      onChange: () => {},
+      onChange: () => remember(),
     });
+
+    /** Guarda o estado atual: a densidade e a curva escolhida. */
+    function remember(): void {
+      flowSettings.patch({
+        density,
+        curveId: livePicker?.curve().id ?? FLOW_DEFAULTS.curveId,
+      });
+    }
 
     function renderList(keepStatus = false): void {
       if (params.length === 0) {
@@ -227,10 +276,24 @@ export const flowTool: Tool = {
           Number(button.dataset.densityPreset) === density
         );
       }
+      remember();
     }
 
     setDensity(density);
     void reload();
+
+    /*
+     * A conferência com o disco. O `mount` é síncrono e desenhou com o
+     * cache; se ele estava frio, o que apareceu foi o padrão, e é aqui
+     * que os ajustes salvos entram.
+     */
+    void flowSettings.read().then((stored) => {
+      if (!container.isConnected) {
+        return;
+      }
+      setDensity(stored.density);
+      livePicker?.setCurveId(stored.curveId);
+    });
 
     context.setApplyLabel("Aplicar curva");
     context.setApplyEnabled(false);
@@ -271,6 +334,9 @@ export const flowTool: Tool = {
   },
 
   unmount(): void {
+    // O que estiver pendente vai para o disco agora: fechar o painel é
+    // exatamente quando a gravação adiada perderia o último ajuste.
+    void flowSettings.flush();
     // The editor listens on window for resizes; the Shell wiping the
     // body would leave that listener behind on a detached node.
     densitySlider?.destroy();

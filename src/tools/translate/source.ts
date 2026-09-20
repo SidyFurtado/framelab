@@ -21,6 +21,7 @@ import { getPremiere } from "../../bridge/premiere";
 import {
   describe,
   fsModule,
+  fileUrl,
   readText,
   remove,
   shellQuote,
@@ -200,17 +201,6 @@ const COPY_DONE = "tr-copy-done.txt";
  * legenda que more numa pasta com espaço ou acento é a regra, não a
  * exceção.
  */
-function fileUrl(caminho: string): string {
-  return (
-    "file://" +
-    caminho
-      .replace(/\\/g, "/")
-      .split("/")
-      .map((parte) => encodeURIComponent(parte))
-      .join("/")
-  );
-}
-
 /**
  * Traz para dentro um .srt que está em qualquer lugar do disco.
  *

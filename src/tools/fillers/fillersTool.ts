@@ -14,6 +14,11 @@
  * havia muleta.
  */
 import type { Tool, ToolContext } from "../../shell/tool";
+import {
+  clampNumber,
+  createToolSettings,
+  warmToolSettings,
+} from "../../bridge/settings";
 import { CONTROL, setDisabled, escapeHtml } from "../../shell/controls";
 import {
   applyCuts,
@@ -46,6 +51,54 @@ let cancelActiveScan: (() => void) | null = null;
 let padSlider: SliderHandle | null = null;
 let stretchSlider: SliderHandle | null = null;
 
+/*
+ * O snapshot do Desfazer vive no MÓDULO, não no `mount`.
+ *
+ * Preso ao `mount`, ele morria ao trocar de ferramenta — sem aviso, e
+ * justamente onde dói: esta ferramenta reescreve os itens da faixa, os
+ * efeitos e keyframes do clipe cortado se vão junto, e o desfazer do
+ * host empilha um passo por segmento. Ou seja, o Desfazer do painel é
+ * o caminho prático de volta, e ele era descartado por um clique no
+ * navegador. Pior: abandonar uma execução travada é esse mesmo clique,
+ * então "cancelar" e "perder o desfazer" eram o mesmo gesto.
+ *
+ * No módulo ele sobrevive à troca, e o `mount` religa o botão quando
+ * encontra um snapshot esperando.
+ */
+let snapshot: CutSnapshot | null = null;
+
+const fillerSettings = createToolSettings<FillerParams>(
+  "fillers-config.json",
+  FILLER_DEFAULTS,
+  (raw) => ({
+    useTags: raw.useTags !== false,
+    stretchedSeconds: clampNumber(raw.stretchedSeconds, 0, 1, FILLER_DEFAULTS.stretchedSeconds),
+    padSeconds: clampNumber(raw.padSeconds, 0, 0.4, FILLER_DEFAULTS.padSeconds),
+  })
+);
+
+warmToolSettings(fillerSettings);
+
+/**
+ * Falhas do host, ditas em português. O texto cru continua indo para o
+ * console, que é onde ele serve — "The script object is no longer
+ * valid" não diz a um editor o que fazer.
+ */
+function mensagemDeFalha(cause: unknown): string {
+  const cru = cause instanceof Error ? cause.message : String(cause);
+  console.error("[Muletas] a varredura falhou:", cause);
+  if (/no longer valid/i.test(cru)) {
+    return "O Premiere trocou a sequência embaixo do painel. Selecione os clipes de novo e analise.";
+  }
+  if (/route not found|no such file|ENOENT/i.test(cru)) {
+    return "Não consegui chegar na pasta de trabalho do plugin. Reabra o painel.";
+  }
+  if (/transcri|transcript/i.test(cru)) {
+    return "Não achei a transcrição do clipe. Use a janela Texto → Transcrever no Premiere e analise de novo.";
+  }
+  return `Falha ao analisar: ${cru}`;
+}
+
 export const fillersTool: Tool = {
   id: "fillers",
   name: "Cortar Muletas",
@@ -59,11 +112,11 @@ export const fillersTool: Tool = {
   available: true,
 
   mount(container: HTMLElement, context: ToolContext): void {
-    const params: FillerParams = { ...FILLER_DEFAULTS };
+    // Do cache, aquecido quando o módulo carregou.
+    const params: FillerParams = { ...(fillerSettings.peek() ?? FILLER_DEFAULTS) };
     let scan: SilenceScan | null = null;
     /** Planos por clipe, paralelos a scan.clips. */
     let plans = new Map<string, FillerPlan>();
-    let snapshot: CutSnapshot | null = null;
     let scanning = false;
 
     container.innerHTML = markup(params);
@@ -80,7 +133,10 @@ export const fillersTool: Tool = {
     context.setApplyLabel("CORTAR MULETAS");
     context.setApplyEnabled(false);
     context.setResetLabel("DESFAZER");
-    context.setResetHandler(null);
+    // Um snapshot que sobreviveu à troca de ferramenta religa o
+    // botão: ele continua válido, e escondê-lo seria jogar fora o
+    // único caminho de volta que o editor tem.
+    context.setResetHandler(snapshot ? () => void runUndo() : null);
 
     // ── parâmetros ────────────────────────────────────────────
 
@@ -96,6 +152,9 @@ export const fillersTool: Tool = {
           String((item.dataset.tag === "on") === params.useTags)
         );
       }
+      // Pendurado no sync de propósito: todo ajuste desta ferramenta
+      // passa por ele, então não há caminho que escape sem ser lembrado.
+      fillerSettings.patch({ ...params });
     }
 
     if (padRail) {
@@ -139,6 +198,20 @@ export const fillersTool: Tool = {
       rebuild();
     });
 
+    /*
+     * A conferência com o disco. O `mount` é síncrono e desenhou com o
+     * cache; se ele estava frio, o que apareceu foi o padrão.
+     */
+    void fillerSettings.read().then((stored) => {
+      if (!container.isConnected) {
+        return;
+      }
+      params.useTags = stored.useTags;
+      params.padSeconds = stored.padSeconds;
+      params.stretchedSeconds = stored.stretchedSeconds;
+      syncOutputs();
+    });
+
     // ── varredura ─────────────────────────────────────────────
 
     scanBtn?.addEventListener("click", () => void runScan());
@@ -172,7 +245,7 @@ export const fillersTool: Tool = {
       } catch (cause) {
         scan = null;
         plans = new Map();
-        context.setStatus(cause instanceof Error ? cause.message : String(cause), "error");
+        context.setStatus(mensagemDeFalha(cause), "error");
       } finally {
         scanning = false;
         cancelActiveScan = null;
@@ -372,6 +445,8 @@ export const fillersTool: Tool = {
   },
 
   unmount(): void {
+    // O que estiver pendente vai para o disco agora.
+    void fillerSettings.flush();
     cancelActiveScan?.();
     cancelActiveScan = null;
     padSlider?.destroy();

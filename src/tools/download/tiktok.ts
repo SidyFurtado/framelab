@@ -92,10 +92,21 @@ export async function fetchTikTokFast(url: string): Promise<TikTokFast | null> {
  * índice com a entrada; null nas posições em que a via rápida falhou.
  */
 export async function fetchManyTikTok(
-  urls: readonly string[]
+  urls: readonly string[],
+  cancelled?: () => boolean
 ): Promise<Array<TikTokFast | null>> {
   const out: Array<TikTokFast | null> = [];
   for (let index = 0; index < urls.length; index += 1) {
+    // O passo de 1,1s por link é obrigatório, e num lote de vinte ele
+    // vira meio minuto em que um cancelamento não era sequer olhado.
+    // As posições que sobram voltam nulas: quem chama desiste do lote
+    // inteiro, mas o pareamento por índice continua valendo.
+    if (cancelled?.()) {
+      while (out.length < urls.length) {
+        out.push(null);
+      }
+      break;
+    }
     if (index > 0) {
       await wait(BATCH_STEP_MS);
     }

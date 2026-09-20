@@ -120,6 +120,55 @@ const CAP_SLIDERS: readonly CapSlider[] = [
   },
 ];
 
+/**
+ * As falhas do host que já sabemos ler, e o que fazer com cada uma.
+ *
+ * "The script object is no longer valid" é o Premiere dizendo que os
+ * handles envelheceram — o editor trocou de sequência, fechou o
+ * projeto ou recarregou o painel entre a leitura e o uso. Mostrada
+ * crua, essa frase parece defeito do plugin e não diz a ninguém que
+ * basta reler a sequência.
+ *
+ * A lista é curta de propósito: só entra aqui o que já foi visto
+ * chegar à barra de status.
+ */
+const HOST_FAILURES: ReadonlyArray<{ match: RegExp; say: string }> = [
+  {
+    match: /no longer valid/i,
+    say:
+      "O Premiere soltou a sequência — ela mudou, foi fechada ou o painel " +
+      'recarregou. Clique em "Reler a sequência" e tente de novo.',
+  },
+  {
+    match: /route not found/i,
+    say:
+      "Este build do Premiere recusou a escrita na pasta de trabalho do " +
+      "plugin. Reinicie o Premiere; se continuar, me mande o console do UXP.",
+  },
+  {
+    match: /is not a function|undefined is not an object/i,
+    say:
+      "Esta versão do Premiere não expõe uma parte da API que a ferramenta " +
+      "usa. Atualize o Premiere — o console do UXP diz qual peça falta.",
+  },
+];
+
+/**
+ * A frase que vai para a barra de status. O texto cru vai para o
+ * console, que é de onde eu leio quando o editor me manda um print.
+ */
+function hostMessage(step: string, cause: unknown): string {
+  const raw = describeError(cause).trim();
+  console.error(`[Legendas] ${step}:`, cause);
+  const known = HOST_FAILURES.find((entry) => entry.match.test(raw));
+  if (known) {
+    return known.say;
+  }
+  // Desconhecida: o texto cru ainda é melhor que "algo deu errado", e
+  // as mensagens que o próprio plugin lança já são frases prontas.
+  return raw || `Não foi possível ${step}.`;
+}
+
 let cancelActiveRun: (() => void) | null = null;
 /** Solta os listeners que os menus penduram em `document`. */
 let releaseDocument: (() => void) | null = null;
@@ -533,7 +582,7 @@ export const captionsTool: Tool = {
         const result = await rebuildSrt(config.srt, config.srtDestination, config.srtDestinationToken);
         context.setStatus(result.message, result.ok ? "done" : "error");
       } catch (cause) {
-        context.setStatus(describeError(cause), "error");
+        context.setStatus(hostMessage("refazer o .srt", cause), "error");
       } finally {
         busy = false;
         if (redoBtn) {
@@ -601,7 +650,7 @@ export const captionsTool: Tool = {
         // A leitura automática da abertura não grita: o painel pode ter
         // sido aberto sem projeto, e isso não é erro do editor.
         if (!silent) {
-          context.setStatus(describeError(cause), "error");
+          context.setStatus(hostMessage("ler a sequência", cause), "error");
         }
       } finally {
         busy = false;
@@ -694,8 +743,23 @@ export const captionsTool: Tool = {
         // respondem sobre o vídeo dele.
         lastRun = await readLastRun();
         syncCaptionFormat();
-        context.setStatus(result.message, result.ok ? "done" : "error");
-        showStages(result.ok ? [] : result.stages);
+        /*
+         * `ok` só promete que o .srt saiu.
+         *
+         * `transcribeTracks` devolve `ok: true` com zero clipes
+         * importados sempre que o .srt existe — e aí o painel pintava
+         * de verde "N legendas geradas" e ESCONDIA as etapas, que são
+         * exatamente o que explica por que nada encostou nos itens do
+         * projeto. Verde e mudo é o pior dos dois mundos: o editor não
+         * tem o que reclamar e eu não tenho o que consertar.
+         *
+         * Meio caminho, então, é meio caminho: a frase continua (o
+         * .srt é utilizável de verdade), o verde não, e as etapas
+         * ficam à vista.
+         */
+        const partial = result.ok && result.imported === 0;
+        context.setStatus(result.message, result.ok ? (partial ? "idle" : "done") : "error");
+        showStages(result.ok && !partial ? [] : result.stages);
         if (result.imported > 0) {
           context.setResetHandler(() => clearAll());
         } else {
@@ -703,7 +767,7 @@ export const captionsTool: Tool = {
         }
       } catch (cause) {
         showProgress(null);
-        context.setStatus(describeError(cause), "error");
+        context.setStatus(hostMessage("transcrever", cause), "error");
         context.setApplyEnabled(true);
       } finally {
         showProgress(null);
@@ -769,7 +833,7 @@ export const captionsTool: Tool = {
           "done"
         );
       } catch (cause) {
-        context.setStatus(describeError(cause), "error");
+        context.setStatus(hostMessage("ler as correções", cause), "error");
       } finally {
         busy = false;
         if (learnBtn) {

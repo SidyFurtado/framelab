@@ -56,6 +56,7 @@ import {
   spansFromEnvelope,
   type Envelope,
 } from "./waveform";
+import { runCutTransaction } from "./cutTransaction";
 
 /** Ticks por segundo do Premiere, quando o host não souber informar. */
 const TICKS_PER_SECOND_FALLBACK = 254016000000n;
@@ -913,55 +914,92 @@ export async function applyCuts(
     const writtenRuns = plannedRuns.filter((entry) => entry.writes.length > 0).length;
 
     let done = 0;
-    for (const { run, writes } of plannedRuns) {
-      if (writes.length === 0) {
-        continue;
-      }
-
-      // 1. Tira os originais do caminho. Sem ripple: o resto da
-      //    timeline não pode se mexer enquanto reescrevemos aqui.
-      const removed = await removeRun(ppro, host, run);
-      if (!removed.ok) {
-        // Esta run não foi tocada: ela não entra no snapshot, senão o
-        // Desfazer apagaria e reescreveria clipes que estão intactos.
-        return {
-          ok: false,
-          message: removed.message,
-          snapshot: snapshot.runs.length > 0 ? snapshot : null,
-        };
-      }
-
-      const runStart = BigInt(run[0].startTicks);
-      const lastWrite = writes[writes.length - 1];
-      snapshot.runs.push({
-        trackVideo: run[0].trackVideo,
-        trackAudio: run[0].trackAudio,
-        writtenStart: runStart.toString(),
-        writtenEnd: (lastWrite.position + (lastWrite.outTicks - lastWrite.inTicks)).toString(),
-        originals: run.map((clip) => ({
-          projectItemId: clip.projectItemId,
-          projectItem: clip.projectItem,
-          startTicks: clip.startTicks,
-          inTicks: clip.inTicks,
-          outTicks: clip.outTicks,
+    /*
+     * A ordem — remover, registrar, escrever — e a volta atrás quando
+     * ela quebra passaram para `cutTransaction.ts`. Os passos continuam
+     * sendo os daqui; o que mudou é que uma falha DEPOIS da primeira
+     * remoção não devolve mais um buraco na timeline com um recado
+     * pedindo para o editor clicar em Desfazer: ela restaura sozinha.
+     */
+    const outcome = await runCutTransaction<RunSnapshot>(
+      plannedRuns
+        .filter((entry) => entry.writes.length > 0)
+        .map(({ run, writes }) => ({
+          // 1. Tira os originais do caminho. Sem ripple: o resto da
+          //    timeline não pode se mexer enquanto reescrevemos aqui.
+          remove: () => removeRun(ppro, host, run),
+          snapshot: (): RunSnapshot => {
+            const runStart = BigInt(run[0].startTicks);
+            const lastWrite = writes[writes.length - 1];
+            return {
+              trackVideo: run[0].trackVideo,
+              trackAudio: run[0].trackAudio,
+              writtenStart: runStart.toString(),
+              writtenEnd: (
+                lastWrite.position + (lastWrite.outTicks - lastWrite.inTicks)
+              ).toString(),
+              originals: run.map((clip) => ({
+                projectItemId: clip.projectItemId,
+                projectItem: clip.projectItem,
+                startTicks: clip.startTicks,
+                inTicks: clip.inTicks,
+                outTicks: clip.outTicks,
+              })),
+            };
+          },
+          // 2. Reescreve cada trecho. O in/out entra na transação
+          //    anterior ao overwrite que o consome — ver o cabeçalho.
+          write: async () => {
+            const written = await writeSegments(ppro, host, writes, () => {
+              done += 1;
+              onProgress?.(done, totalWrites);
+            });
+            return written.ok
+              ? { ok: true as const }
+              : {
+                  ok: false as const,
+                  message: stepMessage("a escrita de um trecho", written.error),
+                };
+          },
         })),
-      });
-
-      // 2. Reescreve cada trecho. O in/out entra na transação
-      //    anterior ao overwrite que o consome — ver o cabeçalho.
-      const written = await writeSegments(ppro, host, writes, () => {
-        done += 1;
-        onProgress?.(done, totalWrites);
-      });
-      if (!written.ok) {
-        return {
-          ok: false,
-          message:
-            stepMessage("a escrita de um trecho", written.error) +
-            " Use Desfazer corte para recuperar os clipes originais.",
-          snapshot,
-        };
+      // A volta atrás é o MESMO mecanismo do Desfazer manual, que já
+      // sabe apagar a região reescrita e recolocar cada original com o
+      // in/out que tinha. Nada de um segundo caminho de restauração.
+      async (touched) => {
+        const back = await undoCuts({ ...snapshot, runs: [...touched] });
+        return back.ok ? { ok: true } : { ok: false, message: back.message };
       }
+    );
+
+    if (outcome.kind === "untouched") {
+      // Recusa seca: nada escrito, plano ainda válido, sem Desfazer.
+      return { ok: false, message: outcome.cause, snapshot: null };
+    }
+    if (outcome.kind === "restored") {
+      return {
+        ok: false,
+        message:
+          `${outcome.cause} A timeline foi restaurada automaticamente ao ` +
+          "estado anterior — nenhum corte foi aplicado.",
+        snapshot: null,
+      };
+    }
+    if (outcome.kind === "critical") {
+      // O snapshot SAI daqui inteiro: é o único registro do que a
+      // timeline era, e é ele que mantém o "Desfazer corte" de pé como
+      // último recurso. Descartá-lo aqui seria apagar a recuperação.
+      snapshot.runs = outcome.runs;
+      return {
+        ok: false,
+        message:
+          `FALHA CRÍTICA no corte: ${outcome.cause} A restauração ` +
+          `automática também falhou (${outcome.rollbackCause}). ` +
+          `${describeTouched(outcome.runs, perSecond)} ` +
+          "NÃO feche o painel: tente “Desfazer corte” agora, e se ele " +
+          "também falhar, use o Desfazer do Premiere (Cmd/Ctrl+Z) " +
+          "repetidamente até a timeline voltar.",
+        snapshot,
+      };
     }
 
     /*
@@ -974,6 +1012,8 @@ export async function applyCuts(
      * painel anunciava o previsto, então os segundos na tela não eram
      * os segundos do projeto.
      */
+    snapshot.runs = outcome.runs;
+
     const removedSeconds =
       originalTicks > 0n
         ? Number(originalTicks - keptTicks) / Number(perSecond)
@@ -1155,6 +1195,39 @@ async function findByPosition(
     }
   }
   return null;
+}
+
+/**
+ * Que pedaço da timeline pode ter ficado alterado, em linguagem de
+ * editor: faixa e relógio.
+ *
+ * Numa falha crítica, "algo deu errado" não ajuda ninguém a consertar.
+ * A região vem do próprio snapshot — é exatamente o intervalo que a ida
+ * reescreveu e que a volta não conseguiu limpar.
+ */
+function describeTouched(runs: readonly RunSnapshot[], perSecond: bigint): string {
+  if (runs.length === 0) {
+    return "Nenhuma região foi identificada como alterada.";
+  }
+  try {
+    const parts = runs.map((run) => {
+      const track =
+        run.trackVideo >= 0
+          ? `V${run.trackVideo + 1}`
+          : run.trackAudio >= 0
+            ? `A${run.trackAudio + 1}`
+            : "faixa desconhecida";
+      const from = Number(BigInt(run.writtenStart) / perSecond);
+      const to = Number(BigInt(run.writtenEnd) / perSecond);
+      return `${track} ${formatClock(from)}–${formatClock(to)}`;
+    });
+    return `Pode estar alterado: ${parts.join(", ")}.`;
+  } catch {
+    // Esta frase é decoração de uma mensagem crítica. Deixá-la estourar
+    // levaria o `catch` de fora a devolver `snapshot: null` — apagando
+    // a recuperação por causa de um relógio mal formado.
+    return `${runs.length} bloco(s) podem estar alterados.`;
+  }
 }
 
 function safeId(item: ProjectItem): string {

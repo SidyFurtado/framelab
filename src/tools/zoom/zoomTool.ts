@@ -14,7 +14,11 @@ import {
 import { curveGeometry, type CurveShape } from "./curve";
 import { CONTROL } from "../../shell/controls";
 import type { EasingCurve } from "../../curves/easing";
-import { mountCurvePicker, type CurvePicker } from "../../curves/picker";
+import {
+  mountCurvePicker,
+  type CurvePicker,
+  type CurvePreviewMotion,
+} from "../../curves/picker";
 import { mountSlider, type SliderHandle } from "../../shell/slider";
 import {
   clampNumber,
@@ -82,8 +86,12 @@ let scaleSlider: SliderHandle | null = null;
 let durationSlider: SliderHandle | null = null;
 
 const PREVIEW_WIDTH = 220;
-const PREVIEW_HEIGHT = 84;
+const PREVIEW_GRAPH_HEIGHT = 76;
+const PREVIEW_HEIGHT = 108;
 const PREVIEW_PAD = 8;
+const PREVIEW_MOTION_Y = 94;
+const PREVIEW_MOTION_START_X = 14;
+const PREVIEW_MOTION_END_X = PREVIEW_WIDTH - 26;
 
 function shapeFor(style: ZoomStyle, punchDuration: number): CurveShape {
   if (style === "full") {
@@ -143,12 +151,15 @@ export const zoomTool: Tool = {
     });
 
     /** The scale ramp, drawn from the curve the picker is holding. */
-    function renderRamp(slot: HTMLElement, curve: EasingCurve): void {
+    function renderRamp(
+      slot: HTMLElement,
+      curve: EasingCurve
+    ): CurvePreviewMotion {
       const geometry = curveGeometry(
         shapeFor(style, punchDuration),
         scalePercent,
         PREVIEW_WIDTH,
-        PREVIEW_HEIGHT,
+        PREVIEW_GRAPH_HEIGHT,
         PREVIEW_PAD,
         curve.ease
       );
@@ -166,13 +177,26 @@ export const zoomTool: Tool = {
       slot.innerHTML =
         `<svg viewBox="0 0 ${PREVIEW_WIDTH} ${PREVIEW_HEIGHT}" ` +
         'preserveAspectRatio="none" aria-hidden="true">' +
-          `<path class="preview-grid" d="M0,${PREVIEW_HEIGHT - PREVIEW_PAD} ` +
-          `L${PREVIEW_WIDTH},${PREVIEW_HEIGHT - PREVIEW_PAD}"/>` +
+          `<path class="preview-grid" d="M0,${PREVIEW_GRAPH_HEIGHT - PREVIEW_PAD} ` +
+          `L${PREVIEW_WIDTH},${PREVIEW_GRAPH_HEIGHT - PREVIEW_PAD}"/>` +
           `<path class="preview-area" d="${geometry.area}"/>` +
           `<path class="preview-hold" d="${geometry.hold}"/>` +
           `<path class="preview-curve" d="${geometry.rise}"/>` +
           dots +
+          `<path class="preview-motion-track" d="M${PREVIEW_MOTION_START_X},${PREVIEW_MOTION_Y} ` +
+          `L${PREVIEW_MOTION_END_X},${PREVIEW_MOTION_Y}"/>` +
+          `<circle class="preview-motion-stop" cx="${PREVIEW_MOTION_START_X}" ` +
+          `cy="${PREVIEW_MOTION_Y}" r="2"/>` +
+          `<circle class="preview-motion-stop" cx="${PREVIEW_MOTION_END_X}" ` +
+          `cy="${PREVIEW_MOTION_Y}" r="2"/>` +
         "</svg>";
+
+      return {
+        width: PREVIEW_WIDTH,
+        height: PREVIEW_HEIGHT,
+        graphHeight: PREVIEW_GRAPH_HEIGHT,
+        pointAt: geometry.pointAt,
+      };
     }
 
     function draw(): void {
@@ -432,4 +456,3 @@ function markup(
     "</div>"
   );
 }
-

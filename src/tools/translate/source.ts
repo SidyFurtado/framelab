@@ -29,6 +29,7 @@ import {
   wait,
   workspace,
   write,
+  type Workspace,
 } from "../silence/workspace";
 import { dispatch, withdraw } from "../download/runner";
 
@@ -189,9 +190,64 @@ function tentarPasta(ppro: premierepro, item: unknown): any | null {
 
 // ── ler um arquivo que não é nosso ─────────────────────────────────
 
-const COPY_SCRIPT = "translate-copy.command";
-const COPY_OUT = "tr-input.srt";
-const COPY_DONE = "tr-copy-done.txt";
+/**
+ * Os artefatos de UMA cópia.
+ *
+ * ── Por que carimbados ────────────────────────────────────────────
+ * Os três eram nomes fixos, e aqui o estrago é maior que no Silêncios:
+ * o assistente executa o arquivo que o ticket NOMEIA, lendo-o na hora
+ * de executar. Escolher uma legenda e logo outra fazia a segunda
+ * sobrescrever o script antes de o ticket da primeira rodar — e, porque
+ * o ARQUIVO DE SAÍDA também era fixo, quem pediu a legenda A recebia o
+ * conteúdo da B, com "ok" no estado e nenhum erro na tela. Uma
+ * tradução da legenda errada, em silêncio.
+ *
+ * Com nome por execução, o ticket de A só pode executar o script de A,
+ * e o texto que A lê é o que A copiou.
+ */
+interface CopyRun {
+  readonly tag: string;
+  /** O script que o ticket vai nomear. */
+  readonly script: string;
+  /** A cópia da legenda, que é o que o chamador vai ler. */
+  readonly out: string;
+  /** "ok" ou "falhou <motivo>". */
+  readonly done: string;
+}
+
+/** Um contador junto do relógio: milissegundo repete entre dois cliques. */
+let sequence = 0;
+
+export function copyRun(): CopyRun {
+  const tag = `${Date.now().toString(36)}-${(sequence += 1).toString(36)}`;
+  return {
+    tag,
+    script: `translate-copy-${tag}.command`,
+    out: `tr-${tag}-input.srt`,
+    done: `tr-${tag}-copy-done.txt`,
+  };
+}
+
+/** O que esta cópia deixou na pasta, para limpar. */
+export function copyRunFiles(run: CopyRun): string[] {
+  return [run.script, run.out, run.done];
+}
+
+/** O texto do script desta cópia. Puro, para poder ser provado. */
+export function copyScript(run: CopyRun, nativePath: string, workBase: string): string {
+  return [
+    "#!/bin/bash",
+    "# Gerado pelo Framelab — traz a legenda para dentro. Pode apagar.",
+    "set -u",
+    `WORK=${shellQuote(workBase)}`,
+    `if ERR=$(cp ${shellQuote(nativePath)} "$WORK/${run.out}" 2>&1); then`,
+    `  printf ok > "$WORK/${run.done}"`,
+    "else",
+    `  printf 'falhou %s' "$ERR" > "$WORK/${run.done}"`,
+    "fi",
+    "",
+  ].join("\n");
+}
 
 /**
  * `file:` URL de um caminho nativo, com cada segmento escapado.
@@ -262,30 +318,19 @@ export async function readAnyPath(nativePath: string): Promise<string> {
 async function copyViaAgent(nativePath: string, falhas: string[]): Promise<string> {
   const resumo = falhas.length ? ` (${falhas.join(" · ")})` : "";
   const space = await workspace();
-  for (const nome of [COPY_OUT, COPY_DONE]) {
-    await remove(space, nome);
-  }
+  // Nomes exclusivos: não há resto de outra cópia para pré-limpar — e
+  // era essa pré-limpeza que apagava a saída de uma cópia vizinha.
+  const run = copyRun();
 
   // O erro do `cp` vai para o arquivo de estado junto com "falhou":
   // "Operation not permitted" e "No such file or directory" pedem
   // providências opostas do editor, e a mensagem antiga escondia as
   // duas atrás da mesma pergunta.
-  const script = [
-    "#!/bin/bash",
-    "# Gerado pelo Framelab — traz a legenda para dentro. Pode apagar.",
-    "set -u",
-    `WORK=${shellQuote(space.nativeBase)}`,
-    `if ERR=$(cp ${shellQuote(nativePath)} "$WORK/${COPY_OUT}" 2>&1); then`,
-    `  printf ok > "$WORK/${COPY_DONE}"`,
-    "else",
-    `  printf 'falhou %s' "$ERR" > "$WORK/${COPY_DONE}"`,
-    "fi",
-    "",
-  ].join("\n");
-  await write(space, COPY_SCRIPT, script, true);
+  await write(space, run.script, copyScript(run, nativePath, space.nativeBase), true);
 
-  const enviado = await dispatch(COPY_SCRIPT);
+  const enviado = await dispatch(run.script);
   if (enviado.mode === "denied") {
+    await esquecer(space, run);
     throw new Error(
       `o assistente não pôde ser iniciado para ler o arquivo${resumo}`
     );
@@ -294,23 +339,37 @@ async function copyViaAgent(nativePath: string, falhas: string[]): Promise<strin
   // Copiar um .srt é instantâneo; o teto de 15s é só para não esperar
   // para sempre se o assistente morrer no meio.
   const limite = Date.now() + 15_000;
-  while (Date.now() < limite) {
-    const estado = readText(space, COPY_DONE);
-    if (estado === "ok") {
-      const texto = readText(space, COPY_OUT);
-      if (texto) return texto;
-      throw new Error("o arquivo foi copiado mas veio vazio");
+  try {
+    while (Date.now() < limite) {
+      const estado = readText(space, run.done);
+      if (estado === "ok") {
+        const texto = readText(space, run.out);
+        if (texto) return texto;
+        throw new Error("o arquivo foi copiado mas veio vazio");
+      }
+      if (estado?.startsWith("falhou")) {
+        const motivo = estado.slice("falhou".length).trim();
+        throw new Error(
+          motivo
+            ? `não consegui ler esse arquivo: ${motivo}`
+            : `não consegui ler esse arquivo${resumo}`
+        );
+      }
+      await wait(200);
     }
-    if (estado?.startsWith("falhou")) {
-      const motivo = estado.slice("falhou".length).trim();
-      throw new Error(
-        motivo
-          ? `não consegui ler esse arquivo: ${motivo}`
-          : `não consegui ler esse arquivo${resumo}`
-      );
-    }
-    await wait(200);
+    await withdraw(enviado.ticket);
+    throw new Error(`a leitura do arquivo passou do tempo${resumo}`);
+  } finally {
+    // Em toda saída, e só o desta cópia: o texto já está na mão de quem
+    // chamou, e os nomes são exclusivos — nenhuma limpeza alcança a
+    // saída de uma cópia que ainda esteja de pé.
+    await esquecer(space, run);
   }
-  await withdraw(enviado.ticket);
-  throw new Error(`a leitura do arquivo passou do tempo${resumo}`);
+}
+
+/** Apaga o que ESTA cópia deixou, e só isso. */
+async function esquecer(space: Workspace, run: CopyRun): Promise<void> {
+  for (const nome of copyRunFiles(run)) {
+    await remove(space, nome);
+  }
 }

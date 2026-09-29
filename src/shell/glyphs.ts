@@ -1,110 +1,81 @@
 /**
- * As marcas das ferramentas.
+ * Ícones do navegador de ferramentas.
  *
- * ── Por que são CHEIAS, e não de traço ─────────────────────────────
- * O UXP desenha SVG por um caminho próprio, e nele `fill="none"` não
- * vale: toda forma nasce preenchida, e de PRETO quando ninguém disse
- * o contrário. Um ícone de traço — `fill="none" stroke="currentColor"`
- * — chega ao painel como um borrão escuro no lugar do desenho. Foi
- * isso que aconteceu, e foi por isso que remendar o `fill` elemento a
- * elemento não resolveu: a propriedade que o remendo usava é
- * justamente a que o host ignora.
- *
- * Então o vocabulário inverte. Nada de contorno: cada marca é uma
- * SILHUETA, desenhada com o preenchimento — que é o único modo de
- * pintar que o UXP garante — e o vazio vira parte do desenho, aberto
- * com `fill-rule="evenodd"` quando é preciso um buraco.
- *
- * Toda forma leva `fill="currentColor"` escrito no próprio elemento.
- * Herdar do <svg> não basta pelo mesmo motivo, e a cor precisa seguir
- * o estado do item no navegador — apagada quando em repouso, no
- * acento quando ativa.
- *
- * Grade de 14×14, cantos retos, peso visual constante entre as marcas.
+ * A prévia do novo design usa Lucide 0.468.0. Os oito desenhos que já
+ * existiam lá estão incorporados abaixo com a geometria daquela versão,
+ * para o painel funcionar offline. `title` é a extensão da família: um T
+ * com dois brilhos, na mesma grade de 24 px, peso e terminações.
  */
-const PATHS: Record<string, string> = {
-  /* Zoom: quatro cantos abrindo o quadro, como o maximizar da prévia. */
+const SHAPES: Record<string, string> = {
   zoom:
-    '<path d="M1.2 1.2h4.6v1.6h-3v3H1.2z"/>' +
-    '<path d="M8.2 1.2h4.6v4.6h-1.6v-3h-3z"/>' +
-    '<path d="M1.2 8.2h1.6v3h3v1.6H1.2z"/>' +
-    '<path d="M11.2 8.2h1.6v4.6H8.2v-1.6h3z"/>',
+    '<circle cx="11" cy="11" r="8"/>' +
+    '<line x1="21" x2="16.65" y1="21" y2="16.65"/>' +
+    '<line x1="11" x2="11" y1="8" y2="14"/>' +
+    '<line x1="8" x2="14" y1="11" y2="11"/>',
 
-  /* Curvas: dois keyframes diamante conectados pela rampa de uma aceleração (easing S-curve). */
-  curve:
-    '<path d="M2.5 9.2L4.5 11.2L2.5 13.2L0.5 11.2Z"/>' +
-    '<path d="M11.5 0.8L13.5 2.8L11.5 4.8L9.5 2.8Z"/>' +
-    '<path d="M4.1 10.4c1.2-.2 1.5-1 2-2.6l.7-2.1c.6-2 1.5-3.1 3.1-3.5l.4 1.5c-1 .3-1.4 1-1.9 2.5l-.7 2.1c-.7 2.2-1.6 3.4-3.3 3.7z"/>',
-
-  /*
-   * Corte: dois blocos e o vão entre eles.
-   *
-   * A primeira versão era uma barra vertical entre dois traços
-   * horizontais — que a 13px lê como um sinal de MAIS, ou seja, o
-   * oposto do que a ferramenta faz. O que diz "corte" é o vão: dois
-   * pedaços de clipe separados, com a lâmina fina no meio.
-   */
   cut:
-    '<path d="M1 3.8h4.3v6.4H1z"/><path d="M8.7 3.8H13v6.4H8.7z"/>' +
-    '<path d="M6.6 2.4h0.8v9.2h-0.8z"/>',
+    '<path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/>' +
+    '<line x1="22" x2="16" y1="9" y2="15"/>' +
+    '<line x1="16" x2="22" y1="9" y2="15"/>',
 
-  /* Quadro: a marca de reserva, e a base do Zoom sem o recorte. */
-  frame: '<path fill-rule="evenodd" d="M1 2.2h12v9.6H1V2.2Zm1.5 1.5v6.6h9V3.7h-9Z"/>',
-
-  /* Onda: a forma de um som. */
-  wave:
-    '<path d="M1 6.4h1.2v1.2H1z"/><path d="M3.4 4.2h1.2v5.6H3.4z"/>' +
-    '<path d="M5.8 2.2h1.2v9.6H5.8z"/><path d="M8.2 4.8h1.2v4.4H8.2z"/>' +
-    '<path d="M10.6 6.1h1.2v1.8h-1.2z"/>',
-
-  /* Medidor: quatro colunas sobre a linha de base. */
-  meter:
-    '<path d="M1.6 10.4h10.8v1.4H1.6z"/><path d="M2.6 6.8h1.6v2.9H2.6z"/>' +
-    '<path d="M5.4 4.4h1.6v5.3H5.4z"/><path d="M8.2 5.8h1.6v3.9H8.2z"/>' +
-    '<path d="M11 7.6h1.4v2.1H11z"/>',
-
-  /* Legenda: a tarja, com as duas linhas abertas nela. */
-  caption:
-    '<path fill-rule="evenodd" d="M1 2.6h12v8.8H1V2.6Zm2.2 2.6v1.4h4.2V5.2H3.2Zm0 3v1.4h7.6V8.2H3.2Z"/>',
-
-  /* Pasta: a aba e o corpo, numa silhueta só. */
-  folder: '<path d="M1.2 2.6h4.3l1.1 1.5h6.2v7.3H1.2V2.6Z"/>',
-
-  /* Texto: o T da letra — a marca de traduzir. */
-  text: '<path d="M2.2 2.6h9.6v1.9H8.1v7H5.9v-7H2.2z"/>',
-
-  /* Baixar: a seta e o chão onde ela pousa. */
-  download:
-    '<path d="M5.9 1.8h2.2v4.1h2.6L7 9.9 3.3 5.9h2.6z"/>' +
-    '<path d="M2.2 10.8h9.6v1.5H2.2z"/>',
-
-  /*
-   * Muletas: o balão de fala, com as reticências abertas nele.
-   *
-   * O rabicho é o que o separa da tarja de Legendas — sem ele, as
-   * duas marcas viram o mesmo retângulo com linhas dentro. Por isso
-   * ele é largo e desce fundo, em vez de ser um detalhe no canto.
-   */
   speech:
-    '<path fill-rule="evenodd" d="M1 2h12v7.2H7.9L4.3 12.4V9.2H1V2Z' +
-    'm2.7 2.9v1.4h1.3V4.9H3.7Zm2.65 0v1.4h1.3V4.9H6.35Zm2.65 0v1.4h1.3V4.9H9Z"/>',
+    '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>' +
+    '<path d="m14.5 7.5-5 5"/><path d="m9.5 7.5 5 5"/>',
+
+  curve:
+    '<path d="M4 18C10 18 10 6 20 6"/>' +
+    '<path d="m4 16 2 2-2 2-2-2 2-2Z"/>' +
+    '<path d="m20 4 2 2-2 2-2-2 2-2Z"/>',
+
+  caption:
+    '<rect width="18" height="14" x="3" y="5" rx="2" ry="2"/>' +
+    '<path d="M7 15h4M15 15h2M7 11h2M13 11h4"/>',
+
+  text:
+    '<path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/>' +
+    '<path d="M2 5h12"/><path d="M7 2h1"/>' +
+    '<path d="m22 22-5-10-5 10"/><path d="M14 18h6"/>',
+
+  title:
+    '<path d="M3 6V4h10v2"/><path d="M8 4v16"/><path d="M5.5 20h5"/>' +
+    '<path d="M18 3v4M16 5h4"/>' +
+    '<path d="M19.5 12.5v3M18 14h3"/>',
+
+  download:
+    '<path d="M12 13v8l-4-4"/><path d="m12 21 4-4"/>' +
+    '<path d="M4.393 15.269A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.436 8.284"/>',
+
+  /* Efeitos Sonoros: as barras de um som (Lucide audio-lines). */
+  sfx:
+    '<path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/>' +
+    '<path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/>',
+
+  /* SFX Automático: as mesmas barras, mais baixas, com o brilho de quatro
+     pontas que marca o que a ferramenta faz sozinha. */
+  "sfx-auto":
+    '<path d="M3 11v4"/><path d="M7 8v10"/><path d="M11 5v16"/>' +
+    '<path d="M15 12v6"/><path d="M19 15v2"/>' +
+    '<path d="M18.5 2c.3 1.8 1.2 2.7 3 3-1.8.3-2.7 1.2-3 3-.3-1.8-1.2-2.7-3-3 1.8-.3 2.7-1.2 3-3Z"/>',
+
+  folder:
+    '<path d="M20 17a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3.9a2 2 0 0 1-1.69-.9l-.81-1.2a2 2 0 0 0-1.67-.9H8a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2Z"/>' +
+    '<path d="M2 8v11a2 2 0 0 0 2 2h14"/>',
+
+  frame: '<rect x="3" y="3" width="18" height="18" rx="2"/>',
 };
 
 /**
- * A marca, pronta para ir ao innerHTML.
- *
- * `fill="currentColor"` entra em CADA forma e não só no <svg>: no UXP
- * o preenchimento não desce do pai, e uma marca sem ele sai preta —
- * legível no tema claro por acidente, invisível no escuro.
+ * Cada forma recebe os atributos diretamente. Isso evita depender da
+ * herança de SVG do UXP, sem mudar a aparência de traço da prévia.
  */
 export function glyph(name: string): string {
-  const shapes = (PATHS[name] ?? PATHS.frame).replace(
-    /<path /g,
-    '<path fill="currentColor" '
+  const shapes = (SHAPES[name] ?? SHAPES.frame).replace(
+    /<(path|circle|line|rect) /g,
+    '<$1 fill="none" stroke="currentColor" stroke-width="1.55" ' +
+      'stroke-linecap="round" stroke-linejoin="round" '
   );
   return (
-    '<svg viewBox="0 0 14 14" aria-hidden="true" fill="currentColor">' +
-    shapes +
-    "</svg>"
+    '<svg class="lucide" viewBox="0 0 24 24" aria-hidden="true" ' +
+    'fill="none" stroke="currentColor">' + shapes + "</svg>"
   );
 }

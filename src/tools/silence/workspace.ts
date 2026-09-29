@@ -54,6 +54,11 @@ export interface UxpFs {
   close(fd: number): Promise<number>;
   mkdir(path: string, options?: { recursive?: boolean }): Promise<number>;
   unlink(path: string): Promise<number>;
+  /**
+   * Só o tamanho interessa aqui, e nem toda build oferece — por isso
+   * opcional. Sem ele não dá para pular para o fim de um arquivo.
+   */
+  lstatSync?(path: string): { size?: number } | null;
 }
 
 export interface UxpShell {
@@ -378,6 +383,38 @@ export async function write(
 }
 
 /**
+ * Acrescenta ao fim de um arquivo, criando-o se não existir.
+ *
+ * Existe para os diários que só crescem — o do Baixar é o primeiro.
+ * Um diário reescrito inteiro a cada linha perde tudo quando a
+ * gravação cai no meio, e é justamente num dia ruim que ele importa.
+ *
+ * O `flag: "a"` é a rota boa; a build que não o implementar cai na
+ * leitura-e-reescrita, que é pior e ainda assim guarda a linha.
+ */
+export async function append(space: Workspace, name: string, line: string): Promise<void> {
+  const fs = fsModule();
+  if (!fs) {
+    throw new Error('require("fs") não resolveu');
+  }
+  const path = fsPath(space, name);
+  const text = line.endsWith("\n") ? line : `${line}\n`;
+  try {
+    await fs.writeFile(path, text, { encoding: "utf-8", flag: "a" });
+    return;
+  } catch {
+    // Sem append nesta build: lê o que há e reescreve com a linha nova.
+  }
+  let held = "";
+  try {
+    held = String(fs.readFileSync(path, { encoding: "utf-8" }));
+  } catch {
+    // Ainda não existe.
+  }
+  await write(space, name, held + text);
+}
+
+/**
  * Garante um subdiretório da pasta de trabalho. Existir já é sucesso.
  * Nasceu para o bundle do runner silencioso (Contents/MacOS), que é o
  * primeiro morador com mais de um nível.
@@ -426,15 +463,114 @@ export function exists(space: Workspace, relative: string): boolean {
 }
 
 export function readText(space: Workspace, name: string): string | null {
-  const fs = fsModule();
+  return readWhole(fsModule(), fsPath(space, name));
+}
+
+/** O arquivo inteiro como texto. Uma definição só, para não divergir. */
+function readWhole(fs: UxpFs | null, path: string): string | null {
   if (!fs) {
     return null;
   }
   try {
-    const raw = fs.readFileSync(fsPath(space, name), { encoding: "utf-8" });
+    const raw = fs.readFileSync(path, { encoding: "utf-8" });
     const text = String(raw).trim();
     return text.length > 0 ? text : null;
   } catch {
+    return null;
+  }
+}
+
+/**
+ * Teto de bytes lidos por consulta à cauda.
+ *
+ * Generoso sobre os 4096 caracteres que quem chama aproveita: sobra
+ * margem para um corte no meio de um caractere e para linhas longas, e
+ * continua sendo um teto — o custo por consulta não cresce com o
+ * arquivo, que é o ponto inteiro.
+ */
+export const TAIL_WINDOW_BYTES = 8192;
+
+/**
+ * O FIM de um arquivo de texto, sem carregar o começo.
+ *
+ * ── Por que isto existe ───────────────────────────────────────────
+ * O polling do Baixar mostrava as últimas linhas do log chamando
+ * `readText`, que faz `readFileSync` do arquivo INTEIRO, e só então
+ * fatiava os últimos 4096 caracteres. Num lote longo — o teto é de
+ * noventa minutos — o log chega a megabytes, e isso acontecia duas
+ * vezes por segundo na thread do painel. A fatia cortava o `split`, não
+ * a leitura.
+ *
+ * Aqui o tamanho vem do `lstatSync`, a leitura começa perto do fim e
+ * para na janela. O custo por consulta deixa de depender do tamanho do
+ * arquivo.
+ *
+ * Nunca lança: qualquer tropeço vira `null`, e quem chama trata como
+ * "sem log agora" — a volta seguinte do polling tenta de novo.
+ *
+ * `fs` é parâmetro com padrão real só para poder ser provado fora do
+ * host, como `extractionRun(windows)` já fazia.
+ */
+export async function readTailText(
+  space: Workspace,
+  name: string,
+  maxBytes = TAIL_WINDOW_BYTES,
+  fs = fsModule()
+): Promise<string | null> {
+  if (!fs) {
+    return null;
+  }
+  const path = fsPath(space, name);
+  const size = fileSize(fs, path);
+
+  /*
+   * Sem tamanho, sem decodificador, ou arquivo que cabe na janela: o
+   * caminho de sempre. Ler tudo de um arquivo pequeno é barato, e numa
+   * build sem `lstatSync` é melhor ler demais do que não mostrar o log.
+   */
+  if (size === null || size <= maxBytes || typeof TextDecoder !== "function") {
+    return readWhole(fs, path);
+  }
+
+  let fd: number | null = null;
+  try {
+    fd = await fs.open(path, "r");
+    const buffer = new ArrayBuffer(maxBytes);
+    const answer = await fs.read(fd, buffer, 0, maxBytes, size - maxBytes);
+    const read = Number(answer?.bytesRead ?? 0);
+    if (!(read > 0)) {
+      // O arquivo encolheu entre medir e ler — rotação, truncamento. A
+      // volta seguinte do polling pega o novo tamanho.
+      return null;
+    }
+    const bytes = new Uint8Array(answer?.buffer ?? buffer, 0, read);
+    const text = new TextDecoder("utf-8").decode(bytes);
+    /*
+     * A janela começa num byte qualquer, então o primeiro caractere
+     * pode ter sido cortado ao meio. O decodificador devolve o pedaço
+     * órfão como U+FFFD e decodifica o RESTO corretamente; tirar esse
+     * prefixo é tudo que falta, e não precisa de parser nenhum.
+     */
+    return text.replace(/^\uFFFD+/, "").trim() || null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) {
+      await fs.close(fd).catch(() => undefined);
+    }
+  }
+}
+
+/** O tamanho do arquivo, ou `null` quando não dá para saber. */
+function fileSize(fs: UxpFs, path: string): number | null {
+  if (typeof fs.lstatSync !== "function") {
+    return null;
+  }
+  try {
+    const size = Number(fs.lstatSync(path)?.size);
+    return Number.isFinite(size) && size >= 0 ? size : null;
+  } catch {
+    // Não existe, ou a build recusou: o caminho antigo decide.
     return null;
   }
 }

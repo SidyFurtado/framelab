@@ -31,6 +31,8 @@
  * chegar a 40 blocos.
  */
 
+import { fetchWithTimeout, isNetCancelled, NET_DEADLINE } from "../../bridge/net";
+
 /** Onde a URL para de crescer. Medido: 2,2 kB passa folgado. */
 const MAX_URL = 5500;
 /** Nem que caibam mil: acima disto a resposta demora sem ganho. */
@@ -55,6 +57,18 @@ export interface TranslateResult {
   /** O idioma que o serviço reconheceu, quando `from` era "auto". */
   detected: string | null;
   error: string | null;
+  /**
+   * Quantas falas foram traduzidas de fato.
+   *
+   * Opcional para não quebrar quem só olha `ok`/`texts`.
+   */
+  done?: number;
+  /**
+   * Quantas ficaram sem tradução. `> 0` com `ok: true` é o resultado
+   * PARCIAL: o texto original ficou no lugar das que faltaram, e quem
+   * mostra precisa dizer isso ao editor.
+   */
+  pending?: number;
 }
 
 /**
@@ -157,9 +171,11 @@ async function pedirGoogle(
   const base =
     `https://clients5.google.com/translate_a/t?client=dict-chrome-ex` +
     `&sl=${encodeURIComponent(from)}&tl=${encodeURIComponent(to)}`;
-  const resposta = await fetch(montarUrl(base, textos), {
-    headers: { "User-Agent": UA },
-  });
+  const resposta = await fetchWithTimeout(
+    montarUrl(base, textos),
+    { headers: { "User-Agent": UA } },
+    NET_DEADLINE.translate
+  );
   if (!resposta.ok) return null;
   return lerResposta(await resposta.text(), textos.length);
 }
@@ -171,28 +187,98 @@ async function pedirGoogle(
  * e mesmo aí vale a pena: uma legenda traduzida devagar é melhor que
  * uma ferramenta que não traduz.
  */
+/**
+ * O que a reserva conseguiu antes de parar.
+ *
+ * ── Por que não é mais `null` ─────────────────────────────────────
+ * O MyMemory traduz UMA fala por requisição, e o laço devolvia `null`
+ * ao primeiro tropeço — jogando fora tudo que já tinha vindo. Num .srt
+ * de centenas de legendas, um 429 na fala 200 (e o MyMemory limita
+ * taxa, então 429 é esperado) apagava as 199 anteriores e ainda fazia
+ * `translate` descartar os lotes já fechados pelo Google.
+ *
+ * Agora ela sempre devolve o que tem. Quem chama decide se isso é
+ * resultado parcial ou falha.
+ */
+interface ReservaParcial {
+  /** As traduções obtidas, na ORDEM dos textos pedidos. */
+  texts: string[];
+  detected: string | null;
+  /** Quantos textos do lote ficaram sem tradução. */
+  missing: number;
+  /** Por que parou. `null` quando traduziu tudo. */
+  cause: string | null;
+  /** true quando o editor desistiu no meio. Não é falha. */
+  cancelled: boolean;
+}
+
+function parouEm(
+  texts: string[],
+  pedidos: number,
+  cause: string | null,
+  cancelled = false
+): ReservaParcial {
+  return {
+    texts,
+    detected: null,
+    missing: pedidos - texts.length,
+    cause,
+    cancelled,
+  };
+}
+
+/**
+ * A reserva, uma fala por vez. Serial de propósito: o MyMemory não
+ * aceita lote, e pedir em paralelo só aproxima o limite de taxa.
+ */
 async function pedirMyMemory(
   textos: readonly string[],
   from: string,
-  to: string
-): Promise<{ texts: string[]; detected: string | null } | null> {
+  to: string,
+  cancelled?: () => boolean
+): Promise<ReservaParcial> {
   const par = `${from === "auto" ? "autodetect" : from}|${to}`;
   const saida: string[] = [];
   for (const texto of textos) {
-    const url =
-      `https://api.mymemory.translated.net/get?q=${encodeURIComponent(texto)}` +
-      `&langpair=${encodeURIComponent(par)}`;
-    const resposta = await fetch(url);
-    if (!resposta.ok) return null;
-    const dados = (await resposta.json()) as {
-      responseData?: { translatedText?: string };
-      responseStatus?: number;
-    };
-    const traduzido = dados?.responseData?.translatedText;
-    if (typeof traduzido !== "string") return null;
-    saida.push(traduzido);
+    // Antes de abrir a próxima requisição.
+    if (cancelled?.()) {
+      return parouEm(saida, textos.length, null, true);
+    }
+    try {
+      const url =
+        `https://api.mymemory.translated.net/get?q=${encodeURIComponent(texto)}` +
+        `&langpair=${encodeURIComponent(par)}`;
+      const resposta = await fetchWithTimeout(url, undefined, NET_DEADLINE.translate);
+      if (!resposta.ok) {
+        // 429 é o caso esperado num arquivo grande: limite de taxa.
+        return parouEm(saida, textos.length, `MyMemory respondeu ${resposta.status}`);
+      }
+      const dados = (await resposta.json()) as {
+        responseData?: { translatedText?: string };
+        responseStatus?: number;
+      };
+      const traduzido = dados?.responseData?.translatedText;
+      if (typeof traduzido !== "string") {
+        return parouEm(saida, textos.length, "MyMemory respondeu sem tradução");
+      }
+      saida.push(traduzido);
+    } catch (cause) {
+      // Desistir não é falhar, e um prazo vencido não é uma desistência.
+      if (isNetCancelled(cause)) {
+        return parouEm(saida, textos.length, null, true);
+      }
+      return parouEm(saida, textos.length, descreve(cause));
+    }
+    // Depois da resposta, antes de seguir para a próxima fala.
+    if (cancelled?.()) {
+      return parouEm(saida, textos.length, null, true);
+    }
   }
-  return { texts: saida, detected: null };
+  return { texts: saida, detected: null, missing: 0, cause: null, cancelled: false };
+}
+
+function descreve(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
 }
 
 export async function translate(
@@ -212,9 +298,25 @@ export async function translate(
   let detected: string | null = null;
   let usouReserva = false;
 
+  /** O que a reserva reclamou por último, para o diagnóstico. */
+  let ultimaCausa: string | null = null;
+  /** true quando o motor caiu e não vale insistir nos lotes seguintes. */
+  let parou = false;
+
+  /** O que já está traduzido, alinhado com as entradas. */
+  const alinhar = (): string[] => entradas.map((t) => mapa.get(t) ?? t);
+  const cancelado = (): TranslateResult => ({
+    ok: false,
+    texts: [],
+    detected,
+    error: "cancelled",
+    done: mapa.size,
+    pending: total - mapa.size,
+  });
+
   for (const lote of lotes) {
     if (options.cancelled?.()) {
-      return { ok: false, texts: [], detected, error: "cancelled" };
+      return cancelado();
     }
     let resposta: { texts: string[]; detected: string | null } | null = null;
     try {
@@ -222,32 +324,82 @@ export async function translate(
     } catch {
       resposta = null;
     }
+
     if (!resposta) {
-      try {
-        resposta = await pedirMyMemory(lote, options.from, options.to);
-        usouReserva = true;
-      } catch {
-        resposta = null;
+      usouReserva = true;
+      const reserva = await pedirMyMemory(
+        lote,
+        options.from,
+        options.to,
+        options.cancelled
+      );
+      /*
+       * O que veio, FICA — mesmo que a reserva tenha parado no meio.
+       * O índice é posicional e a reserva empilha em ordem, parando na
+       * primeira falha, então `texts[i]` é sempre a tradução de
+       * `lote[i]`: nenhuma tradução escorrega para a fala seguinte.
+       */
+      reserva.texts.forEach((texto, i) => mapa.set(lote[i], texto));
+      feitos += reserva.texts.length;
+      options.onProgress?.(feitos, total);
+
+      if (reserva.cancelled) {
+        return cancelado();
       }
+      if (reserva.missing > 0) {
+        /*
+         * Não segue para os próximos lotes. Um 429 é limite de taxa:
+         * continuar pedindo só afunda mais, e o que já veio está salvo.
+         */
+        ultimaCausa = reserva.cause;
+        parou = true;
+        break;
+      }
+      continue;
     }
-    if (!resposta) {
-      return {
-        ok: false,
-        texts: [],
-        detected,
-        error: usouReserva ? "both-engines-failed" : "engine-failed",
-      };
-    }
+
     if (!detected) detected = resposta.detected;
     lote.forEach((original, i) => mapa.set(original, resposta!.texts[i]));
     feitos += lote.length;
     options.onProgress?.(feitos, total);
   }
 
+  const pending = total - mapa.size;
+
+  /*
+   * Zero traduções é falha total, como sempre foi — chamar de "parcial"
+   * o que não traduziu nada seria entregar o arquivo original com cara
+   * de tradução.
+   */
+  if (parou && mapa.size === 0) {
+    return {
+      ok: false,
+      texts: [],
+      detected,
+      error: usouReserva ? "both-engines-failed" : "engine-failed",
+      done: 0,
+      pending: total,
+    };
+  }
+
+  /*
+   * Com progresso útil, o que foi traduzido VOLTA. As falas que
+   * faltaram ficam com o texto original — o mesmo que já acontecia com
+   * as falas sem letra — e `pending` diz quantas são, para quem mostra
+   * poder avisar em vez de entregar meia tradução em silêncio.
+   */
+  if (parou) {
+    console.warn(
+      `[Traduzir] parcial: ${mapa.size} de ${total} falas · ${ultimaCausa ?? "sem causa"}`
+    );
+  }
+
   return {
     ok: true,
-    texts: entradas.map((t) => mapa.get(t) ?? t),
+    texts: alinhar(),
     detected,
     error: null,
+    done: mapa.size,
+    pending,
   };
 }

@@ -27,6 +27,79 @@ export function describeError(cause: unknown): string {
 }
 
 /**
+ * A versão do Premiere, como o host a informa. `""` quando não dá.
+ *
+ * Mesma fonte que o painel já usava para decidir se a timeline aceita
+ * arrasto (`sfx/sfxTool.ts`): não há uma segunda forma de perguntar
+ * isso, e inventar uma seria ter duas respostas para a mesma pergunta.
+ */
+export function hostVersion(): string {
+  if (typeof require !== "function") {
+    return "";
+  }
+  try {
+    const uxp = require("uxp") as { host?: { version?: string } } | null;
+    return uxp?.host?.version ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Compara duas versões pontuadas. `null` quando alguma não é uma.
+ *
+ * ── Por que não dá para usar `isNewerVersion` ─────────────────────
+ * Aquela nasceu para versões do PLUGIN e converte lixo em zero
+ * (`parseInt(...) || 0`). Serve lá, e aqui seria perigosa: um
+ * `minPremiereVersion` inválido viraria `0.0.0`, que todo host atende —
+ * exatamente o "instalar por dúvida" que este portão existe para
+ * impedir. Aqui o inválido é `null`, e quem chama decide.
+ *
+ * Segmento ausente conta como zero, então `25` e `25.0` são a mesma
+ * versão. A comparação é numérica: `25.10` vem DEPOIS de `25.9`, que é
+ * onde uma comparação de texto erra.
+ *
+ * O Adobe não usa pré-lançamento no número do host, então isto não
+ * tenta ser SemVer — lê o trecho pontuado do começo e ignora o resto,
+ * que é o que salva um `"25.1.0 (Build 42)"` de ser recusado.
+ */
+export function compareVersions(a: string, b: string): number | null {
+  const left = parseVersion(a);
+  const right = parseVersion(b);
+  if (!left || !right) {
+    return null;
+  }
+  for (let at = 0; at < Math.max(left.length, right.length); at += 1) {
+    const diff = (left[at] ?? 0) - (right[at] ?? 0);
+    if (diff !== 0) {
+      return diff > 0 ? 1 : -1;
+    }
+  }
+  return 0;
+}
+
+function parseVersion(raw: string): number[] | null {
+  if (typeof raw !== "string") {
+    return null;
+  }
+  /*
+   * O trecho pontuado do começo, e a versão tem de TERMINAR ali.
+   *
+   * A negativa à frente é o que separa um sufixo legítimo de uma versão
+   * malformada: `"25.1.0 (Build 42)"` acaba no espaço e vale, enquanto
+   * `"25.x"` continua num ponto e não vale. Sem ela, `"25.x"` casava só
+   * o `25` e virava a versão 25 — um mínimo mal escrito passando pelo
+   * portão exatamente como "instalar por dúvida".
+   */
+  const found = /^\s*v?(\d+(?:\.\d+)*)(?![\d.])/.exec(raw);
+  if (!found) {
+    return null;
+  }
+  const parts = found[1].split(".").map((part) => Number.parseInt(part, 10));
+  return parts.every((part) => Number.isFinite(part)) ? parts : null;
+}
+
+/**
  * One clip on the track the strip shows, positioned in sequence time.
  *
  * The start and end matter: laying clips end to end hides the gaps, and

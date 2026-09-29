@@ -75,7 +75,7 @@ import {
  * porque um agente da versão anterior pode estar de pé quando o plugin
  * é atualizado — o painel manda esse sair antes de lançar o novo.
  */
-const AGENT_VERSION = "3";
+const AGENT_VERSION = "4";
 
 const ALIVE_FILE = "agent-alive.txt";
 const PANEL_FILE = "agent-panel.txt";
@@ -461,6 +461,22 @@ export function agentBash(): string {
  * decente, e porque o `.vbs` já era a rota silenciosa do Windows.
  * Literal de data com `#` para não depender do locale da máquina.
  *
+ * ── Como o job roda, e por que não é `Run(..., True)` ──────────────
+ * O VBScript é de uma linha só de execução: `Run` com `bWaitOnReturn`
+ * ligado não devolve o controle até o processo sair, e nada mais do
+ * script corre nesse meio-tempo — inclusive o `Stamp`. Como o carimbo
+ * de vida vale 8 segundos, QUALQUER job mais longo que isso fazia o
+ * painel concluir que o agente havia morrido: ticket retirado, Terminal
+ * aberto com diálogo, e a guarda de instância única — que é o próprio
+ * carimbo — liberando um segundo agente para disputar a mesma fila.
+ *
+ * `Exec` resolveria a espera (tem `.Status`), mas não sabe esconder a
+ * janela, e a janela é metade do motivo de o agente existir. Então o
+ * job é lançado OCULTO e destacado (`Run(..., 0, False)`) dentro de um
+ * invólucro `.bat` que grava o código de saída num arquivo quando o job
+ * de fato termina. A espera passa a ser nossa, com carimbo a cada meia
+ * volta — o mesmo que o `while kill -0` faz no bash.
+ *
  * Não pude testar em Windows: a rede de segurança de quem chama —
  * esperar o carimbo do script e cair no console — é o que garante que
  * um agente que não funcione lá não vire ferramenta morta.
@@ -471,8 +487,14 @@ export function agentVbs(space: Workspace): string {
     "' Gerado pelo Framelab - agente residente. Pode apagar.",
     "Option Explicit",
     "Dim fso, sh, dir, aliveF, panelF, stopF, tick, f, gp, pend, job, jobPath",
+    "Dim runN, wrapPath, doneP, wh, q",
     'Set fso = CreateObject("Scripting.FileSystemObject")',
     'Set sh = CreateObject("WScript.Shell")',
+    // A aspa como variável, e não escapada dentro de cada literal: o
+    // invólucro abaixo cita dois caminhos, e uma linha com seis aspas
+    // seguidas é onde um erro de escape se esconde sem ser visto.
+    "q = Chr(34)",
+    "runN = 0",
     `dir = "${dir}"`,
     `aliveF = dir & "\\${ALIVE_FILE}"`,
     `panelF = dir & "\\${PANEL_FILE}"`,
@@ -542,10 +564,42 @@ export function agentVbs(space: Workspace): string {
     '         And InStr(job, "..") = 0 Then',
     '        jobPath = dir & "\\" & job',
     "        If fso.FileExists(jobPath) Then",
+    "          runN = runN + 1",
+    '          wrapPath = dir & "\\agent-run-" & runN & ".bat"',
+    '          doneP = dir & "\\agent-done-" & runN & ".txt"',
+    "          ' Um sobrevivente de um agente anterior faria este job",
+    "          ' parecer concluído antes mesmo de começar.",
+    "          If fso.FileExists(doneP) Then fso.DeleteFile doneP, True",
+    "          ' O invólucro: roda o job e AVISA quando ele de fato",
+    "          ' saiu. O aviso chega por tmp+move, que é atômico — sem",
+    "          ' isso o laço abaixo veria o arquivo antes do conteúdo.",
+    "          Set wh = fso.CreateTextFile(wrapPath, True)",
+    '          wh.WriteLine "@echo off"',
+    '          wh.WriteLine "call " & q & jobPath & q',
+    // O redirecionamento vem ANTES do echo de propósito. `echo 0> f` é
+    // lido pelo cmd como redirecionamento do handle 0 (stdin), porque um
+    // dígito colado no `>` é um número de handle — e o código de saída
+    // mais comum é justamente 0. Assim o arquivo nasce vazio e o laço de
+    // espera lê um código que nunca esteve lá.
+    '          wh.WriteLine "> " & q & doneP & ".tmp" & q & " echo %errorlevel%"',
+    '          wh.WriteLine "move /y " & q & doneP & ".tmp" & q & " " & q & doneP & q & " >nul"',
+    "          wh.Close",
     "          Stamp",
-    "          ' 0 = sem janela, True = espera terminar.",
-    '          sh.Run "cmd /c """ & jobPath & """", 0, True',
+    "          ' 0 = sem janela; False = NÃO espera aqui. Era o True",
+    "          ' que congelava o carimbo pelo tempo inteiro do job.",
+    '          sh.Run "cmd /c " & q & wrapPath & q, 0, False',
+    "          ' A espera é nossa, e carimba a cada meia volta — é o",
+    "          ' equivalente do `while kill -0` do bash. O sinal do",
+    "          ' painel NÃO é checado aqui: trabalho começado termina.",
+    "          Do While Not fso.FileExists(doneP)",
+    "            Stamp",
+    "            WScript.Sleep 500",
+    "          Loop",
     "          Stamp",
+    "          On Error Resume Next",
+    "          fso.DeleteFile doneP, True",
+    "          fso.DeleteFile wrapPath, True",
+    "          On Error GoTo 0",
     "        End If",
     "      End If",
     "    Next",

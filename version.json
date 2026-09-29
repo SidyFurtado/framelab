@@ -1,13 +1,13 @@
 {
-  "version": "0.4.1",
-  "releaseDate": "2026-09-11",
+  "version": "0.5.0",
+  "releaseDate": "2026-09-29",
   "minPremiereVersion": "25.0.0",
-  "changelog": "ÍCONES DA INTERFACE: correção da renderização SVG no motor UXP do Premiere Pro. Todos os ícones do menu lateral (Corte de Silêncios, Cortar Muletas, Curvas de velocidade, Traduzir Legenda, Legendas, Baixar Vídeos, Organizar Pastas e Zoom) agora são exibidos com nitidez total e traços precisos no tema Tungsten 3200K. Melhorias de estabilidade e compatibilidade geral.",
+  "changelog": "TRÊS FERRAMENTAS NOVAS. Textos Animados: título ou legenda .srt que já entram animados na timeline. Efeitos Sonoros: o pack de SFX da equipe organizado por tipo de som, com busca, prévia e inserção na agulha. SFX Automático: cada elemento da timeline recebe o som do que ele é (clique por palavra nos títulos, whoosh, glitch, obturador), sem mexer onde já tem SFX. Baixar Vídeos agora baixa do Instagram e cancela de verdade. CORREÇÕES: o FFmpeg instala na primeira execução; cancelar uma transcrição não importa mais o texto errado; reaplicar a curva não multiplica os keyframes; o Desfazer sobrevive à troca de ferramenta; as ferramentas lembram os ajustes ao fechar o painel; a busca dos Efeitos Sonoros não apaga mais o que você digitou.",
   "downloadUrl": "https://github.com/SidyFurtado/framelab/releases/latest/download/Framelab-macOS.zip",
   "bundleFiles": {
-    "manifest.json": "https://raw.githubusercontent.com/SidyFurtado/framelab/v0.4.1/dist/manifest.json",
-    "index.html": "https://raw.githubusercontent.com/SidyFurtado/framelab/v0.4.1/dist/index.html",
-    "index.js": "https://raw.githubusercontent.com/SidyFurtado/framelab/v0.4.1/dist/index.js",
-    "index.css": "https://raw.githubusercontent.com/SidyFurtado/framelab/v0.4.1/dist/index.css"
+    "manifest.json": "https://raw.githubusercontent.com/SidyFurtado/framelab/v0.5.0/dist/manifest.json",
+    "index.html": "https://raw.githubusercontent.com/SidyFurtado/framelab/v0.5.0/dist/index.html",
+    "index.js": "https://raw.githubusercontent.com/SidyFurtado/framelab/v0.5.0/dist/index.js",
+    "index.css": "https://raw.githubusercontent.com/SidyFurtado/framelab/v0.5.0/dist/index.css"
   }
 }

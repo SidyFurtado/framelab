@@ -15,9 +15,12 @@ import {
   setDisabled, escapeHtml } from "./controls";
 import {
   checkHostCapabilities,
+  describeError,
   readSelection,
   type SelectionSummary,
 } from "../bridge/premiere";
+import { guardApplyRun } from "./applyRun";
+import { actionButton } from "./actionButton";
 import { PluginUpdater, type VersionManifest } from "./updater";
 import { startAgentHeartbeat, stopAgentHeartbeat } from "../tools/download/runner";
 
@@ -71,6 +74,7 @@ export class ProductShell {
   private readonly actionSummaryEl: HTMLElement;
   private readonly statusEl: HTMLElement;
   private readonly statusToolEl: HTMLElement;
+  private segmentObserver: MutationObserver | null = null;
 
   private applyHandler: (() => void | Promise<void>) | null = null;
   /** Set when a Tool calls setApplyEnabled, so runApply stops overriding it. */
@@ -114,7 +118,9 @@ export class ProductShell {
       '<label class="search">' +
       searchGlyph() +
       '<input type="text" placeholder="Buscar ferramenta…" ' +
-      'aria-label="Buscar ferramenta" spellcheck="false"></label>' +
+      'aria-label="Buscar ferramenta" spellcheck="false" ' +
+      // Busca de painel não é formulário: sem histórico nem correção.
+      'autocomplete="off" autocorrect="off" autocapitalize="off"></label>' +
       // O carimbo do build no título: passar o ponteiro sobre a versão
       // responde "é esta build mesmo que está rodando?" sem console.
       `<span class="version" title="build ${__BUILD_STAMP__}">v${VERSION}</span>`;
@@ -193,6 +199,18 @@ export class ProductShell {
 
     this.bodyEl = document.createElement("div");
     this.bodyEl.className = "work-body";
+    this.bodyEl.addEventListener("click", () => {
+      requestAnimationFrame(() => this.syncSegmentGliders());
+    });
+    if (typeof MutationObserver !== "undefined") {
+      this.segmentObserver = new MutationObserver(() => this.syncSegmentGliders());
+      this.segmentObserver.observe(this.bodyEl, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+        attributeFilter: ["aria-pressed"],
+      });
+    }
 
     const actions = document.createElement("div");
     actions.className = "actions";
@@ -402,7 +420,13 @@ export class ProductShell {
 
     const btnUpdate = document.createElement("button");
     btnUpdate.className = "btn-update-pri";
-    btnUpdate.textContent = "Atualizar Agora";
+    /*
+     * Este botão troca de papel: começa instalando e, se a instalação
+     * falhar, passa a abrir o navegador. A troca é de AÇÃO, e não mais um
+     * registro a somar — `onclick` e `addEventListener` conviviam, e o
+     * clique seguinte fazia as duas coisas. Ver `actionButton.ts`.
+     */
+    const update = actionButton(btnUpdate);
 
     const btnReload = document.createElement("button");
     btnReload.className = "btn-update-pri";
@@ -412,7 +436,7 @@ export class ProductShell {
       this.updater.reloadPlugin();
     });
 
-    btnUpdate.addEventListener("click", async () => {
+    update.set("Atualizar Agora", async () => {
       btnUpdate.disabled = true;
       btnCancel.hidden = true;
       progressWrap.hidden = false;
@@ -430,9 +454,11 @@ export class ProductShell {
         btnReload.hidden = false;
       } else {
         if (statusEl) statusEl.textContent = "⚠️ " + res.message;
-        btnUpdate.textContent = "Tentar via Navegador";
         btnUpdate.disabled = false;
-        btnUpdate.onclick = () => this.updater.openDownloadPage();
+        // SUBSTITUI a ação de instalar. O botão passa a abrir o
+        // navegador e só isso: era daqui que saíam as duas ações no
+        // mesmo clique, re-armando a instalação que acabara de falhar.
+        update.set("Tentar via Navegador", () => this.updater.openDownloadPage());
       }
     });
 
@@ -617,7 +643,40 @@ export class ProductShell {
     // instead of leaning on every Tool to clear the container first.
     this.bodyEl.innerHTML = "";
     tool.mount(this.bodyEl, this.createContext());
+    this.syncSegmentGliders();
+    this.bodyEl.classList.remove("is-tool-enter");
+    void this.bodyEl.offsetWidth;
+    this.bodyEl.classList.add("is-tool-enter");
     this.renderApplyCount();
+  }
+
+  /**
+   * A lâmina móvel da prévia aprovada. A posição vem do aria-pressed que
+   * cada Tool já mantém, então o movimento não duplica estado de produto.
+   */
+  private syncSegmentGliders(): void {
+    for (const segment of this.bodyEl.querySelectorAll<HTMLElement>(".seg")) {
+      const children = [...segment.children].filter(
+        (child): child is HTMLElement => child instanceof HTMLElement
+      );
+      const items = children.filter((child) => child.classList.contains("seg-item"));
+      if (items.length < 2) continue;
+      let glider = children.find((child) => child.classList.contains("seg-glider"));
+      if (!glider) {
+        glider = document.createElement("span");
+        glider.className = "seg-glider";
+        glider.setAttribute("aria-hidden", "true");
+        segment.insertBefore(glider, segment.firstChild);
+      }
+      const selected = items.findIndex(
+        (item) => item.getAttribute("aria-pressed") === "true"
+      );
+      glider.style.width = `calc((100% - 6px) / ${items.length})`;
+      glider.hidden = selected < 0;
+      if (selected < 0) continue;
+      glider.style.transform = `translateX(${selected * 100}%)`;
+      segment.classList.add("has-glider");
+    }
   }
 
   private createContext(): ToolContext {
@@ -665,7 +724,13 @@ export class ProductShell {
     };
   }
 
-  /** Guards the action button against re-entry while a Tool is running. */
+  /**
+   * Guards the action button against re-entry while a Tool is running.
+   *
+   * O que acontece quando a Tool rejeita — e a razão de o botão voltar
+   * mesmo com `applyStateOwned` ligado — está em `applyRun.ts`. A
+   * decisão mora lá para poder ser provada sem DOM e sem host.
+   */
   private async runApply(): Promise<void> {
     const handler = this.applyHandler;
     if (!handler || isDisabled(this.applyButton)) {
@@ -673,19 +738,26 @@ export class ProductShell {
     }
     this.applyStateOwned = false;
     setDisabled(this.applyButton, true);
-    try {
-      await handler();
-    } finally {
+    await guardApplyRun({
+      run: () => handler(),
       // Hand the control back only if the Tool is still holding it AND
       // did not decide the state itself. Re-enabling unconditionally lit
       // the button up again after a run that left nothing selected.
-      if (this.applyHandler !== handler) {
-        setDisabled(this.applyButton, true);
-      } else if (!this.applyStateOwned) {
-        setDisabled(this.applyButton, false);
-      }
-      this.renderApplyCount();
-    }
+      stale: () => this.applyHandler !== handler,
+      stateOwned: () => this.applyStateOwned,
+      setApplyDisabled: (disabled) => setDisabled(this.applyButton, disabled),
+      reportError: (cause) => {
+        console.error("[Shell] o Apply da ferramenta falhou:", cause);
+        const raw = describeError(cause).trim();
+        this.setStatus(
+          raw
+            ? `Falha ao aplicar: ${/[.!?]$/.test(raw) ? raw : `${raw}.`}`
+            : "Falha ao aplicar.",
+          "error"
+        );
+      },
+      settled: () => this.renderApplyCount(),
+    });
   }
 
   private setStatus(text: string, tone: StatusTone): void {
@@ -791,7 +863,8 @@ export class ProductShell {
 }
 
 function sentenceCase(label: string): string {
-  const normalized = label.trim().toLocaleLowerCase("pt-BR");
+  // Siglas continuam siglas: "Aplicar 12 SFX", não "Aplicar 12 sfx".
+  const normalized = label.trim().toLocaleLowerCase("pt-BR").replace(/\bsfx\b/g, "SFX");
   return normalized ? normalized[0].toLocaleUpperCase("pt-BR") + normalized.slice(1) : "";
 }
 

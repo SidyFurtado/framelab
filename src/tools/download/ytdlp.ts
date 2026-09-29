@@ -32,6 +32,8 @@
  * que é o caso do YouTube inteiro. Sem ele, o filtro derrubava tudo.
  */
 import { dispatch, stampVerdict, withdraw } from "./runner";
+import { premiereMediaUnix, premiereMediaWin } from "./premiereMedia";
+import { isInside } from "../../bridge/destination";
 import { readConfig as readSilenceConfig } from "../silence/ffmpeg";
 
 /** Alias local: o escapador compartilhado, no nome curto dos templates. */
@@ -42,6 +44,7 @@ import {
   join,
   nativePath,
   readText,
+  readTailText,
   remove,
   shellModule,
   uxpModule,
@@ -61,6 +64,11 @@ const LOG_FILE = "dl-log.txt";
 const FILES_FILE = "dl-files.txt";
 const FILE_MARKER = "FRAMELAB_FILE:";
 const FILE_PRINT = `after_move:${FILE_MARKER}%(filepath)j`;
+/**
+ * Deixado no log quando os cookies do navegador escolhido não puderam
+ * ser lidos e o lote seguiu sem eles. Ver `unixCookies`.
+ */
+const COOKIE_MARKER = "FRAMELAB_COOKIES:";
 /** Escrito na primeira linha útil do script: prova que ele rodou. */
 const STARTED_FILE = "dl-started.txt";
 /**
@@ -310,13 +318,16 @@ export function formatSelector(quality: Quality): string {
  *
  * `res` é o menor lado do vídeo, então `res:1080` quer dizer "1080p"
  * no sentido em que uma pessoa usa a palavra — vale para deitado e
- * para em pé. Sem valor, ordena da maior para a menor.
+ * para em pé. Sem valor, ordena da maior para a menor. Na mesma
+ * resolução, H.264/AAC evitam conversão; 4K não cai para 1080p só
+ * para trocar de codec.
  */
 export function sortArg(quality: Quality): string | null {
   if (quality.audioOnly) {
     return null;
   }
-  return quality.height === null ? "res" : `res:${quality.height}`;
+  const resolution = quality.height === null ? "res" : `res:${quality.height}`;
+  return `${resolution},vcodec:h264,acodec:aac`;
 }
 
 // ── sondagem: o que o painel guarda de cada link ───────────────────
@@ -526,6 +537,53 @@ export interface RunResult {
   filesFile?: string;
   /** Caminhos confirmados pelo evento after_move, separados do progresso. */
   downloadedFiles?: string[];
+  /** Os cookies pedidos ficaram de fora — e por quê. */
+  cookies?: CookieTrouble | null;
+}
+
+/**
+ * Por que o lote seguiu sem cookies.
+ *
+ *   • blocked: o navegador existe, mas o macOS não deixou ler a pasta;
+ *   • missing: o navegador escolhido não está neste Mac.
+ */
+export type CookieTrouble = "blocked" | "missing";
+
+export function parseCookieTrouble(log: string): CookieTrouble | null {
+  const found = new RegExp(`^${COOKIE_MARKER}(blocked|missing)\\s*$`, "m").exec(log);
+  return found ? (found[1] as CookieTrouble) : null;
+}
+
+/**
+ * A frase para o editor. Diz que o download NÃO dependeu disso — era
+ * justamente a falta dessa frase que fazia "pediu login" parecer o
+ * problema — e o que fazer se ele quiser os cookies de fato.
+ *
+ * `brief` é a versão de rodapé: num lote que deu certo, ou que falhou
+ * por outro motivo, o passo a passo do Acesso Total ao Disco é ruído
+ * que empurra a frase que importa para fora da barra.
+ */
+export function describeCookieTrouble(
+  trouble: CookieTrouble,
+  browser: string,
+  brief = false
+): string {
+  if (brief) {
+    return trouble === "missing"
+      ? `sem cookies (${browser} não encontrado)`
+      : `sem cookies (o macOS bloqueou o ${browser})`;
+  }
+  if (trouble === "missing") {
+    return (
+      `O ${browser} não está neste Mac, então seguiu sem cookies. ` +
+      "Nos ajustes avançados, escolha o navegador que você usa ou Nenhum."
+    );
+  }
+  return (
+    `O macOS não deixou ler os cookies do ${browser}, então seguiu sem eles. ` +
+    "Para usar cookies, libere o FramelabAgent em Ajustes do Sistema › " +
+    "Privacidade e Segurança › Acesso Total ao Disco; se não precisa, deixe em Nenhum."
+  );
 }
 
 export function parseDownloadedFiles(log: string): string[] {
@@ -704,13 +762,16 @@ async function run(launch: Launch): Promise<RunResult> {
       // A lista de arquivos vai junto: o que o script já terminou de
       // gravar está gravado, e esconder isso faria o painel mandar
       // baixar de novo o que já está no destino.
+      const full = readText(space, runFiles.log) ?? "";
+      const logTail = await tail(space, runFiles.log);
       return {
         ...fail("cancelled", scriptPath),
-        log: tail(space, runFiles.log),
+        log: logTail,
         filesFile: runFiles.files,
         // `after_move` só imprime depois do arquivo estar no nome
         // final: o que está nessa lista está inteiro.
-        downloadedFiles: parseDownloadedFiles(readText(space, runFiles.log) ?? ""),
+        downloadedFiles: parseDownloadedFiles(full),
+        cookies: parseCookieTrouble(full),
       };
     }
 
@@ -748,7 +809,7 @@ async function run(launch: Launch): Promise<RunResult> {
     // cada volta era uma leitura síncrona de 250 em 250ms por até
     // noventa minutos.
     if (launch.onProgress && tick % 4 === 0) {
-      const log = tail(space, runFiles.log);
+      const log = await tail(space, runFiles.log);
       const done = readProgress(space, runFiles.progress);
       const percent = readPercent(log);
       const signature = `${done}|${percent}|${log.length}`;
@@ -767,17 +828,21 @@ async function run(launch: Launch): Promise<RunResult> {
           ytdlp?: string;
           failed?: number;
         };
+        // Leia o log completo uma vez: num lote os primeiros arquivos
+        // podem ter saído há muito mais de 12 linhas, e a nota dos
+        // cookies é a PRIMEIRA linha que o script escreve.
+        const full = readText(space, runFiles.log) ?? "";
+        const logTail = await tail(space, runFiles.log);
         return {
           ok: parsed.ok === true,
           error: parsed.ok === true ? null : parsed.error ?? "ytdlp-failed",
           ytdlpPath: typeof parsed.ytdlp === "string" ? parsed.ytdlp : null,
           scriptPath,
           failed: typeof parsed.failed === "number" ? parsed.failed : 0,
-          log: tail(space, runFiles.log),
+          log: logTail,
           filesFile: runFiles.files,
-          // Leia o log completo uma vez: num lote os primeiros arquivos
-          // podem ter saído há muito mais de 12 linhas.
-          downloadedFiles: parseDownloadedFiles(readText(space, runFiles.log) ?? ""),
+          downloadedFiles: parseDownloadedFiles(full),
+          cookies: parseCookieTrouble(full),
         };
       } catch {
         // JSON pela metade: o `mv` do script torna isso raro, e uma
@@ -787,9 +852,10 @@ async function run(launch: Launch): Promise<RunResult> {
     await wait(POLL_MS);
   }
 
+  const logTail = await tail(space, runFiles.log);
   return {
     ...fail(launchError ? `launch-denied: ${launchError}` : "timeout", scriptPath),
-    log: tail(space, runFiles.log),
+    log: logTail,
   };
 }
 
@@ -810,13 +876,19 @@ function readProgress(space: Workspace, name: string): number {
  * longo chega a megabytes, e um split do arquivo inteiro a cada volta
  * do polling era custo linear crescendo na thread do painel.
  */
-function tail(space: Workspace, name: string, lines = 12): string {
-  const raw = readText(space, name);
+async function tail(space: Workspace, name: string, lines = 12): Promise<string> {
+  // Só a CAUDA sai do disco: `readText` lia o arquivo inteiro para
+  // fatiar 4096 caracteres, e num lote longo o log tem megabytes.
+  const raw = await readTailText(space, name);
   if (!raw) {
     return "";
   }
   const slice = raw.length > 4096 ? raw.slice(-4096) : raw;
-  return slice.split(/\r?\n/).filter((line) => !line.startsWith(FILE_MARKER)).slice(-lines).join("\n");
+  return slice
+    .split(/\r?\n/)
+    .filter((line) => !line.startsWith(FILE_MARKER) && !line.startsWith(COOKIE_MARKER))
+    .slice(-lines)
+    .join("\n");
 }
 
 /**
@@ -990,7 +1062,14 @@ export async function downloadUrls(
   onManual?: (scriptPath: string, reason: string) => void,
   onQueued?: (message: string) => void
 ): Promise<DownloadOutcome> {
-  const destination = config.destination || (await defaultDestination());
+  /*
+   * Uma pasta ESCOLHIDA pelo editor é intocável: se não existir, o
+   * script para e diz. A pasta padrão do plugin é invenção dele, e
+   * essa ele cria. É a única diferença entre as duas.
+   */
+  const chosen = config.destination.trim();
+  const destination = chosen || (await defaultDestination());
+  const mayCreate = chosen === "";
   // O ffmpeg apontado à mão nos ajustes do Corte de Silêncios vale
   // aqui também — é o mesmo binário fazendo o mesmo trabalho.
   const customFfmpeg = urls.length > 0 ? (await readSilenceConfig()).ffmpegPath : "";
@@ -998,8 +1077,8 @@ export async function downloadUrls(
   const result = await run({
     build: (space) =>
       isWindows()
-        ? downloadScriptWin(urls, quality, config, space.nativeBase, destination, direct, customFfmpeg)
-        : downloadScriptUnix(urls, quality, config, space.nativeBase, destination, direct, customFfmpeg),
+        ? downloadScriptWin(urls, quality, config, space.nativeBase, destination, direct, customFfmpeg, mayCreate)
+        : downloadScriptUnix(urls, quality, config, space.nativeBase, destination, direct, customFfmpeg, mayCreate),
     tag: runTag(),
     timeoutMs: DOWNLOAD_TIMEOUT_MS,
     stale: [],
@@ -1020,6 +1099,26 @@ export async function downloadUrls(
         .filter((line) => line.length > 0)
     : [];
   const files = [...new Set([...directFiles, ...(result.downloadedFiles ?? [])])];
+
+  /*
+   * Cada arquivo tem de ter caído DENTRO da pasta pedida.
+   *
+   * Esta conferência é barata e é a que faltava: em 23/09 o yt-dlp
+   * escreveu ~25 arquivos numa árvore vizinha, respondeu "ok", e o
+   * painel repetiu o "ok" por dois dias. Quem escapou vira erro na
+   * hora, com o caminho de verdade à vista.
+   */
+  const strays = files.filter((file) => !isInside(destination, file));
+  if (strays.length > 0) {
+    console.error("[Download] arquivos fora da pasta escolhida:", strays);
+    return {
+      ...result,
+      ok: false,
+      error: "destination-escaped",
+      files,
+      log: `${result.log}\n\nO download saiu da pasta escolhida.\nPedido: ${destination}\nEscrito: ${strays.join("\n         ")}`,
+    };
+  }
 
   if (result.ok && files.length === 0) {
     return { ...result, ok: false, error: "missing-files", files };
@@ -1156,23 +1255,29 @@ function unixYtdlpSetup(config: DownloadConfig): string[] {
     "  exit 1",
     "fi",
     'echo "yt-dlp: $YTDLP"',
-    // O runtime JS. Sem ele o YouTube ainda responde, mas pelo caminho
-    // deprecado: mais lento e com formatos faltando.
+    // A permissão de execução não garante que o runtime roda neste Mac:
+    // uma cópia Intel sem Rosetta passa em -x, mas deixa o YouTube sem JS.
     "DENO=''",
     'for candidate in "$WORK/deno" /opt/homebrew/bin/deno /usr/local/bin/deno "$HOME/.deno/bin/deno"; do',
-    '  if [ -x "$candidate" ]; then DENO="$candidate"; break; fi',
+    '  if [ -x "$candidate" ] && "$candidate" --version >/dev/null 2>&1; then DENO="$candidate"; break; fi',
     "done",
-    'if [ -z "$DENO" ]; then DENO="$(command -v deno 2>/dev/null || true)"; fi',
+    'if [ -z "$DENO" ]; then',
+    '  candidate="$(command -v deno 2>/dev/null || true)"',
+    '  if [ -n "$candidate" ] && "$candidate" --version >/dev/null 2>&1; then DENO="$candidate"; fi',
+    'fi',
     'if [ -z "$DENO" ]; then',
     '  echo "Preparando o motor de extracao (so na primeira vez)..."',
     `  echo "Preparando o motor de extracao (so na primeira vez)..." >> "$WORK/${LOG_FILE}"`,
     `  if [ "$(uname -m)" = "arm64" ]; then DURL=${q(DENO_MAC_ARM)}; else DURL=${q(DENO_MAC_INTEL)}; fi`,
-    `  if curl -fsSL --retry 3 -o "$WORK/deno.zip" "$DURL" 2>> "$WORK/${LOG_FILE}"; then`,
-    `    unzip -o -q "$WORK/deno.zip" deno -d "$WORK" >> "$WORK/${LOG_FILE}" 2>&1`,
-    '    rm -f "$WORK/deno.zip"',
-    '    chmod +x "$WORK/deno" 2>/dev/null',
-    '    xattr -d com.apple.quarantine "$WORK/deno" >/dev/null 2>&1 || true',
-    '    if "$WORK/deno" --version >/dev/null 2>&1; then DENO="$WORK/deno"; fi',
+    '  DENO_STAGE="$(mktemp -d "$WORK/deno-install.XXXXXX")"',
+    '  if [ -n "$DENO_STAGE" ]; then',
+    `    if curl -fsSL --retry 3 -o "$DENO_STAGE/deno.zip" "$DURL" 2>> "$WORK/${LOG_FILE}" &&`,
+    `      unzip -o -q "$DENO_STAGE/deno.zip" deno -d "$DENO_STAGE" >> "$WORK/${LOG_FILE}" 2>&1; then`,
+    '      chmod +x "$DENO_STAGE/deno" 2>/dev/null',
+    '      xattr -d com.apple.quarantine "$DENO_STAGE/deno" >/dev/null 2>&1 || true',
+    '      if "$DENO_STAGE/deno" --version >/dev/null 2>&1 && mv -f "$DENO_STAGE/deno" "$WORK/deno"; then DENO="$WORK/deno"; fi',
+    '    fi',
+    '    rm -rf "$DENO_STAGE"',
     "  fi",
     "fi",
   ];
@@ -1219,6 +1324,93 @@ function unixFfmpeg(customFfmpeg: string): string[] {
     'if [ -n "$FFMPEG" ]; then FFDIR="$(dirname "$FFMPEG")"; fi',
   ];
 }
+
+/** Onde cada navegador guarda o perfil, sob `~/Library/Application Support`. */
+const MAC_BROWSER_DIRS: Partial<Record<Cookies, string>> = {
+  chrome: "Google/Chrome",
+  edge: "Microsoft Edge",
+  brave: "BraveSoftware/Brave-Browser",
+  firefox: "Firefox",
+};
+
+/**
+ * Os cookies do navegador: lidos com cuidado, ou deixados de fora.
+ *
+ * ── Por que não basta passar `--cookies-from-browser` ─────────────
+ * Duas falhas, medidas num Mac de verdade:
+ *
+ *   • o agente é um .app próprio, e o macOS não deixa ele ler a pasta
+ *     de outro aplicativo ("Operation not permitted"). O yt-dlp então
+ *     parava ANTES de abrir o link, em todo site, inclusive nos que
+ *     nunca pediram login. Ligar os cookies desligava o painel inteiro,
+ *     e o diagnóstico chamava isso de "o site pediu login";
+ *   • com a pasta legível, o yt-dlp pega o `Cookies` mais recente da
+ *     pasta INTEIRA do Chrome, e dentro do perfil há um banco interno do
+ *     Gemini que é gravado o tempo todo: vinham 32 cookies inúteis no
+ *     lugar dos 2.500 do perfil de verdade.
+ *
+ * Então: pasta ausente ou ilegível vira uma linha no log, e o lote
+ * segue sem cookies. Num Chromium legível, o `Cookies` do perfil usado
+ * por último é copiado para uma pasta temporária que o script apaga ao
+ * sair. O yt-dlp aceita um caminho no lugar do nome do perfil, e ali
+ * só existe o arquivo certo. Os valores seguem cifrados na cópia: a
+ * chave está no Keychain, não no arquivo.
+ */
+export function unixCookies(config: DownloadConfig): string[] {
+  const lines = ["CK=''", "CKDIR=''"];
+  const note = (trouble: CookieTrouble): string =>
+    `  printf '%s\\n' '${COOKIE_MARKER}${trouble}' >> "$WORK/${LOG_FILE}"`;
+  const browser = config.cookies;
+  if (browser === "none") {
+    return lines;
+  }
+  if (browser === "safari") {
+    return [
+      ...lines,
+      'SF="$HOME/Library/Containers/com.apple.Safari/Data/Library/Cookies/Cookies.binarycookies"',
+      'if [ -f "$HOME/Library/Cookies/Cookies.binarycookies" ]; then SF="$HOME/Library/Cookies/Cookies.binarycookies"; fi',
+      // O Safari sempre existe no Mac: ilegível aqui é o macOS negando.
+      'if head -c 1 "$SF" >/dev/null 2>&1; then',
+      "  CK=safari",
+      "else",
+      note("blocked"),
+      "fi",
+    ];
+  }
+  const dir = MAC_BROWSER_DIRS[browser];
+  if (!dir) {
+    return lines;
+  }
+  const chromium = browser !== "firefox";
+  return [
+    ...lines,
+    `BDIR="$HOME/Library/Application Support/${dir}"`,
+    'if [ ! -d "$BDIR" ]; then',
+    note("missing"),
+    // O `-d` passa mesmo sob a proteção do macOS; listar, não.
+    'elif ! ls "$BDIR" >/dev/null 2>&1; then',
+    note("blocked"),
+    "else",
+    `  CK=${browser}`,
+    ...(chromium
+      ? [
+          '  PROFILE="$(plutil -extract profile.last_used raw -o - "$BDIR/Local State" 2>/dev/null || true)"',
+          '  if [ -z "$PROFILE" ]; then PROFILE=Default; fi',
+          '  if [ -f "$BDIR/$PROFILE/Cookies" ]; then',
+          '    CKDIR="$(mktemp -d "${TMPDIR:-/tmp}/framelab-cookies.XXXXXX" 2>/dev/null || true)"',
+          '    if [ -n "$CKDIR" ] && cp "$BDIR/$PROFILE/Cookies" "$CKDIR/Cookies" 2>/dev/null; then',
+          `      CK="${browser}:$CKDIR"`,
+          "    fi",
+          "  fi",
+        ]
+      : []),
+    "fi",
+    `trap 'if [ -n "$CKDIR" ]; then rm -rf "$CKDIR"; fi' EXIT`,
+  ];
+}
+
+/** O argumento de cookies de uma linha do yt-dlp: some quando CK está vazio. */
+const UNIX_COOKIES_ARG = '${CK:+--cookies-from-browser "$CK"} ';
 
 // Fecha só a própria janela, achada pelo título posto no preâmbulo.
 // Se o macOS negar a automação, a janela fica aberta e nada quebra.
@@ -1295,7 +1487,7 @@ export function probeScriptUnix(
   config: DownloadConfig,
   folder: string
 ): string {
-  const lines = [...unixBase(folder), ...unixYtdlpSetup(config)];
+  const lines = [...unixBase(folder), ...unixYtdlpSetup(config), ...unixCookies(config)];
   lines.push("FAILED=0");
 
   urls.forEach((url, index) => {
@@ -1308,7 +1500,7 @@ export function probeScriptUnix(
       `if "$YTDLP" --no-warnings --no-playlist --ignore-config ` +
         `--extractor-retries 5 --retry-sleep extractor:3 ` +
         `\${DENO:+--js-runtimes "deno:$DENO"} ` +
-        `${cookiesArg(config)}${extra}-J ${q(url)} > ${target}.tmp 2>> "$WORK/${LOG_FILE}"; then`,
+        `${UNIX_COOKIES_ARG}${extra}-J ${q(url)} > ${target}.tmp 2>> "$WORK/${LOG_FILE}"; then`,
       `  mv ${target}.tmp ${target}`,
       "else",
       "  FAILED=$((FAILED+1))",
@@ -1333,16 +1525,49 @@ export function downloadScriptUnix(
   folder: string,
   destination: string,
   direct: readonly DirectJob[] = [],
-  customFfmpeg = ""
+  customFfmpeg = "",
+  /** Só a pasta padrão do plugin pode nascer aqui. Ver o bloco do DEST. */
+  mayCreate = false
 ): string {
   const lines = unixBase(folder);
   // yt-dlp, deno e ffmpeg só entram quando algum link precisa deles.
   // Um lote só de TikTok fica em curl puro — é o que faz o caso mais
   // comum responder em segundos, sem provisionamento nenhum.
   if (urls.length > 0) {
-    lines.push(...unixYtdlpSetup(config), ...unixFfmpeg(customFfmpeg));
+    lines.push(...unixYtdlpSetup(config), ...unixFfmpeg(customFfmpeg), ...unixCookies(config));
+    if (!quality.audioOnly) {
+      lines.push(
+        'export FRAMELAB_FFMPEG="$FFMPEG"',
+        `cat > "$WORK/${LOG_FILE}.premiere.sh" <<'FRAMELAB_MEDIA_SCRIPT'`,
+        premiereMediaUnix,
+        'FRAMELAB_MEDIA_SCRIPT'
+      );
+    }
   }
-  lines.push(`DEST=${q(destination)}`, 'mkdir -p "$DEST"', "FAILED=0");
+  /*
+   * A pasta escolhida tem de EXISTIR. `mkdir -p "$DEST"` estava aqui e
+   * era metade do desastre: quando o caminho estava errado, o script
+   * criava a pasta errada com toda a alegria e o editor só descobria
+   * dois dias depois, procurando arquivos. Agora ele para na primeira
+   * escrita, que é quando dá para consertar de graça.
+   *
+   * A pasta PADRÃO do plugin (`~/Movies/Framelab`) é a única que ele
+   * pode criar: foi ele que a inventou.
+   */
+  lines.push(`DEST=${q(destination)}`);
+  lines.push(
+    ...(mayCreate
+      ? ['mkdir -p "$DEST"']
+      : [
+          'if [ ! -d "$DEST" ]; then',
+          `  echo "ERROR: a pasta de destino não existe: $DEST" >> "$WORK/${LOG_FILE}"`,
+          `  printf '{"ok":false,"error":"destination-missing","failed":1}' > "$WORK/${RESULT_FILE}.tmp"`,
+          `  mv "$WORK/${RESULT_FILE}.tmp" "$WORK/${RESULT_FILE}"`,
+          "  exit 1",
+          "fi",
+        ])
+  );
+  lines.push("FAILED=0");
 
   const total = direct.length + urls.length;
   direct.forEach((job, index) => {
@@ -1361,25 +1586,49 @@ export function downloadScriptUnix(
     );
   });
 
+  /*
+   * `--no-windows-filenames` NÃO é decoração: é a correção de 23/09.
+   *
+   * Com `--windows-filenames`, o yt-dlp roda `sanitize_path(force=True)`
+   * sobre o caminho INTEIRO — o `-P "$DEST"` junto — e a regra dele é
+   * `re.sub(r'(?:[/<>:"\|\\?\*]|[\s.]$)', '#', parte)` em CADA
+   * componente. Uma pasta real do Drive compartilhado que termina em
+   * espaço, `.../Arquivo de Edição /`, virava `.../Arquivo de Edição#/`,
+   * e o yt-dlp criava a árvore paralela inteira sem dizer nada. Os
+   * arquivos entravam OFFLINE no Premiere, num caminho que o projeto
+   * não conhece. Medido com o yt-dlp 2026.08.19 deste plugin:
+   *
+   *   --windows-filenames     → …/Arquivo de Edição#/01. Male/…
+   *   --no-windows-filenames  → …/Arquivo de Edição /01. Male/…
+   *
+   * Explícito em vez de ausente porque a flag também chega por
+   * configuração, e aqui ela não pode chegar de jeito nenhum.
+   *
+   * O NOME do arquivo continua seguro: o yt-dlp saneia o basename
+   * sozinho, para o sistema em que está rodando, e é só o basename que
+   * ele tem o direito de mexer.
+   */
   const shared =
-    `--newline --no-mtime --no-playlist --ignore-config --windows-filenames ` +
+    `--newline --no-mtime --no-playlist --ignore-config --no-windows-filenames ` +
     `--trim-filenames 120 --retries 5 --fragment-retries 10 ` +
     `--extractor-retries 5 --retry-sleep extractor:3 ` +
     `\${DENO:+--js-runtimes "deno:$DENO"} ` +
     `-o ${q("%(title)s [%(id)s].%(ext)s")} ` +
-    // after_move confirma o caminho final mesmo quando o vídeo já existe.
-    // Um marcador + JSON separa caminhos de progresso em qualquer versão
-    // do yt-dlp, sem recolher um arquivo de controle na pasta de destino.
-    `--print ${q(FILE_PRINT)} --no-simulate --no-quiet --progress ` +
-    cookiesArg(config);
+    // Vídeo: só o helper publica o caminho, depois de preparar os codecs.
+    // --print after_move seria prematuro: yt-dlp imprime antes do --exec.
+    // Áudio: a extração para MP3 já terminou quando after_move começa.
+    (quality.audioOnly ? `--print ${q(FILE_PRINT)} ` :
+      `--exec ${q(`after_move:/bin/bash "${LOG_FILE}.premiere.sh" %(filepath)q`)} `) +
+    `--no-simulate --no-quiet --progress ` +
+    UNIX_COOKIES_ARG;
 
   const sort = sortArg(quality);
   const media = quality.audioOnly
     ? `-x --audio-format mp3 --audio-quality 0 -f ${q(formatSelector(quality))}`
-    : // mp4 porque o destino é uma timeline do Premiere, e um webm/vp9
-      // entra lá para arrastar a reprodução.
+    : // MP4 é o contêiner; o helper after_move valida/converte os codecs
+      // antes de publicar o marcador, inclusive para arquivos existentes.
       `-f ${q(formatSelector(quality))} ${sort ? `-S ${q(sort)} ` : ""}` +
-      `--merge-output-format mp4`;
+      `--merge-output-format mp4 --remux-video mp4`;
 
   urls.forEach((url, index) => {
     const step = direct.length + index + 1;
@@ -1613,7 +1862,9 @@ export function downloadScriptWin(
   folder: string,
   destination: string,
   direct: readonly DirectJob[] = [],
-  customFfmpeg = ""
+  customFfmpeg = "",
+  /** Só a pasta padrão do plugin pode nascer aqui. Ver o bloco do DEST. */
+  mayCreate = false
 ): string {
   const lines = winBase(folder);
   if (urls.length > 0) {
@@ -1621,7 +1872,16 @@ export function downloadScriptWin(
   }
   lines.push(
     `set "DEST=${batValue(destination)}"`,
-    'if not exist "%DEST%" mkdir "%DEST%"'
+    ...(mayCreate
+      ? ['if not exist "%DEST%" mkdir "%DEST%"']
+      : [
+          'if not exist "%DEST%" (',
+          `  >>"%WORK%\\${LOG_FILE}" echo ERROR: a pasta de destino nao existe: %DEST%`,
+          `  >"%WORK%\\${RESULT_FILE}.tmp" echo {"ok":false,"error":"destination-missing","failed":1}`,
+          `  move /y "%WORK%\\${RESULT_FILE}.tmp" "%WORK%\\${RESULT_FILE}" >nul`,
+          "  exit /b 1",
+          ")",
+        ])
   );
   const total = direct.length + urls.length;
   // curl.exe existe no Windows 10+; é tudo que o link direto precisa.
@@ -1665,20 +1925,35 @@ export function downloadScriptWin(
     'if "%FFLOC%"=="CUSTOM" (set FFARGS=--ffmpeg-location "%FFCUSTOM%") else ' +
       'if not "%FFLOC%"=="" set FFARGS=--ffmpeg-location "%FFLOC%"'
     );
+    if (!quality.audioOnly) {
+      const scriptLines = premiereMediaWin.split(/\r?\n/)
+        .map(line => `'${line.replace(/'/g, "''")}'`).join(",");
+      lines.push(
+        'set "FRAMELAB_FFMPEG=ffmpeg.exe"',
+        'if "%FFLOC%"=="CUSTOM" (set "FRAMELAB_FFMPEG=%FFCUSTOM%") else ' +
+          'if not "%FFLOC%"=="" set "FRAMELAB_FFMPEG=%FFLOC%\\ffmpeg.exe"',
+        `powershell -NoProfile -Command ${bq(`Set-Content -Encoding UTF8 -LiteralPath '${LOG_FILE}.premiere.ps1' -Value @(${scriptLines})`)}`
+      );
+    }
   }
 
   const shared =
-    `--newline --no-mtime --no-playlist --ignore-config --windows-filenames ` +
+    // Mesma razão do macOS (ver `downloadScriptUnix`): a flag saneia o
+    // caminho inteiro, e a pasta do editor não é do plugin. No Windows o
+    // basename já sai seguro sem ela, porque é o sistema onde ele roda.
+    `--newline --no-mtime --no-playlist --ignore-config --no-windows-filenames ` +
     `--trim-filenames 120 --retries 5 --fragment-retries 10 ` +
     `-o ${bq("%(title)s [%(id)s].%(ext)s")} ` +
-    `--print ${bq(FILE_PRINT)} --no-simulate --no-quiet --progress ` +
+    (quality.audioOnly ? `--print ${bq(FILE_PRINT)} ` :
+      `--exec ${bq(`after_move:powershell -NoProfile -ExecutionPolicy Bypass -File ${LOG_FILE}.premiere.ps1 %(filepath)q`)} `) +
+    `--no-simulate --no-quiet --progress ` +
     cookiesArg(config);
 
   const sort = sortArg(quality);
   const media = quality.audioOnly
     ? `-x --audio-format mp3 --audio-quality 0 -f ${bq(formatSelector(quality))}`
     : `-f ${bq(formatSelector(quality))} ${sort ? `-S ${bq(sort)} ` : ""}` +
-      `--merge-output-format mp4`;
+      `--merge-output-format mp4 --remux-video mp4`;
 
   urls.forEach((url, index) => {
     const step = direct.length + index + 1;
@@ -1749,6 +2024,20 @@ export function describeRunError(code: string | null, log: string): string {
       return diagnoseLog(log);
     case "missing-files":
       return "O yt-dlp terminou, mas não informou o arquivo salvo. Confira a pasta de destino e tente novamente.";
+    case "destination-missing":
+      return (
+        "A pasta de destino não existe mais. Nada foi baixado — o plugin " +
+        'não cria pasta parecida no lugar dela. Escolha-a de novo em "Destino › Escolher…". ' +
+        "Se ela fica num Drive compartilhado, confira se ele montou."
+      );
+    case "destination-escaped":
+      // O bug de 23/09 em forma de frase: se um dia voltar, volta
+      // falando, e com os dois caminhos lado a lado no log.
+      return (
+        "Os arquivos foram escritos FORA da pasta escolhida — veja o log " +
+        "para os caminhos. Eles existem no disco, mas não onde deveriam: " +
+        "mova-os antes de relinkar no projeto."
+      );
     case "install-failed":
       return "Não foi possível baixar o yt-dlp. Verifique a conexão e tente de novo.";
     case "install-unusable":
@@ -1801,9 +2090,24 @@ interface Cause {
   short: string;
   /** A explicação e a saída. */
   long: string;
+  /** Resolve com login — é quando a nota dos cookies faltando importa. */
+  login?: true;
 }
 
 const CAUSES: readonly Cause[] = [
+  {
+    // Primeiro de todos: quando os cookies não carregam, o yt-dlp para
+    // antes de abrir o link — não há outra queixa para ler. A frase
+    // cita "cookies" e caía na regra de login, que mandava o editor
+    // escolher o navegador que ele JÁ tinha escolhido.
+    test:
+      /could not find \w+ cookies database|could not copy \w+ cookie database|failed to decrypt with dpapi|operation not permitted.*cookies/i,
+    short: "cookies ilegíveis",
+    long:
+      "Não deu para ler os cookies do navegador escolhido, e sem eles o " +
+      'yt-dlp nem abre o link. Deixe "Cookies do navegador" em Nenhum ' +
+      "para baixar normalmente, ou escolha o navegador que você usa.",
+  },
   {
     test: /unable to extract universal data|rehydration/i,
     short: "TikTok recusou",
@@ -1812,8 +2116,30 @@ const CAUSES: readonly Cause[] = [
       "Espere alguns segundos e tente de novo.",
   },
   {
+    // A queixa do Instagram cita "--cookies-from-browser" no meio do
+    // texto, então ela TEM que ser lida antes da regra geral de login
+    // — que casa com "cookies" e roubaria o caso.
+    test:
+      /empty media response|login required|requested content is not available|locked behind the login page/i,
+    short: "Instagram pediu login",
+    login: true,
+    long:
+      "O Instagram não entregou esse link sem login — é a mesma resposta " +
+      "dele para conta privada, story, post apagado e para quando limitou " +
+      "as consultas do seu IP. Nos ajustes avançados, escolha o navegador " +
+      "onde você já está logado; se insistir, espere alguns minutos.",
+  },
+  {
+    test: /no video formats found/i,
+    short: "link sem vídeo",
+    long:
+      "Não há vídeo nesse link — no Instagram, é um post só de fotos. " +
+      "O painel baixa vídeo e áudio; imagem, não.",
+  },
+  {
     test: /private video/i,
     short: "vídeo privado",
+    login: true,
     long:
       "Esse vídeo é privado. Se você tem acesso a ele, escolha nos ajustes " +
       "avançados o navegador onde está logado — o painel usa os cookies dele.",
@@ -1826,13 +2152,17 @@ const CAUSES: readonly Cause[] = [
   {
     test: /age.?restrict/i,
     short: "restrição de idade",
+    login: true,
     long:
       "Vídeo com restrição de idade — use os cookies do navegador nos " +
       "ajustes avançados.",
   },
   {
-    test: /sign in to confirm|not a bot|cookies/i,
+    // `--cookies` e não "cookies": a dica de login do yt-dlp cita a
+    // opção, e a palavra solta casava com qualquer linha sobre cookies.
+    test: /sign in to confirm|not a bot|--cookies/i,
     short: "pede login",
+    login: true,
     long:
       "O site pediu login. Nos ajustes avançados, escolha o navegador onde " +
       "você já está logado para o yt-dlp usar os cookies dele.",
@@ -1845,9 +2175,11 @@ const CAUSES: readonly Cause[] = [
       '"brew install ffmpeg" ou escolha 1080p ou menos.',
   },
   {
-    test: /unsupported url/i,
+    // O extrator genérico que não acha o player numa página é o mesmo
+    // caso de uma URL desconhecida: o yt-dlp não sabe ler esse site.
+    test: /unsupported url|\[generic\][^\n]*unable to extract/i,
     short: "site não suportado",
-    long: "O yt-dlp não reconhece esse link.",
+    long: "O yt-dlp não sabe ler os vídeos desse site.",
   },
   {
     test: /urlopen error|network|timed out|connection/i,
@@ -1862,7 +2194,19 @@ function rawComplaint(log: string): string | null {
   if (!errors || errors.length === 0) {
     return null;
   }
-  return errors[errors.length - 1].replace(/^ERROR:\s*/, "").trim();
+  return (
+    errors[errors.length - 1]
+      .replace(/^ERROR:\s*/, "")
+      // O pedido de relatório de bug do yt-dlp é para quem mantém o
+      // yt-dlp, não para o editor — e ocupava metade da barra de status.
+      .replace(/;?\s*please report this issue on[\s\S]*$/i, "")
+      .trim()
+  );
+}
+
+/** A falha se resolve com login? É quando a falta de cookies pesa. */
+export function needsLogin(log: string): boolean {
+  return CAUSES.find((entry) => entry.test.test(log))?.login === true;
 }
 
 export function diagnoseLog(log: string): string {

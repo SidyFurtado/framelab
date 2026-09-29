@@ -74,8 +74,6 @@ const PROGRESS_FILE = "progress.txt";
 /** Escrito na primeira linha útil do script: prova que ele rodou. */
 const STARTED_FILE = "sil-started.txt";
 const CONFIG_FILE = "silence-config.json";
-const SCRIPT_FILE = "extract.command";
-const SCRIPT_FILE_WIN = "extract.bat";
 
 /** Passo do polling e teto de espera. */
 const POLL_MS = 350;
@@ -108,9 +106,94 @@ async function step<T>(label: string, run: () => T | Promise<T>): Promise<T> {
   }
 }
 
-function scriptName(): string {
-  return isWindows() ? SCRIPT_FILE_WIN : SCRIPT_FILE;
+/**
+ * Os artefatos de UMA extração.
+ *
+ * ── Por que carimbados ────────────────────────────────────────────
+ * Resultado, progresso e início já eram — e o comentário lá embaixo
+ * explicava por quê: um script órfão (cancelamento, ou a queda para o
+ * Terminal já disparada) escreve nos nomes velhos e a execução nova não
+ * engole o resultado dele. Mas o SCRIPT continuava num nome fixo, e o
+ * assistente executa o arquivo que o ticket NOMEIA, lendo-o na hora de
+ * executar. Um ticket atrasado rodava o texto da execução SEGUINTE:
+ * dois ffmpeg em paralelo sobre os mesmos arquivos de PCM, com o risco
+ * de um `.wav` truncado que a detecção depois lê como onda válida.
+ *
+ * A correção de órfãos estava aplicada pela metade. Agora o script é o
+ * quarto artefato carimbado, como `ytdlp.ts` sempre fez.
+ *
+ * `windows` entra por parâmetro para os nomes das duas plataformas
+ * poderem ser provados fora do host — mesma saída de `fontFolders`.
+ */
+export interface ExtractionRun {
+  readonly tag: string;
+  /** O script que o ticket vai nomear. */
+  readonly script: string;
+  readonly result: string;
+  readonly progress: string;
+  readonly started: string;
 }
+
+/**
+ * Um contador junto do relógio.
+ *
+ * `Date.now()` em milissegundos repete, e duas execuções com a mesma
+ * etiqueta compartilhariam TODOS os artefatos — que é o defeito de
+ * volta, e pior.
+ */
+let sequence = 0;
+
+export function extractionRun(windows = isWindows()): ExtractionRun {
+  const tag = `${Date.now().toString(36)}-${(sequence += 1).toString(36)}`;
+  return {
+    tag,
+    script: windows ? `extract-${tag}.bat` : `extract-${tag}.command`,
+    // A grafia destes três não muda: é o contrato que o script escreve.
+    result: `sil-${tag}-result.json`,
+    progress: `sil-${tag}-progress.txt`,
+    started: `sil-${tag}-started.txt`,
+  };
+}
+
+/** O que esta execução deixa na pasta de trabalho, para o rodízio. */
+export function runFiles(run: ExtractionRun): string[] {
+  return [run.script, run.result, run.progress, run.started];
+}
+
+/**
+ * O texto do script desta execução, já com os nomes dela.
+ *
+ * A substituição num ponto só é a de sempre; o que mudou é que o texto
+ * passou a ser um valor que se pode provar, em vez de só um efeito
+ * dentro de `extractAudio`.
+ */
+export function extractionScript(
+  run: ExtractionRun,
+  jobs: readonly AudioJob[],
+  nativeBase: string,
+  ffmpegPath: string,
+  windows = isWindows()
+): string {
+  return (windows
+    ? windowsScript(jobs, nativeBase, ffmpegPath)
+    : unixScript(jobs, nativeBase, ffmpegPath))
+    .split(RESULT_FILE)
+    .join(run.result)
+    .split(PROGRESS_FILE)
+    .join(run.progress)
+    .split(STARTED_FILE)
+    .join(run.started);
+}
+
+/**
+ * Os artefatos da execução anterior, para esta limpar.
+ *
+ * Rodízio, como o do `ytdlp.ts`: com nome carimbado, cada varredura
+ * deixaria um script para sempre. Apagar é seguro mesmo com um órfão
+ * lendo — no Unix o descritor aberto sobrevive ao unlink, e no Windows
+ * a recusa do sistema deixa o arquivo onde está.
+ */
+let previousRun: string[] = [];
 
 // ── configuração ───────────────────────────────────────────────────
 
@@ -173,35 +256,32 @@ export async function extractAudio(
   }
 
   const space = await step("pasta de trabalho", () => workspace());
-  const scriptPath = nativePath(space, scriptName());
+  /*
+   * Cada execução ganha os seus arquivos — o script incluído. O porquê
+   * está em `ExtractionRun`. (Os PCMs já vêm carimbados por execução de
+   * quem monta os jobs.)
+   */
+  const run = extractionRun();
+  const scriptPath = nativePath(space, run.script);
 
   /*
-   * Cada execução ganha os seus arquivos de resultado e progresso,
-   * renomeados no texto do script num ponto só. Cancelar deixa um
-   * script órfão terminando; com nomes por execução, ele escreve nos
-   * nomes velhos e a varredura nova não engole o resultado dele. (Os
-   * PCMs já vêm carimbados por execução de quem monta os jobs.)
+   * O rodízio: os artefatos da execução ANTERIOR saem agora, e os desta
+   * ficam registrados para a próxima limpar. Nenhuma execução apaga os
+   * seus próprios arquivos enquanto pode precisar deles, e nenhuma
+   * alcança os de outra que ainda esteja de pé.
    */
-  const tag = Date.now().toString(36);
-  const runResult = `sil-${tag}-result.json`;
-  const runProgress = `sil-${tag}-progress.txt`;
-  const runStarted = `sil-${tag}-started.txt`;
+  for (const name of previousRun) {
+    await remove(space, name);
+  }
+  previousRun = runFiles(run);
 
-  await remove(space, runResult);
-  await remove(space, runProgress);
-  await remove(space, runStarted);
   for (const job of jobs) {
     await remove(space, job.file);
   }
 
   // O script vive no mundo de fora: todo caminho DENTRO dele é nativo.
-  const script = (isWindows()
-    ? windowsScript(jobs, space.nativeBase, ffmpegPath)
-    : unixScript(jobs, space.nativeBase, ffmpegPath))
-    .split(RESULT_FILE).join(runResult)
-    .split(PROGRESS_FILE).join(runProgress)
-    .split(STARTED_FILE).join(runStarted);
-  await step("escrever o script", () => write(space, scriptName(), script, true));
+  const script = extractionScript(run, jobs, space.nativeBase, ffmpegPath);
+  await step("escrever o script", () => write(space, run.script, script, true));
 
   /*
    * Primeiro sem janela: o mesmo runner silencioso do Baixar Vídeos —
@@ -212,7 +292,7 @@ export async function extractAudio(
   const PURPOSE =
     "Extrair o áudio dos clipes selecionados com o ffmpeg, para detectar os silêncios pela onda.";
   let launchError: string | null = null;
-  const sent = await dispatch(scriptName());
+  const sent = await dispatch(run.script);
   let awaitingStamp = sent.mode !== "denied";
   if (!awaitingStamp) {
     console.error("[Silêncios] agente recusado:", sent.error);
@@ -258,7 +338,7 @@ export async function extractAudio(
       if (verdict === "busy" && Date.now() < BUSY_LIMIT) {
         stampDeadline = Date.now() + BUSY_GRACE_MS;
         console.log("[Silêncios] na fila: o agente está com outro trabalho.");
-      } else if (!readText(space, runStarted)) {
+      } else if (!readText(space, run.started)) {
         awaitingStamp = false;
         console.warn("[Silêncios] agente não respondeu — caindo para o Terminal.");
         // Sai da fila antes: um agente que acordasse depois extrairia
@@ -280,7 +360,7 @@ export async function extractAudio(
     // both every cycle was two synchronous reads per step, all the way to
     // the timeout.
     if (tick % 3 === 0) {
-      const done = readProgress(space, runProgress);
+      const done = readProgress(space, run.progress);
       if (done !== null && done !== lastDone) {
         lastDone = done;
         onProgress?.(done, jobs.length);
@@ -288,7 +368,7 @@ export async function extractAudio(
     }
     tick += 1;
 
-    const raw = readText(space, runResult);
+    const raw = readText(space, run.result);
     if (raw) {
       try {
         const parsed = JSON.parse(raw) as { ok?: boolean; error?: string; ffmpeg?: string };
@@ -748,8 +828,11 @@ export function describeExtractionError(code: string | null): string {
     return (
       "O sistema não executou o script" +
       (raw ? ` (${raw})` : "") +
-      ". Use \"Abrir pasta\" e dê um duplo clique em extract.command — " +
-      "o painel continua esperando o resultado."
+      // Sem nomear o arquivo: ele é carimbado por execução (ver
+      // `ExtractionRun`), e o nome exato aparece logo ao lado, no bloco
+      // de execução manual, que mostra o caminho inteiro.
+      ". Use \"Abrir pasta\" e dê um duplo clique no script de extração " +
+      "indicado abaixo — o painel continua esperando o resultado."
     );
   }
   switch (code) {

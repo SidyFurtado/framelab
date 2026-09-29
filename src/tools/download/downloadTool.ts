@@ -22,30 +22,41 @@ import { getPremiere, describeError } from "../../bridge/premiere";
 import {
   availableQualities,
   defaultDestination,
+  describeCookieTrouble,
   describeRunError,
   downloadUrls,
   findQuality,
   formatBytes,
   formatClock,
   installYtdlp,
+  needsLogin,
   openWorkFolder,
   probeUrls,
   readConfig,
   writeConfig,
+  type CookieTrouble,
   type Cookies,
   type DownloadConfig,
   type Probe,
   type Quality,
 } from "./ytdlp";
-import { uxpModule } from "../silence/workspace";
 import {
   fetchManyTikTok,
   isTikTokUrl,
   tiktokFileName,
   type TikTokFast,
 } from "./tiktok";
+import { cleanInstagramUrl, instagramNeedsLogin } from "./instagram";
 import type { DirectJob } from "./ytdlp";
-import { downloadInPanel, rememberFolderToken } from "./panelFetch";
+import { downloadInPanel } from "./panelFetch";
+import {
+  destinationOf,
+  pickAndSave,
+  readDestination,
+  NO_PICKER,
+  type Destination,
+} from "../../bridge/destination";
+import { rememberDownloads } from "./history";
 
 /**
  * A via rápida consultada para cada posição da lista.
@@ -77,12 +88,19 @@ async function fastLaneByIndex(
   return byIndex;
 }
 
-/** O que o painel aceita como link. Uma linha em branco não é erro. */
+/**
+ * O que o painel aceita como link. Uma linha em branco não é erro.
+ *
+ * É também o único ponto em que o endereço é limpo, porque sondagem e
+ * download saem os dois daqui: normalizar em só um dos dois faria o
+ * painel consultar um endereço e baixar outro.
+ */
 function parseUrls(raw: string): string[] {
   return raw
     .split(/[\s,]+/)
     .map((line) => line.trim())
-    .filter((line) => /^https?:\/\/\S+$/i.test(line));
+    .filter((line) => /^https?:\/\/\S+$/i.test(line))
+    .map((line) => cleanInstagramUrl(line));
 }
 
 /**
@@ -125,10 +143,11 @@ let cancelActiveRun: (() => void) | null = null;
 export const downloadTool: Tool = {
   id: "download",
   name: "Baixar Vídeos",
-  summary: "Download de YouTube e TikTok",
+  summary: "Download de YouTube, TikTok e Instagram",
   hint:
-    "Cole um ou mais links do YouTube ou do TikTok. O TikTok vem sempre " +
-    "sem marca d'água, e o arquivo pode entrar direto no projeto aberto.",
+    "Cole um ou mais links do YouTube, do TikTok ou do Instagram. O TikTok " +
+    "vem sempre sem marca d'água, e o arquivo pode entrar direto no " +
+    "projeto aberto.",
   category: "midia",
   glyph: "download",
   available: true,
@@ -143,6 +162,14 @@ export const downloadTool: Tool = {
       cookies: "none",
       importToProject: true,
     };
+    /**
+     * A pasta padrão, só para mostrar.
+     *
+     * Ela NÃO é copiada para `config.destination`: uma pasta que o
+     * editor nunca escolheu não pode virar uma escolha guardada, senão
+     * o plugin passa a ter o direito de criá-la em qualquer lugar.
+     */
+    let defaultShown = "";
     let probes: Probe[] = [];
     let busy = false;
     let cancelled = false;
@@ -205,6 +232,11 @@ export const downloadTool: Tool = {
             config.cookies = id as Cookies;
             persist();
             cookiesPick?.render();
+            // Escolher o navegador é a resposta à dica de login: sem
+            // isto ela continuava na tela depois de resolvida.
+            if (config.cookies !== "none") {
+              context.setStatus("", "idle");
+            }
           },
         })
       : null;
@@ -242,10 +274,27 @@ export const downloadTool: Tool = {
 
     void (async () => {
       config = await readConfig();
+      /*
+       * A pasta vem do grupo, não do arquivo desta ferramenta.
+       *
+       * `bridge/destination` é quem sabe quem divide pasta com quem —
+       * o Baixar é grupo de um, e é por isso que escolher pasta no
+       * SFX não mexe mais aqui. O `download-config.json` continua
+       * guardando o valor, agora como ESPELHO: é dele que o gerador
+       * de script lê, e é dele que a migração de quem vem da versão
+       * anterior aproveita a pasta já escolhida.
+       */
+      const held = await readDestination(
+        "download",
+        destinationOf(config.destination, config.destinationToken)
+      ).catch(() => null);
+      config.destination = held?.path ?? "";
+      config.destinationToken = held?.token ?? "";
       if (!config.destination) {
         // O campo mostra para onde vai de verdade, e não um vazio que
-        // o editor teria de adivinhar.
-        config.destination = await defaultDestination().catch(() => "");
+        // o editor teria de adivinhar. A pasta padrão fica só na tela:
+        // não é uma escolha do editor e não vira uma no disco.
+        defaultShown = await defaultDestination().catch(() => "");
       }
       if (pathEl) pathEl.value = config.ytdlpPath;
       renderDestination();
@@ -282,6 +331,53 @@ export const downloadTool: Tool = {
       }
     }
 
+    /**
+     * O aviso que cabe ANTES da falha.
+     *
+     * Reel e post públicos do Instagram baixam sem cookie nenhum, então
+     * avisar sobre login em todo link do Instagram seria barulho no caso
+     * comum. Story é a exceção que falha SEMPRE deslogado — e falhar
+     * depois de esperar o download é pior que ler uma linha antes dele.
+     *
+     * Fica de fora de `syncApply` de propósito: aquela função corre
+     * também ao fim de cada execução, e uma dica ali apagaria o
+     * "3 vídeos baixados" no instante em que ele aparece.
+     */
+    function hintLogin(): void {
+      if (busy || config.cookies !== "none") {
+        return;
+      }
+      if (urls().some(instagramNeedsLogin)) {
+        context.setStatus(
+          "Story do Instagram só baixa logado: escolha o navegador nos " +
+            "ajustes avançados.",
+          "error"
+        );
+      }
+    }
+
+    /**
+     * O status, com a nota de que os cookies ficaram de fora quando for
+     * o caso. Vale no sucesso também: um vídeo público baixa sem eles,
+     * e o editor precisa saber que o próximo, restrito, não vai.
+     *
+     * A explicação inteira só entra quando a falha é de login — aí ela
+     * É a resposta. No resto, um rodapé curto basta.
+     */
+    function withCookieNote(
+      message: string,
+      trouble: CookieTrouble | null | undefined,
+      failureLog?: string
+    ): string {
+      if (!trouble || config.cookies === "none") {
+        return message;
+      }
+      const browser = COOKIE_LABELS[config.cookies];
+      return failureLog !== undefined && needsLogin(failureLog)
+        ? `${message} ${describeCookieTrouble(trouble, browser)}`
+        : `${message} · ${describeCookieTrouble(trouble, browser, true)}`;
+    }
+
     urlsEl?.addEventListener("input", () => {
       // Uma lista analisada deixa de valer no instante em que os links
       // mudam; mantê-la na tela seria mostrar os dados de outro vídeo.
@@ -291,6 +387,7 @@ export const downloadTool: Tool = {
         renderQualities();
       }
       syncApply();
+      hintLogin();
     });
 
     // ── analisar ──────────────────────────────────────────────
@@ -334,7 +431,13 @@ export const downloadTool: Tool = {
           }
         });
 
-        let result = { ok: true, error: null as string | null, log: "", ytdlpPath: null as string | null };
+        let result = {
+          ok: true,
+          error: null as string | null,
+          log: "",
+          ytdlpPath: null as string | null,
+          cookies: null as CookieTrouble | null | undefined,
+        };
         if (slow.length > 0) {
           const scripted = await probeUrls(
             slow,
@@ -374,12 +477,25 @@ export const downloadTool: Tool = {
         // certo ele sai da frente.
         showLog(ok === probes.length && result.ok ? "" : result.log);
         if (ok === 0) {
-          context.setStatus(describeRunError(result.error ?? "ytdlp-failed", result.log), "error");
+          context.setStatus(
+            withCookieNote(
+              describeRunError(result.error ?? "ytdlp-failed", result.log),
+              result.cookies,
+              result.log
+            ),
+            "error"
+          );
         } else if (ok < probes.length) {
-          context.setStatus(`${ok} de ${probes.length} links lidos.`, "error");
+          context.setStatus(
+            withCookieNote(`${ok} de ${probes.length} links lidos.`, result.cookies, result.log),
+            "error"
+          );
         } else {
           context.setStatus(
-            `${ok} ${ok === 1 ? "vídeo pronto" : "vídeos prontos"} para baixar.`,
+            withCookieNote(
+              `${ok} ${ok === 1 ? "vídeo pronto" : "vídeos prontos"} para baixar.`,
+              result.cookies
+            ),
             "done"
           );
         }
@@ -441,14 +557,32 @@ export const downloadTool: Tool = {
         const total = list.length;
         const panelFiles: string[] = [];
         const scriptDirect: DirectJob[] = [];
-        const destination = config.destination || (await defaultDestination());
+        // Escolhida pelo editor, ou a padrão do plugin — e só a padrão
+        // pode ser criada, porque só ela é invenção dele.
+        const fallback = await defaultDestination();
+        /*
+         * Lida a CADA tentativa, não uma vez no começo.
+         *
+         * No meio do lote o editor pode escolher a pasta (é o que o
+         * "só desta vez" logo abaixo faz). Uma cópia congelada aqui
+         * mandava a segunda tentativa para a pasta antiga — e daria um
+         * lote metade num lugar, metade noutro.
+         */
+        const nowDestination = (): { target: Destination; mayCreate: boolean } => {
+          const chosen = config.destination.trim();
+          return {
+            target: destinationOf(chosen || fallback, chosen ? config.destinationToken : ""),
+            mayCreate: chosen === "",
+          };
+        };
 
         const tryPanel = async (job: DirectJob, step: string): Promise<string> => {
           showProgress(step, null, "conectando…");
+          const { target, mayCreate } = nowDestination();
           return downloadInPanel(
             job,
-            config.destination || destination,
-            config.destinationToken || null,
+            target,
+            mayCreate,
             (done, size) => {
               showProgress(
                 step,
@@ -517,6 +651,7 @@ export const downloadTool: Tool = {
           failed: 0,
           log: "",
           files: [] as string[],
+          cookies: null as CookieTrouble | null | undefined,
         };
         if (!cancelled && (slow.length > 0 || scriptDirect.length > 0)) {
           const scripted = await downloadUrls(
@@ -541,6 +676,16 @@ export const downloadTool: Tool = {
         }
 
         const files = [...panelFiles, ...outcome.files];
+        /*
+         * O diário: data, link, nome e caminho de cada arquivo.
+         *
+         * Quando os ~25 arquivos de 23/09 se perderam numa árvore
+         * paralela, não havia onde ler de onde eles tinham vindo — os
+         * links tiveram de ser garimpados no histórico do navegador.
+         * Uma linha por arquivo custa nada e é a diferença entre
+         * refazer um download e reconstruir um dia de trabalho.
+         */
+        void rememberDownloads(files, [...direct, ...scriptDirect], list, nowDestination().target.path);
         showProgress(null, null);
         showLog(outcome.ok && outcome.failed === 0 ? "" : outcome.log);
 
@@ -551,7 +696,11 @@ export const downloadTool: Tool = {
 
         if (files.length === 0) {
           context.setStatus(
-            describeRunError(outcome.error ?? "ytdlp-failed", outcome.log),
+            withCookieNote(
+              describeRunError(outcome.error ?? "ytdlp-failed", outcome.log),
+              outcome.cookies,
+              outcome.log
+            ),
             "error"
           );
           return;
@@ -564,7 +713,11 @@ export const downloadTool: Tool = {
           `${count} ${count === 1 ? "arquivo baixado" : "arquivos baixados"}` +
           (outcome.failed > 0 ? ` · ${outcome.failed} falharam` : "");
         context.setStatus(
-          imported === null ? head : `${head} · ${imported}`,
+          withCookieNote(
+            imported === null ? head : `${head} · ${imported}`,
+            outcome.cookies,
+            outcome.failed > 0 ? outcome.log : undefined
+          ),
           outcome.failed > 0 ? "error" : "done"
         );
         renderFiles(files);
@@ -738,40 +891,44 @@ export const downloadTool: Tool = {
 
     function renderDestination(): void {
       if (destEl) {
-        destEl.textContent = config.destination || "(pasta padrão)";
-        destEl.title = config.destination;
+        const shown = config.destination || defaultShown;
+        destEl.textContent = config.destination
+          ? config.destination
+          : shown
+            ? `${shown} (pasta padrão)`
+            : "(pasta padrão)";
+        destEl.title = shown;
       }
     }
 
     pickEl?.addEventListener("click", () => void pickFolder());
 
     async function pickFolder(): Promise<void> {
-      const picker = uxpModule<{
-        storage?: {
-          localFileSystem?: { getFolder?(): Promise<{ nativePath?: string } | null> };
-        };
-      }>("uxp")?.storage?.localFileSystem;
-
-      if (typeof picker?.getFolder !== "function") {
-        context.setStatus("Este build do Premiere não abre o seletor de pastas.", "error");
-        return;
-      }
+      /*
+       * Um seletor só, para o plugin inteiro (`bridge/destination`).
+       *
+       * Aqui havia a quarta cópia dele. As quatro tratavam o token de
+       * um jeito diferente, e a das Legendas chegava a guardar o
+       * caminho novo por cima do token velho — o arquivo ia para a
+       * pasta anterior enquanto o painel exibia a nova.
+       */
       try {
-        const folder = await picker.getFolder();
-        if (!folder?.nativePath) {
+        const picked = await pickAndSave("download");
+        if (!picked) {
           return;
         }
-        config.destination = folder.nativePath;
-        // A entry em mãos é permissão de escrita; o token a torna
-        // permanente. É o que faz o download em painel — silencioso —
-        // funcionar em qualquer build, escolhendo a pasta UMA vez.
-        config.destinationToken = (await rememberFolderToken(folder)) ?? "";
+        config.destination = picked.path;
+        config.destinationToken = picked.token;
         persist();
         renderDestination();
       } catch (cause) {
-        // Cancelar o diálogo chega aqui como erro em alguns builds, e
-        // desistir de escolher não é uma falha para reportar.
-        console.log("[Download] seleção de pasta encerrada:", cause);
+        const reason = cause instanceof Error ? cause.message : String(cause);
+        context.setStatus(
+          reason === NO_PICKER
+            ? "Este build do Premiere não abre o seletor de pastas."
+            : `Não deu para escolher a pasta: ${reason}`,
+          "error"
+        );
       }
     }
 
@@ -1164,7 +1321,7 @@ function markup(): string {
         '<div class="field">' +
           '<div class="field-head"><span class="t-label">Links</span></div>' +
           '<textarea class="dl-urls" data-urls spellcheck="false" rows="3" ' +
-          'placeholder="Cole os links do YouTube ou do TikTok — um por linha"></textarea>' +
+          'placeholder="Cole os links do YouTube, TikTok ou Instagram — um por linha"></textarea>' +
           `<div class="sil-scan-row"><div class="org-scan" ${CONTROL} data-scan>Analisar links</div></div>` +
           '<div class="sil-manual" data-manual hidden></div>' +
           '<div class="dl-list" data-list></div>' +

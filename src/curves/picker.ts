@@ -37,9 +37,17 @@ export interface CurvePickerOptions {
   /** Preset to start on. Ignored if a curve was already drawn this session. */
   curveId?: string;
   /** Draws the Tool's own preview into the slot. Never called while editing. */
-  renderPreview(slot: HTMLElement, curve: EasingCurve): void;
+  renderPreview(slot: HTMLElement, curve: EasingCurve): CurvePreviewMotion;
   /** Fired on every preset change and on every drag of a control point. */
   onChange(curve: EasingCurve): void;
+}
+
+/** Movimento da prévia calculado sem depender das APIs SVG ausentes no UXP. */
+export interface CurvePreviewMotion {
+  readonly width: number;
+  readonly height: number;
+  readonly graphHeight: number;
+  pointAt(progress: number): { x: number; y: number };
 }
 
 export interface CurvePicker {
@@ -118,7 +126,12 @@ function setDrawnPoints(next: CurvePoints): void {
 }
 
 const PREVIEW_WIDTH = 200;
-const PREVIEW_HEIGHT = 84;
+const PREVIEW_GRAPH_HEIGHT = 76;
+const PREVIEW_HEIGHT = 108;
+const PREVIEW_PAD = 8;
+const MOTION_START_X = 14;
+const MOTION_END_MARGIN = 26;
+const MOTION_Y_OFFSET = 14;
 
 export function mountCurvePicker(
   container: HTMLElement,
@@ -127,6 +140,8 @@ export function mountCurvePicker(
   const initialCurveId = options.curveId ?? CURVES[0]!.id;
   let curveId = initialCurveId;
   let editor: CurveEditorHandle | null = null;
+  let previewFrame: number | null = null;
+  let previewMotion: CurvePreviewMotion | null = null;
 
   container.innerHTML = markup(curveId);
 
@@ -149,6 +164,8 @@ export function mountCurvePicker(
     if (!slot) {
       return;
     }
+    stopPreview();
+    previewMotion = null;
     const drawing = curveId === CUSTOM_CURVE;
     slot.classList.toggle("is-editing", drawing);
 
@@ -174,7 +191,7 @@ export function mountCurvePicker(
         editor = null;
         slot.innerHTML = "";
       }
-      options.renderPreview(slot, curve());
+      previewMotion = options.renderPreview(slot, curve());
     }
 
     writeTag();
@@ -183,8 +200,100 @@ export function mountCurvePicker(
         ? "<b>arraste os dois pontos</b>" +
           '<span class="preview-meta-gap"></span>' +
           `<div class="field-action" ${CONTROL} data-curve-reset>Redefinir</div>`
-        : '<b>início</b><span class="preview-meta-gap"></span><b>fim</b>';
+        : '<b>início</b><span class="preview-meta-gap"></span>' +
+          `<div class="curve-preview-button" ${CONTROL} data-curve-play ` +
+          'aria-label="Reproduzir a curva">' +
+            '<span class="curve-preview-play" aria-hidden="true"></span>' +
+            '<span data-curve-play-label>Reproduzir</span>' +
+          '</div><span class="preview-meta-gap"></span><b>fim</b>';
     }
+  }
+
+  function stopPreview(): void {
+    if (previewFrame !== null) {
+      cancelAnimationFrame(previewFrame);
+      previewFrame = null;
+    }
+    slot?.querySelector(".preview-runner")?.remove();
+    slot?.querySelector(".preview-playhead")?.remove();
+    slot?.querySelector(".preview-motion-trail")?.remove();
+    slot?.querySelector(".preview-motion-halo")?.remove();
+    slot?.querySelector(".preview-motion-runner")?.remove();
+    const button = meta?.querySelector<HTMLElement>("[data-curve-play]");
+    button?.classList.remove("is-playing");
+    const label = button?.querySelector<HTMLElement>("[data-curve-play-label]");
+    if (label) label.textContent = "Reproduzir";
+  }
+
+  function playPreview(): void {
+    if (!slot) return;
+    stopPreview();
+    const svg = slot.querySelector<SVGSVGElement>("svg");
+    const motion = previewMotion;
+    if (!svg || !motion) return;
+    const ns = "http://www.w3.org/2000/svg";
+    const playhead = document.createElementNS(ns, "line");
+    playhead.setAttribute("class", "preview-playhead");
+    const runner = document.createElementNS(ns, "circle");
+    runner.setAttribute("class", "preview-runner");
+    runner.setAttribute("r", "4");
+    const trail = document.createElementNS(ns, "line");
+    trail.setAttribute("class", "preview-motion-trail");
+    const halo = document.createElementNS(ns, "circle");
+    halo.setAttribute("class", "preview-motion-halo");
+    halo.setAttribute("r", "10");
+    const mover = document.createElementNS(ns, "rect");
+    mover.setAttribute("class", "preview-motion-runner");
+    mover.setAttribute("width", "14");
+    mover.setAttribute("height", "12");
+    mover.setAttribute("rx", "2.5");
+    const motionY = motion.height - MOTION_Y_OFFSET;
+    const motionEndX = motion.width - MOTION_END_MARGIN;
+    trail.setAttribute("x1", String(MOTION_START_X));
+    trail.setAttribute("y1", String(motionY));
+    trail.setAttribute("y2", String(motionY));
+    svg.append(playhead, runner, trail, halo, mover);
+
+    const button = meta?.querySelector<HTMLElement>("[data-curve-play]");
+    button?.classList.add("is-playing");
+    const label = button?.querySelector<HTMLElement>("[data-curve-play-label]");
+    if (label) label.textContent = "Reproduzindo";
+
+    let reduced = false;
+    try {
+      reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    } catch { /* hosts antigos não expõem matchMedia */ }
+    const duration = reduced ? 0 : 2200;
+    const started = performance.now();
+    const activeCurve = curve();
+    const tick = (now: number): void => {
+      const progress = duration > 0 ? Math.min(1, (now - started) / duration) : 1;
+      const point = motion.pointAt(progress);
+      const eased = activeCurve.ease(progress);
+      const motionX =
+        MOTION_START_X + eased * (motionEndX - MOTION_START_X);
+      runner.setAttribute("cx", point.x.toFixed(2));
+      runner.setAttribute("cy", point.y.toFixed(2));
+      playhead.setAttribute("x1", point.x.toFixed(2));
+      playhead.setAttribute("x2", point.x.toFixed(2));
+      playhead.setAttribute("y1", "4");
+      playhead.setAttribute("y2", String(motion.graphHeight - 4));
+      trail.setAttribute("x2", motionX.toFixed(2));
+      halo.setAttribute("cx", motionX.toFixed(2));
+      halo.setAttribute("cy", String(motionY));
+      mover.setAttribute("x", (motionX - 7).toFixed(2));
+      mover.setAttribute("y", String(motionY - 6));
+      if (progress < 1) {
+        previewFrame = requestAnimationFrame(tick);
+      } else {
+        previewFrame = null;
+        button?.classList.remove("is-playing");
+        if (label) label.textContent = "Reproduzir";
+        playhead.remove();
+        runner.remove();
+      }
+    };
+    previewFrame = requestAnimationFrame(tick);
   }
 
   function select(next: string): void {
@@ -202,6 +311,11 @@ export function mountCurvePicker(
     }
     render();
     options.onChange(curve());
+    // Igual à prévia aprovada: escolher um preset já demonstra o seu
+    // movimento. Repetir o clique no preset ativo também o reproduz.
+    if (next !== CUSTOM_CURVE) {
+      playPreview();
+    }
   }
 
   for (const cell of container.querySelectorAll<HTMLElement>("[data-curve]")) {
@@ -212,7 +326,10 @@ export function mountCurvePicker(
   // control itself would die on the first mode switch.
   meta?.addEventListener("click", (event) => {
     const target = event.target;
-    if (target instanceof Element && target.closest("[data-curve-reset]")) {
+    if (!(target instanceof Element)) return;
+    if (target.closest("[data-curve-play]")) {
+      playPreview();
+    } else if (target.closest("[data-curve-reset]")) {
       setDrawnPoints({ ...CUSTOM_DEFAULT });
       editor?.setPoints(drawnPoints);
       writeTag();
@@ -235,6 +352,7 @@ export function mountCurvePicker(
       }
     },
     destroy(): void {
+      stopPreview();
       editor?.destroy();
       editor = null;
     },
@@ -242,13 +360,38 @@ export function mountCurvePicker(
 }
 
 /** The read-only preview most Tools want: the curve, from 0 to 1. */
-export function renderCurvePreview(slot: HTMLElement, curve: EasingCurve): void {
+export function renderCurvePreview(
+  slot: HTMLElement,
+  curve: EasingCurve
+): CurvePreviewMotion {
   slot.innerHTML =
     `<svg viewBox="0 0 ${PREVIEW_WIDTH} ${PREVIEW_HEIGHT}" ` +
     'preserveAspectRatio="none" aria-hidden="true">' +
-    `<path class="preview-grid" d="M0,${PREVIEW_HEIGHT - 8} L${PREVIEW_WIDTH},${PREVIEW_HEIGHT - 8}"/>` +
-    `<path class="preview-curve" d="${curvePath(curve, PREVIEW_WIDTH, PREVIEW_HEIGHT, 8)}"/>` +
+    `<path class="preview-grid" d="M0,${PREVIEW_GRAPH_HEIGHT - PREVIEW_PAD} ` +
+    `L${PREVIEW_WIDTH},${PREVIEW_GRAPH_HEIGHT - PREVIEW_PAD}"/>` +
+    `<path class="preview-curve" d="${curvePath(curve, PREVIEW_WIDTH, PREVIEW_GRAPH_HEIGHT, PREVIEW_PAD)}"/>` +
+    `<path class="preview-motion-track" d="M${MOTION_START_X},${PREVIEW_HEIGHT - MOTION_Y_OFFSET} ` +
+    `L${PREVIEW_WIDTH - MOTION_END_MARGIN},${PREVIEW_HEIGHT - MOTION_Y_OFFSET}"/>` +
+    `<circle class="preview-motion-stop" cx="${MOTION_START_X}" ` +
+    `cy="${PREVIEW_HEIGHT - MOTION_Y_OFFSET}" r="2"/>` +
+    `<circle class="preview-motion-stop" cx="${PREVIEW_WIDTH - MOTION_END_MARGIN}" ` +
+    `cy="${PREVIEW_HEIGHT - MOTION_Y_OFFSET}" r="2"/>` +
     "</svg>";
+
+  return {
+    width: PREVIEW_WIDTH,
+    height: PREVIEW_HEIGHT,
+    graphHeight: PREVIEW_GRAPH_HEIGHT,
+    pointAt(progress) {
+      const t = Math.max(0, Math.min(1, progress));
+      return {
+        x: PREVIEW_PAD + t * (PREVIEW_WIDTH - PREVIEW_PAD * 2),
+        y:
+          PREVIEW_GRAPH_HEIGHT - PREVIEW_PAD -
+          curve.ease(t) * (PREVIEW_GRAPH_HEIGHT - PREVIEW_PAD * 2),
+      };
+    },
+  };
 }
 
 function markup(curveId: string): string {
@@ -292,4 +435,3 @@ function markup(curveId: string): string {
     "</div>"
   );
 }
-

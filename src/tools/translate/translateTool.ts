@@ -352,12 +352,20 @@ export const translateTool: Tool = {
           from === "auto" && resultado.detected
             ? `${labelOf(resultado.detected)} → ${labelOf(to)}`
             : `${labelOf(from)} → ${labelOf(to)}`;
+        // O parcial é dito, e não escondido: o arquivo saiu, mas com
+        // trechos no idioma original, e entregar isso calado seria
+        // pior que a falha que ele substitui.
+        const faltaram = resultado.pending ?? 0;
         context.setStatus(
           `${resultado.translated} de ${resultado.total} blocos traduzidos · ${origem} · ` +
             (noProjeto
               ? "o .srt está no seu projeto"
-              : `salvo em ${caminho}`),
-          "done"
+              : `salvo em ${caminho}`) +
+            (faltaram > 0
+              ? ` · ${faltaram} ${faltaram === 1 ? "trecho ficou" : "trechos ficaram"} ` +
+                "no idioma original (o tradutor parou antes do fim)"
+              : ""),
+          faltaram > 0 ? "error" : "done"
         );
       } catch (cause) {
         context.setStatus(mensagemDeFalha("traduzir", cause), "error");

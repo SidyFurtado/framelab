@@ -1,7 +1,31 @@
 /**
  * Auto-Updater for Framelab
  * Checks for updates on GitHub and performs seamless in-place updates.
+ *
+ * A troca dos arquivos na pasta do plugin é transacional e mora em
+ * `installBundle.ts`; aqui ficam a consulta ao manifesto, o download e a
+ * tradução da pasta do UXP para a porta que a transação pede.
  */
+import { installBundle, type InstallTarget } from "./installBundle";
+import { fetchWithTimeout, NET_DEADLINE } from "../bridge/net";
+import { compareVersions, hostVersion } from "../bridge/premiere";
+
+/** O que a transação usa de um arquivo da pasta do plugin. */
+interface PluginFileEntry {
+  write(data: ArrayBuffer | string, options?: { format?: unknown }): Promise<unknown>;
+  read(options?: { format?: unknown }): Promise<ArrayBuffer | string>;
+  delete?(): Promise<unknown>;
+  /** Existe só nas builds que oferecem rename. Ver `installBundle.ts`. */
+  moveTo?(
+    folder: unknown,
+    options?: { overwrite?: boolean; newName?: string }
+  ): Promise<unknown>;
+}
+
+interface PluginFolderEntry {
+  createFile(name: string, options?: { overwrite?: boolean }): Promise<PluginFileEntry>;
+  getEntry(name: string): Promise<PluginFileEntry>;
+}
 
 export interface VersionManifest {
   version: string;
@@ -31,11 +55,56 @@ const VERSION_MANIFEST_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/m
 
 export class PluginUpdater {
   private readonly currentVersion: string;
+  private readonly readHostVersion: () => string;
   private latestManifest: VersionManifest | null = null;
   private checking = false;
 
-  constructor(currentVersion: string) {
+  /**
+   * `readHostVersion` é costura de teste: fora dele, é sempre a fonte
+   * única do projeto (`bridge/premiere`).
+   */
+  constructor(currentVersion: string, readHostVersion: () => string = hostVersion) {
     this.currentVersion = currentVersion;
+    this.readHostVersion = readHostVersion;
+  }
+
+  /**
+   * Este Premiere atende o mínimo que a release exige?
+   *
+   * O campo é OPCIONAL no contrato (`minPremiereVersion?`), então um
+   * manifesto antigo que não o traga continua instalável como sempre —
+   * ausência não é incompatibilidade.
+   *
+   * Nos outros casos a dúvida bloqueia: versão do host ilegível ou
+   * mínimo mal escrito não liberam a gravação "por via das dúvidas". O
+   * caminho manual (Baixar Manual) continua aberto de qualquer forma.
+   */
+  private hostMeets(manifest: VersionManifest): { ok: boolean; message: string } {
+    const required = manifest.minPremiereVersion;
+    if (required === undefined || required === null || required === "") {
+      return { ok: true, message: "" };
+    }
+    const host = this.readHostVersion();
+    const order = compareVersions(host, required);
+    if (order === null) {
+      return {
+        ok: false,
+        message: host
+          ? `Não reconheci a versão do Premiere ("${host}") para conferir se ` +
+            "esta atualização serve. Baixe o instalador pelo GitHub."
+          : "Não consegui descobrir a versão do Premiere para conferir se " +
+            "esta atualização serve. Baixe o instalador pelo GitHub.",
+      };
+    }
+    if (order < 0) {
+      return {
+        ok: false,
+        message:
+          `Esta versão do Framelab requer Adobe Premiere Pro ${required} ou ` +
+          `superior. Você está usando ${host}.`,
+      };
+    }
+    return { ok: true, message: "" };
   }
 
   /**
@@ -55,12 +124,11 @@ export class PluginUpdater {
     try {
       // Cache-busting query parameter
       const url = `${VERSION_MANIFEST_URL}?_t=${Date.now()}`;
-      const response = await fetch(url, {
-        cache: "no-store",
-        headers: {
-          Accept: "application/json",
-        },
-      });
+      const response = await fetchWithTimeout(
+        url,
+        { cache: "no-store", headers: { Accept: "application/json" } },
+        NET_DEADLINE.manifest
+      );
 
       if (!response.ok) {
         throw new Error(`Servidor respondeu com status ${response.status}`);
@@ -76,6 +144,24 @@ export class PluginUpdater {
       this.latestManifest = data;
 
       const hasUpdate = isNewerVersion(data.version, this.currentVersion);
+
+      /*
+       * O PORTÃO DA OFERTA. Uma release que exija um Premiere mais novo
+       * não é apresentada como instalável: o selo não aparece, porque
+       * oferecer uma atualização que deixaria o painel sem abrir é pior
+       * que não oferecer nenhuma. A frase sai no resultado e no console.
+       */
+      const fits = this.hostMeets(data);
+      if (hasUpdate && !fits.ok) {
+        console.warn("[Updater] atualização incompatível com este host:", fits.message);
+        return {
+          hasUpdate: false,
+          currentVersion: this.currentVersion,
+          latestVersion: data.version,
+          manifest: data,
+          error: fits.message,
+        };
+      }
 
       return {
         hasUpdate,
@@ -103,7 +189,17 @@ export class PluginUpdater {
    */
   async applyUpdate(
     onProgress?: (step: string, percent: number) => void
-  ): Promise<{ success: boolean; requiresReload: boolean; message: string }> {
+  ): Promise<{
+    success: boolean;
+    requiresReload: boolean;
+    message: string;
+    /**
+     * true só quando a troca falhou E a volta atrás também: a
+     * instalação ficou misturada. Opcional para não mexer em quem já
+     * consome as outras três — a mensagem é o canal para o editor.
+     */
+    critical?: boolean;
+  }> {
     if (!this.latestManifest) {
       await this.checkForUpdates();
     }
@@ -118,6 +214,20 @@ export class PluginUpdater {
         message: "Nenhuma atualização disponível no momento.",
       };
     }
+    /*
+     * O PORTÃO DA GRAVAÇÃO, e ele existe mesmo com o da oferta.
+     *
+     * O selo pode ter sido desenhado com um manifesto anterior, o modal
+     * pode estar aberto desde antes, e `applyUpdate` é público. Conferir
+     * de novo aqui — ANTES de baixar um byte, quanto mais de gravar — é
+     * o que impede um estado velho de furar o portão visual.
+     */
+    const fits = this.hostMeets(manifest);
+    if (!fits.ok) {
+      console.error("[Updater] instalação recusada:", fits.message);
+      return { success: false, requiresReload: false, message: fits.message };
+    }
+
     onProgress?.("Conectando ao GitHub...", 15);
 
     try {
@@ -187,9 +297,11 @@ export class PluginUpdater {
       onProgress?.("Baixando a atualização...", 25);
       const downloads = await Promise.all(
         fileEntries.map(async ([filename, fileUrl]) => {
-          const fileResponse = await fetch(`${fileUrl}?_t=${Date.now()}`, {
-            cache: "no-store",
-          });
+          const fileResponse = await fetchWithTimeout(
+            `${fileUrl}?_t=${Date.now()}`,
+            { cache: "no-store" },
+            NET_DEADLINE.media
+          );
           if (!fileResponse.ok) {
             throw new Error(`Falha ao baixar ${filename} (${fileResponse.status})`);
           }
@@ -197,39 +309,30 @@ export class PluginUpdater {
         })
       );
 
-      const binary = getUxpModule()?.storage?.formats?.binary;
-      let completed = 0;
-      for (const { filename, data } of downloads) {
-        onProgress?.(
-          `Gravando ${filename}...`,
-          60 + Math.round((completed / downloads.length) * 35)
-        );
-        const targetFile = await pluginFolder.createFile(filename, {
-          overwrite: true,
-        });
-        /*
-         * Binário primeiro — é o que não corrompe um asset não-texto
-         * que um dia entre no bundle. Mas este é O caminho de entrega
-         * do plugin: se esta build do host recusar ArrayBuffer, cair
-         * para o write de texto (o que sempre funcionou) é a diferença
-         * entre uma atualização e um painel quebrado sem volta.
-         */
-        let written = false;
-        if (binary !== undefined) {
-          try {
-            await targetFile.write(data, { format: binary });
-            written = true;
-          } catch (cause) {
-            console.warn("[Updater] escrita binária recusada, usando texto:", cause);
-          }
+      /*
+       * A troca dos arquivos é uma transação: ensaio ao lado, cópia de
+       * segurança, troca, e volta atrás se algo falhar no meio. O porquê
+       * e os estados possíveis estão em `installBundle.ts` — gravar
+       * direto por cima, um a um, era o que deixava `index.html` novo ao
+       * lado de `index.js` velho quando a segunda escrita falhava.
+       */
+      const outcome = await installBundle(
+        pluginTarget(pluginFolder),
+        downloads,
+        onProgress
+      );
+      if (!outcome.ok) {
+        if (outcome.critical) {
+          console.error("[Updater] atualização MISTURADA:", outcome.message);
         }
-        if (!written) {
-          await targetFile.write(decodeUtf8(data));
-        }
-        completed += 1;
+        return {
+          success: false,
+          requiresReload: false,
+          critical: outcome.critical,
+          message: outcome.message,
+        };
       }
 
-      onProgress?.("Atualização concluída!", 100);
       return {
         success: true,
         requiresReload: true,
@@ -281,6 +384,101 @@ export class PluginUpdater {
       window.location.reload();
     }
   }
+}
+
+/**
+ * A pasta do plugin como a porta que a transação pede.
+ *
+ * Só tradução: cada operação usa o padrão que já está provado no
+ * projeto — a escrita com reserva de texto é a mesma que estava no laço
+ * antigo, a leitura de bytes é a de `sfx/folder.ts`, e a remoção
+ * distingue "não estava lá" de "não deu para apagar", porque a volta
+ * atrás depende dessa diferença para não mentir que restaurou.
+ */
+function pluginTarget(folder: PluginFolderEntry): InstallTarget {
+  const binary = getUxpModule()?.storage?.formats?.binary;
+
+  return {
+    async writeFile(name, data) {
+      const file = await folder.createFile(name, { overwrite: true });
+      /*
+       * Binário primeiro — é o que não corrompe um asset não-texto
+       * que um dia entre no bundle. Mas este é O caminho de entrega
+       * do plugin: se esta build do host recusar ArrayBuffer, cair
+       * para o write de texto (o que sempre funcionou) é a diferença
+       * entre uma atualização e um painel quebrado sem volta.
+       */
+      if (binary !== undefined) {
+        try {
+          await file.write(data, { format: binary });
+          return;
+        } catch (cause) {
+          console.warn("[Updater] escrita binária recusada, usando texto:", cause);
+        }
+      }
+      await file.write(decodeUtf8(data));
+    },
+
+    async readFile(name) {
+      let file: PluginFileEntry;
+      try {
+        file = await folder.getEntry(name);
+      } catch {
+        // Ainda não existe: é um arquivo novo do bundle, e a volta
+        // atrás dele é apagá-lo.
+        return null;
+      }
+      let held: ArrayBuffer | string;
+      try {
+        held = await file.read(binary !== undefined ? { format: binary } : undefined);
+      } catch {
+        held = await file.read({ format: "binary" });
+      }
+      if (typeof held !== "string") {
+        return held;
+      }
+      /*
+       * Veio texto: é a mesma build que também ESCREVE texto (acima),
+       * então a ida e a volta usam a mesma régua e o conteúdo fecha.
+       * Só deixaria de fechar num asset não-texto, que o bundle não tem.
+       */
+      return utf8Bytes(held);
+    },
+
+    async deleteFile(name) {
+      let file: PluginFileEntry;
+      try {
+        file = await folder.getEntry(name);
+      } catch {
+        // Não existir não é falha — é o caso comum da limpeza.
+        return;
+      }
+      // Daqui para baixo o erro SOBE: apagar e não conseguir é uma
+      // resposta diferente de não ter o que apagar.
+      await file.delete?.();
+    },
+
+    async replaceFrom(stagedName, targetName) {
+      const file = await folder.getEntry(stagedName);
+      if (typeof file.moveTo !== "function") {
+        throw new Error("moveTo indisponível nesta build");
+      }
+      await file.moveTo(folder, { overwrite: true, newName: targetName });
+    },
+  };
+}
+
+/** O par de `decodeUtf8`, para a cópia de segurança fechar a ida e volta. */
+function utf8Bytes(text: string): ArrayBuffer {
+  if (typeof TextEncoder === "function") {
+    return new TextEncoder().encode(text).buffer as ArrayBuffer;
+  }
+  const raw = unescape(encodeURIComponent(text));
+  const bytes = new Uint8Array(raw.length);
+  for (let at = 0; at < raw.length; at += 1) {
+    bytes[at] = raw.charCodeAt(at);
+  }
+  return bytes.buffer;
 }
 
 /** Os bytes como texto, para o caminho de escrita de reserva. */

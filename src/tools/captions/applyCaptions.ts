@@ -38,7 +38,8 @@ import { diffCorrections, worthLearning, type Candidate } from "./learn";
 import { readTranscript } from "../silence/transcript";
 import { shapesToTry, rememberShape } from "./schemas";
 import { buildCues, cuesToSrt, SRT_DEFAULTS, type SrtOptions } from "./srt";
-import { fileUrl, nativePath, uxpModule, workspace, write } from "../silence/workspace";
+import { nativePath, workspace, write } from "../silence/workspace";
+import { destinationOf, writeFileInto } from "../../bridge/destination";
 import {
   assembleArgs,
   splitByClip,
@@ -559,70 +560,22 @@ export async function transcribeTracks(
 }
 
 /**
- * Escreve o .srt e o coloca no projeto.
+ * O .srt na pasta escolhida.
  *
- * O .srt sai da transcrição em tempo de SEQUÊNCIA, antes do recorte
- * por clipe — é a linha do tempo inteira, que é o que uma faixa de
- * legenda precisa. Gerado sempre, mesmo que a importação da
- * transcrição falhe: é o caminho que não depende do host aceitar nada,
- * já que a API do Premiere não permite criar faixa de legenda.
- *
- * Entrar no projeto é a parte que pode falhar sem ser fatal: o arquivo
- * está no disco, e o painel mostra o caminho.
+ * Era a terceira cópia da resolução de destino, e a mais silenciosa
+ * das três: o token vencia o caminho sem nenhuma conferência, e
+ * `emitSrt` ainda engolia a falha e escrevia na pasta de trabalho do
+ * plugin. Agora a resolução é a de todo mundo (`bridge/destination`) —
+ * o token só vale se abrir a pasta que está guardada, a pasta tem de
+ * existir, e o nome do arquivo, só ele, é saneado.
  */
-interface UxpFile {
-  nativePath?: string;
-  write(data: string | ArrayBuffer, options?: { format?: unknown }): Promise<void>;
-}
-
-interface UxpFolder {
-  nativePath?: string;
-  createFile(name: string, options?: { overwrite?: boolean }): Promise<UxpFile>;
-}
-
-interface UxpLfs {
-  getEntryForPersistentToken?(token: string): Promise<UxpFolder>;
-  getEntryWithUrl?(url: string): Promise<UxpFolder>;
-}
-
 async function writeSrtToDestination(
   destination: string,
   token: string | undefined,
   fileName: string,
   content: string
 ): Promise<string> {
-  const storage = uxpModule<{
-    storage?: { localFileSystem?: UxpLfs };
-  }>("uxp")?.storage;
-  const lfs = storage?.localFileSystem;
-  if (!lfs) {
-    throw new Error("storage do UXP indisponível");
-  }
-
-  let folder: UxpFolder | null = null;
-  if (token && typeof lfs.getEntryForPersistentToken === "function") {
-    try {
-      folder = await lfs.getEntryForPersistentToken(token);
-    } catch (cause) {
-      console.warn("[Legendas] token persistente da pasta expirou ou falhou:", cause);
-    }
-  }
-
-  if (!folder && typeof lfs.getEntryWithUrl === "function") {
-    try {
-      folder = await lfs.getEntryWithUrl(fileUrl(destination));
-    } catch (cause) {
-      console.warn("[Legendas] getEntryWithUrl falhou:", cause);
-    }
-  }
-
-  if (!folder) {
-    throw new Error(`não foi possível acessar a pasta "${destination}"`);
-  }
-
-  const file = await folder.createFile(fileName, { overwrite: true });
-  await file.write(content);
-  return file.nativePath ?? `${destination.replace(/[\\/]+$/, "")}/${fileName}`;
+  return writeFileInto(destinationOf(destination, token ?? ""), fileName, content);
 }
 
 /**
@@ -670,8 +623,16 @@ async function emitSrt(
           srtPath = await writeSrtToDestination(destination, destinationToken, name, srtContent);
           stages.push(`legendas salvas no destino escolhido: ${srtPath}`);
         } catch (destErr) {
+          /*
+           * O .srt NÃO se perde — a transcrição custou minutos — mas o
+           * desvio é dito com todas as letras. O silêncio aqui era do
+           * mesmo feitio do bug das pastas: o arquivo ia para um lugar
+           * que ninguém pediu e o painel dizia "pronto".
+           */
           stages.push(
-            `falha ao salvar no destino escolhido (${describeError(destErr)}), usando pasta padrão`
+            `ATENÇÃO: a pasta escolhida (${destination}) não aceitou o arquivo ` +
+              `(${describeError(destErr)}). O .srt foi para a pasta de trabalho do ` +
+              "plugin — escolha o destino de novo antes da próxima legenda."
           );
         }
       }

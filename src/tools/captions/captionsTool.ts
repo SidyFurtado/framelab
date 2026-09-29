@@ -50,7 +50,14 @@ import {
   type SrtOptions,
 } from "./srt";
 import { demoTranscript, previewMarkup } from "./preview";
-import { uxpModule, shellModule, workspace } from "../silence/workspace";
+import { shellModule, workspace } from "../silence/workspace";
+import {
+  destinationOf,
+  pickAndSave,
+  readDestination,
+  saveDestination,
+  NO_PICKER,
+} from "../../bridge/destination";
 
 /**
  * Os controles da régua, na ordem em que importam.
@@ -330,6 +337,15 @@ export const captionsTool: Tool = {
 
     void (async () => {
       config = await readConfig();
+      // A pasta vem do grupo (ver `bridge/destination`); o arquivo desta
+      // ferramenta segue sendo o espelho, e a origem da migração de
+      // quem já tinha escolhido antes deste módulo existir.
+      const held = await readDestination(
+        "captions",
+        destinationOf(config.srtDestination, config.srtDestinationToken)
+      ).catch(() => null);
+      config.srtDestination = held?.path ?? "";
+      config.srtDestinationToken = held?.token ?? "";
       if (glossaryEl) glossaryEl.value = config.glossary;
       lastRun = await readLastRun();
       trackPick?.render();
@@ -390,6 +406,7 @@ export const captionsTool: Tool = {
     srtDestReset?.addEventListener("click", () => {
       config.srtDestination = "";
       config.srtDestinationToken = "";
+      void saveDestination("captions", null);
       persist();
       renderDestination();
       context.setStatus("Destino redefinido para a pasta padrão do plugin.", "idle");
@@ -411,37 +428,34 @@ export const captionsTool: Tool = {
     });
 
     async function pickDestination(): Promise<void> {
-      const picker = uxpModule<{
-        storage?: {
-          localFileSystem?: {
-            getFolder?(): Promise<{ nativePath?: string } | null>;
-            createPersistentToken?(entry: unknown): Promise<string>;
-          };
-        };
-      }>("uxp")?.storage?.localFileSystem;
-
-      if (typeof picker?.getFolder !== "function") {
-        context.setStatus("Este build do Premiere não abre o seletor de pastas.", "error");
-        return;
-      }
+      /*
+       * O seletor compartilhado (`bridge/destination`).
+       *
+       * A cópia que morava aqui gravava o caminho novo e SÓ ENTÃO
+       * tentava o token: se a build não tivesse `createPersistentToken`,
+       * o token ANTERIOR ficava, e ele vence o caminho na hora de
+       * escrever — o .srt ia para a pasta escolhida da vez passada
+       * enquanto o painel exibia a nova. Guardar os dois juntos, de uma
+       * vez, é o que impede isso.
+       */
       try {
-        const folder = await picker.getFolder();
-        if (!folder?.nativePath) {
+        const picked = await pickAndSave("captions");
+        if (!picked) {
           return;
         }
-        config.srtDestination = folder.nativePath;
-        if (typeof picker.createPersistentToken === "function") {
-          try {
-            config.srtDestinationToken = (await picker.createPersistentToken(folder)) ?? "";
-          } catch {
-            config.srtDestinationToken = "";
-          }
-        }
+        config.srtDestination = picked.path;
+        config.srtDestinationToken = picked.token;
         persist();
         renderDestination();
-        context.setStatus(`Pasta de destino definida: ${folder.nativePath}`, "done");
+        context.setStatus(`Pasta de destino definida: ${picked.path}`, "done");
       } catch (cause) {
-        console.log("[Legendas] seleção de pasta encerrada:", cause);
+        const reason = cause instanceof Error ? cause.message : String(cause);
+        context.setStatus(
+          reason === NO_PICKER
+            ? "Este build do Premiere não abre o seletor de pastas."
+            : `Não deu para escolher a pasta: ${reason}`,
+          "error"
+        );
       }
     }
 

@@ -53,12 +53,16 @@ function main() {
     console.log(`  ✓ static/manifest.json → ${version}`);
   }
 
+  // O painel lê a versão do package.json pelo `define` do vite
+  // (`__APP_VERSION__`). Se alguém voltar a escrever o número à mão no
+  // ProductShell, ele é mantido em dia aqui; sem nenhum dos dois, para.
   const shellSource = fs.readFileSync(SHELL_PATH, "utf8");
+  const fromVite = /^const VERSION = __APP_VERSION__;$/m.test(shellSource);
   const shellPatched = shellSource.replace(
     /^const VERSION = "[^"]*";$/m,
     `const VERSION = "${version}";`
   );
-  if (shellPatched === shellSource && !shellSource.includes(`const VERSION = "${version}"`)) {
+  if (!fromVite && shellPatched === shellSource && !shellSource.includes(`const VERSION = "${version}"`)) {
     throw new Error(
       "não achei `const VERSION` em ProductShell.ts — a versão do painel " +
         "ficaria atrasada e o updater ofereceria a mesma atualização para sempre"

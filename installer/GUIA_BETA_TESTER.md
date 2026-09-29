@@ -44,7 +44,7 @@ Sempre que uma nova funcionalidade ou correção for lançada:
 - **Curvas de velocidade**: aplica easing entre keyframes existentes.
 
 **Mídia**
-- **Baixar Vídeos**: baixa do YouTube e do TikTok (sempre sem marca d'água), podendo importar direto para a linha do tempo. Downloader integrado.
+- **Baixar Vídeos**: baixa do YouTube, do TikTok (sempre sem marca d'água) e do Instagram (reel e post públicos; story e conta privada pedem os cookies do navegador, nos ajustes avançados), podendo importar direto para a linha do tempo. Downloader integrado.
 
 **Projeto**
 - **Organizar Pastas**: separa por tipo os arquivos e sequências soltos na raiz. Suas pastas e as de outros plugins não são tocadas.

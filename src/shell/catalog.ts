@@ -7,6 +7,9 @@ import { downloadTool } from "../tools/download/downloadTool";
 import { fillersTool } from "../tools/fillers/fillersTool";
 import { captionsTool } from "../tools/captions/captionsTool";
 import { translateTool } from "../tools/translate/translateTool";
+import { titlesTool } from "../tools/titles/titlesTool";
+import { sfxTool } from "../tools/sfx/sfxTool";
+import { soundDesignTool } from "../tools/soundDesign/soundDesignTool";
 
 /**
  * The catalogue. Adding a Tool means writing it and listing it here —
@@ -16,6 +19,7 @@ import { translateTool } from "../tools/translate/translateTool";
 export const categories: readonly Category[] = [
   { id: "edicao", name: "Edição" },
   { id: "texto", name: "Texto" },
+  { id: "audio", name: "Áudio" },
   { id: "midia", name: "Mídia" },
   { id: "projeto", name: "Projeto" },
 ];
@@ -26,7 +30,10 @@ export const tools: readonly Tool[] = [
   fillersTool,
   flowTool,
   captionsTool,
+  titlesTool,
   translateTool,
+  sfxTool,
+  soundDesignTool,
   downloadTool,
   organizeTool,
 ];

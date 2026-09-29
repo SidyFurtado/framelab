@@ -349,8 +349,11 @@ export const silenceTool: Tool = {
           cancelled: () => cancelRequested,
           onManual: (scriptPath, reason) => {
             showManual(scriptPath, reason);
+            // O nome vem do caminho, e não escrito à mão: o script é
+            // carimbado por execução (ver `ExtractionRun`), então uma
+            // frase com nome fixo mandaria abrir um arquivo que não existe.
             context.setStatus(
-              "Execute extract.command na pasta aberta.",
+              `Execute ${baseName(scriptPath)} na pasta aberta.`,
               "error"
             );
           },
@@ -389,7 +392,8 @@ export const silenceTool: Tool = {
       manualEl.innerHTML =
         '<p class="sil-warn"><b>Execução manual necessária:</b>' +
         (reason ? ` <span class="sil-manual-why">${escapeHtml(reason)}</span>` : "") +
-        " Dê duplo clique em <b>extract.command</b> na pasta de trabalho.</p>" +
+        ` Dê duplo clique em <b>${escapeHtml(baseName(scriptPath))}</b>` +
+        " na pasta de trabalho.</p>" +
         `<p class="sil-manual-path">${escapeHtml(scriptPath)}</p>` +
         `<div class="sil-scan-row"><div class="org-scan" ${CONTROL} data-open-folder>Abrir pasta</div></div>`;
       manualEl
@@ -757,6 +761,16 @@ function renderClipRow(clip: ClipTarget): string {
     "</div>" +
     "</div>"
   );
+}
+
+/**
+ * Só o nome do arquivo, para a instrução de execução manual.
+ *
+ * O script é carimbado por execução, então a frase não pode trazer o
+ * nome escrito à mão — mandaria abrir um arquivo que não existe.
+ */
+function baseName(path: string): string {
+  return path.slice(Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1) || path;
 }
 
 function renderDiagnostic(lines: readonly DiagnosticLine[]): string {

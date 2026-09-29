@@ -51,12 +51,20 @@ export class EnvelopeBuilder {
   private sumSquares = 0;
   private count = 0;
   private carry = -1;
+  // Campos declarados, e não parâmetros de construtor: a propriedade de
+  // parâmetro é sintaxe que o TypeScript precisa TRANSFORMAR, e o
+  // `node --test` deste projeto só remove tipos. Ela tornava
+  // intestável, por importação indireta, todo módulo que chegasse aqui.
+  private readonly windowSeconds: number;
+  private readonly offsetSeconds: number;
 
   constructor(
     sampleRate: number = PCM_SAMPLE_RATE,
-    private readonly windowSeconds: number = PCM_WINDOW_SECONDS,
-    private readonly offsetSeconds: number = 0
+    windowSeconds: number = PCM_WINDOW_SECONDS,
+    offsetSeconds = 0
   ) {
+    this.windowSeconds = windowSeconds;
+    this.offsetSeconds = offsetSeconds;
     this.samplesPerWindow = Math.max(
       1,
       Math.round(sampleRate * windowSeconds)

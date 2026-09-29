@@ -33,6 +33,13 @@ export interface ApplyResult {
   /** O idioma que o serviço reconheceu, quando pediram detecção. */
   detected: string | null;
   error: string | null;
+  /**
+   * Trechos que voltaram sem tradução, com o texto original no lugar.
+   *
+   * `> 0` com `ok: true` é resultado parcial: o arquivo saiu, mas
+   * incompleto, e quem mostra tem de dizer isso.
+   */
+  pending?: number;
 }
 
 /**
@@ -147,6 +154,7 @@ export async function translateSrt(
     total: doc.cues.length,
     detected: resultado.detected,
     error: null,
+    pending: resultado.pending,
   };
 }
 

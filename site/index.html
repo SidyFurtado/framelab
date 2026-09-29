@@ -3,199 +3,145 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Framelab — beta para Premiere Pro</title>
-<meta name="description" content="Suíte de ferramentas e automações para Adobe Premiere Pro. Corte de silêncios, curvas de velocidade, zoom, download de vídeo, organização e novos utilitários em constante expansão. Beta privada para macOS.">
+<meta name="color-scheme" content="dark">
+<title>Framelab — painel para Premiere Pro</title>
+<meta name="description" content="Painel para Adobe Premiere Pro com 11 ferramentas: corte de silêncios e de muletas, legendas com Whisper, textos animados, efeitos sonoros, zoom, curvas, download de vídeo e organização do projeto. Beta para macOS.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23111214'/%3E%3Cpath d='M19.5 7 12.5 25' stroke='%23619DFF' stroke-width='3.2' stroke-linecap='round'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Instrument+Sans:wght@400;500;600&family=Newsreader:opsz,wght@6..72,300..600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=20260904a">
+<link href="https://fonts.googleapis.com/css2?family=Azeret+Mono:wght@300..500&family=Bricolage+Grotesque:opsz,wdth,wght@12..96,75..100,300..800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css?v=20260929a">
 </head>
 <body>
 
+<a class="skip" href="#ferramentas">Pular para as ferramentas</a>
+
 <header class="head">
-  <a class="head-brand" href="#">
-    <span class="head-mark">
-      <svg viewBox="0 0 100 100" aria-hidden="true" fill="none">
-        <path d="M12 34V14h22" stroke="currentColor" stroke-width="8" stroke-linecap="square"/>
-        <path d="M66 14h22v20" stroke="currentColor" stroke-width="8" stroke-linecap="square"/>
-        <path d="M88 66v20H66" stroke="currentColor" stroke-width="8" stroke-linecap="square"/>
-        <path d="M34 86H12V66" stroke="currentColor" stroke-width="8" stroke-linecap="square"/>
-        <rect x="34" y="34" width="32" height="32" fill="#E39B3C"/>
-      </svg>
-    </span>
-    <span class="head-name"><b>Framelab</b><span>Premiere</span></span>
-  </a>
-  <nav class="head-nav">
+  <a class="brand" href="#" aria-label="Framelab, início">framelab<span class="brand-slash">/</span></a>
+  <nav class="head-nav" aria-label="Seções">
+    <a href="#ferramentas">Ferramentas</a>
     <a href="#instalacao">Instalação</a>
     <a href="https://github.com/SidyFurtado/framelab" target="_blank" rel="noopener">GitHub</a>
   </nav>
-  <span class="head-ver" data-version-chip>v0.1.0</span>
+  <span class="chip" data-version-chip>v0.5.0</span>
 </header>
 
 <main>
 
-  <!-- ── o herói é o painel: a rail é o catálogo ─────────────── -->
+  <!-- ── o herói é o painel: o plugin de verdade, rodando aqui ─── -->
   <section class="hero">
-
     <div class="hero-copy">
-      <p class="eyebrow">Beta privada · macOS</p>
-
-      <h1 class="hero-title">Sua suíte de ferramentas dentro do&nbsp;Premiere.</h1>
-
+      <p class="eyebrow">Beta · macOS · Premiere Pro 25 ou superior</p>
+      <h1 class="hero-title">
+        Corta, legenda, anima e&nbsp;põe o som.
+        <span class="hero-title-dim">Sem sair do Premiere.</span>
+      </h1>
       <p class="lede">
-        Um painel acoplado ao lado da sua timeline com um catálogo em constante
-        expansão. Corta silêncio, tira os ééé da fala, curva keyframes, baixa
-        TikTok sem marca d'água e arruma o projeto — o que você já sabe
-        fazer à mão e não quer fazer de novo.
+        Um painel ao lado da sua timeline com onze ferramentas: silêncio e
+        muletas cortados sozinhos, legenda com Whisper, título animado,
+        o pack de SFX da equipe com busca e o som certo em cada elemento.
       </p>
 
-      <a class="cta" href="https://github.com/SidyFurtado/framelab/releases/latest/download/Framelab-macOS.zip" download>
-        <span class="cta-label">Baixar para macOS</span>
-        <span class="cta-arrow" aria-hidden="true">
-          <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="square">
-            <path d="M7 2v7.4"/><path d="M3.8 6.4 7 9.6l3.2-3.2"/><path d="M2.6 11.8h8.8"/>
+      <div class="cta-row">
+        <a class="cta" href="https://github.com/SidyFurtado/framelab/releases/latest/download/Framelab-macOS.zip" download>
+          <span>Baixar para macOS</span>
+          <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M8 2.5v8"/><path d="M4.5 7.5 8 11l3.5-3.5"/><path d="M3 13.5h10"/>
           </svg>
-        </span>
-      </a>
-      <p class="cta-note">Instalador completo (FFmpeg e IA inclusos) · Dois cliques</p>
-
-      <p class="hero-alt">
-        <a href="#instalacao">Como instalar</a>
-        <span aria-hidden="true">·</span>
-        <a href="https://github.com/SidyFurtado/framelab/releases" target="_blank" rel="noopener">Todas as versões</a>
-      </p>
+        </a>
+        <p class="cta-note">Framelab-macOS.zip · 98 MB<br>FFmpeg, Whisper IA e yt-dlp inclusos</p>
+      </div>
     </div>
 
-    <div class="hero-panel">
-      <!-- Réplica fiel da chrome do plugin. Cada ferramenta mostra o
-           estado REAL de abertura: sem clipe selecionado, Aplicar
-           desligado, e o callout com o texto que o painel escreve. -->
-      <div class="panel" role="group" aria-label="Prévia do painel Framelab">
-
-        <div class="p-top">
-          <span class="p-mark">
-            <svg viewBox="0 0 100 100" aria-hidden="true" fill="none">
-              <path d="M12 34V14h22" stroke="currentColor" stroke-width="8" stroke-linecap="square"/>
-              <path d="M66 14h22v20" stroke="currentColor" stroke-width="8" stroke-linecap="square"/>
-              <path d="M88 66v20H66" stroke="currentColor" stroke-width="8" stroke-linecap="square"/>
-              <path d="M34 86H12V66" stroke="currentColor" stroke-width="8" stroke-linecap="square"/>
-              <rect x="34" y="34" width="32" height="32" fill="#E39B3C"/>
-            </svg>
-          </span>
-          <span class="p-brand"><b>Framelab</b><span>Premiere</span></span>
-          <span class="p-search">
-            <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.1" aria-hidden="true">
-              <circle cx="6.2" cy="6.2" r="3.8"/><path d="M9.2 9.2 12 12"/>
-            </svg>
-            <span>Buscar ferramenta…</span>
-          </span>
-          <span class="p-ver" data-version-chip>v0.1.0</span>
-        </div>
-
-        <div class="p-main">
-          <div class="p-nav" data-rail></div>
-          <div class="p-work">
-            <div class="p-head">
-              <span class="p-title" data-title></span>
-              <span class="p-chip" data-chip></span>
-            </div>
-            <div class="p-state" data-state></div>
-            <p class="p-callout" data-callout></p>
-            <div class="p-body" data-body></div>
-            <div class="p-actions">
-              <span class="p-apply" data-apply></span>
-            </div>
-          </div>
-        </div>
-
-        <div class="p-status">
-          <span class="p-status-tool" data-status></span>
-        </div>
+    <figure class="dock">
+      <div class="dock-tabs" aria-hidden="true">
+        <span class="dock-tab">Efeitos</span>
+        <span class="dock-tab is-on">Framelab<i class="dock-menu"></i></span>
+        <span class="dock-tab">Marcadores</span>
       </div>
+      <iframe class="dock-panel" src="app/index.html?v=20260929a" title="Painel Framelab, a versão real rodando no navegador" loading="eager" data-panel></iframe>
+      <figcaption class="dock-note">
+        Este é o painel de verdade, rodando no navegador. Navegue à vontade:
+        sem o Premiere, nada é aplicado, e os sons não tocam.
+      </figcaption>
+    </figure>
+  </section>
 
-      <p class="panel-note">
-        Prévia navegável — clique numa ferramenta da lista.
-      </p>
+  <!-- ── o catálogo, na ordem e nas categorias do painel ───────── -->
+  <section class="tools" id="ferramentas">
+    <div class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">Ferramentas</p>
+        <h2 class="h2">Onze, em cinco gavetas.</h2>
+        <p class="section-lede">Clique numa delas para abrir no painel acima.</p>
+      </div>
+      <div class="catalog" data-catalog></div>
     </div>
   </section>
 
   <!-- ── instalação: aqui a ordem é informação, então numera ──── -->
   <section class="install" id="instalacao">
     <div class="wrap">
-      <p class="eyebrow">Instalação</p>
-      <h2 class="h2">Dois cliques, sem Terminal.</h2>
+      <div class="section-head">
+        <p class="eyebrow">Instalação</p>
+        <h2 class="h2">Dois cliques, sem Terminal.</h2>
+      </div>
 
       <ol class="steps">
         <li class="step">
           <span class="step-n">1</span>
-          <div class="step-body">
-            <h3 class="step-title">Baixe o pacote</h3>
-            <p class="step-text">
-              <code>Framelab-macOS.zip</code>, descompacte na sua pasta.
-            </p>
-          </div>
+          <h3 class="step-title">Baixe e descompacte</h3>
+          <p class="step-text">O <code>Framelab-macOS.zip</code> vira uma pasta com o instalador dentro.</p>
         </li>
         <li class="step">
           <span class="step-n">2</span>
-          <div class="step-body">
-            <h3 class="step-title">Dois cliques no instalador</h3>
-            <p class="step-text">
-              Abra <code>Instalar_Framelab.command</code>. Ele instala o plugin e configura automaticamente os motores nativos (FFmpeg, Whisper IA e Downloader) em 5 segundos.
-            </p>
-          </div>
+          <h3 class="step-title">Dois cliques no instalador</h3>
+          <p class="step-text">O <code>Instalar_Framelab.command</code> põe o plugin no Premiere e instala o FFmpeg, o Whisper IA e o yt-dlp.</p>
         </li>
         <li class="step">
           <span class="step-n">3</span>
-          <div class="step-body">
-            <h3 class="step-title">Abra o painel no Premiere</h3>
-            <p class="step-text menu-path">
-              <span>Janela</span><i aria-hidden="true">›</i><span>Extensões</span><i aria-hidden="true">›</i><span>Framelab</span>
-            </p>
-          </div>
+          <h3 class="step-title">Reabra o Premiere</h3>
+          <p class="step-text menu-path">
+            <span>Janela</span><i aria-hidden="true">›</i><span>Extensões</span><i aria-hidden="true">›</i><span>Framelab</span>
+          </p>
         </li>
       </ol>
 
       <p class="install-alt">
-        O pacote é 100% autocontido: inclui o instalador em 2 cliques com motores inclusos, além dos formatos <strong>.pkg</strong> e <strong>.ccx</strong>.
+        Já tem os motores instalados? O plugin sozinho também sai em
+        <a href="https://github.com/SidyFurtado/framelab/releases/latest/download/Framelab.pkg">Framelab.pkg</a>
+        e <a href="https://github.com/SidyFurtado/framelab/releases/latest/download/Framelab.ccx">Framelab.ccx</a>.
       </p>
     </div>
   </section>
 
-  <!-- ── ficha técnica: linhas de dado, não cards de marketing ── -->
+  <!-- ── ficha técnica: linhas de dado, não cards ─────────────── -->
   <section class="spec">
     <div class="wrap">
-      <p class="eyebrow">Ficha técnica</p>
+      <div class="section-head">
+        <p class="eyebrow">Ficha técnica</p>
+      </div>
       <dl class="spec-list">
-        <div class="spec-row">
-          <dt>Versão</dt><dd data-version-full>0.1.0 · beta</dd>
-        </div>
-        <div class="spec-row">
-          <dt>Premiere Pro</dt><dd>25.0 ou superior</dd>
-        </div>
-        <div class="spec-row">
-          <dt>Sistema</dt><dd>macOS · Apple Silicon e Intel</dd>
-        </div>
-        <div class="spec-row">
-          <dt>Ferramentas</dt><dd>8 na versão beta · catálogo em expansão contínua</dd>
-        </div>
+        <div class="spec-row"><dt>Versão</dt><dd data-version-full>0.5.0 · beta</dd></div>
+        <div class="spec-row"><dt>Premiere Pro</dt><dd>25.0 ou superior</dd></div>
+        <div class="spec-row"><dt>Sistema</dt><dd>macOS · Apple Silicon e Intel</dd></div>
         <div class="spec-row">
           <dt>Atualização</dt>
-          <dd>Pelo próprio painel. Quando sai versão nova, aparece um botão
-              no topo — não precisa baixar de novo nem fechar o projeto.</dd>
+          <dd>Pelo próprio painel. Quando sai versão nova, aparece um botão no
+            topo — sem baixar de novo e sem fechar o projeto.</dd>
+        </div>
+        <div class="spec-row">
+          <dt>Novidades</dt>
+          <dd><a href="https://github.com/SidyFurtado/framelab/releases/latest" target="_blank" rel="noopener">O que mudou na última versão</a></dd>
         </div>
       </dl>
     </div>
   </section>
 
-  <!-- ── feedback: uma linha, não um card ─────────────────────── -->
   <section class="feedback">
     <div class="wrap feedback-inner">
-      <p class="feedback-text">
-        Achou um bug, ou o painel fez algo que você não pediu?
-      </p>
-      <a class="feedback-link" href="https://github.com/SidyFurtado/framelab/issues" target="_blank" rel="noopener">
-        Abrir uma issue
-      </a>
+      <p>Achou um bug, ou o painel fez algo que você não pediu?</p>
+      <a class="feedback-link" href="https://github.com/SidyFurtado/framelab/issues" target="_blank" rel="noopener">Abrir uma issue</a>
     </div>
   </section>
 
@@ -203,11 +149,11 @@
 
 <footer class="foot">
   <div class="wrap foot-inner">
-    <span class="foot-brand"><b>Framelab</b> · Sidy Furtado · 2026</span>
+    <span><span class="brand brand-sm">framelab<span class="brand-slash">/</span></span> Sidy Furtado · 2026</span>
     <a href="https://github.com/SidyFurtado/framelab" target="_blank" rel="noopener">Repositório</a>
   </div>
 </footer>
 
-<script src="panel.js?v=20260904a"></script>
+<script src="site.js?v=20260929a"></script>
 </body>
 </html>
